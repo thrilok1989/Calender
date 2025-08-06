@@ -108,16 +108,16 @@ def determine_level(row):
     else:
         return "Neutral"
 
-def calculate_zone_width(level, call_oi, put_oi):
+def calculate_zone_width(level, ce_oi, pe_oi):
     # Avoid division by zero
     if level == "Support":
         if call_oi == 0:
             return 0
-        oi_diff_percent = ((put_oi - call_oi) / call_oi) * 100
+        oi_diff_percent = ((pe_oi - ce_oi) / ce_oi) * 100
     elif level == "Resistance":
         if put_oi == 0:
             return 0
-        oi_diff_percent = ((call_oi - put_oi) / put_oi) * 100
+        oi_diff_percent = ((ce_oi - pe_oi) / pe_oi) * 100
     else:
         return 0  # Invalid level
 
@@ -131,8 +131,8 @@ def calculate_zone_width(level, call_oi, put_oi):
     else:
         return 0  # Ignore zone
         
-def is_in_zone(spot, strike, level, call_oi, put_oi):
-    width = calculate_zone_width(level, call_oi, put_oi)
+def is_in_zone(spot, strike, level, ce_oi, pe_oi):
+    width = calculate_zone_width(level, ce_oi, pe_oi)
 
     if width <= 0:
         return False  # Zone not valid
