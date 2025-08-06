@@ -109,6 +109,10 @@ def determine_level(row):
         return "Neutral"
 
 def calculate_zone_width(level, ce_oi, pe_oi):
+    ce_oi = row['openInterest_CE']
+    pe_oi = row['openInterest_PE']
+    ce_chg = row['changeinOpenInterest_CE']
+    pe_chg = row['changeinOpenInterest_PE']
     # Avoid division by zero
     if level == "Support":
         if call_oi == 0:
