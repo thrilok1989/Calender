@@ -95,34 +95,26 @@ weights = {
 def determine_level(row):
     ce_oi = row['openInterest_CE']
     pe_oi = row['openInterest_PE']
-    ce_chg = row['changeinOpenInterest_CE']
-    pe_chg = row['changeinOpenInterest_PE']
 
-    # Strong Support condition
     if pe_oi > 1.12 * ce_oi:
         return "Support"
-    # Strong Resistance condition
     elif ce_oi > 1.12 * pe_oi:
         return "Resistance"
-    # Neutral if none dominant
     else:
         return "Neutral"
 
 def calculate_zone_width(level, ce_oi, pe_oi):
-    # Avoid division by zero
     if level == "Support":
         if ce_oi == 0:
             return 0
         oi_diff_percent = ((pe_oi - ce_oi) / ce_oi) * 100
-
     elif level == "Resistance":
         if pe_oi == 0:
             return 0
         oi_diff_percent = ((ce_oi - pe_oi) / pe_oi) * 100
     else:
-        return 0  # Neutral or invalid
+        return 0
 
-    # Width rules (you can tune these)
     if oi_diff_percent >= 50:
         return 20
     elif oi_diff_percent >= 30:
@@ -132,21 +124,15 @@ def calculate_zone_width(level, ce_oi, pe_oi):
     elif oi_diff_percent >= 10:
         return 5
     else:
-        return 0  # Ignore zone
+        return 0
 
-        
 def is_in_zone(spot, strike, level, ce_oi, pe_oi):
     width = calculate_zone_width(level, ce_oi, pe_oi)
 
     if width <= 0:
-        return False  # Zone not valid
+        return False
 
-    lower_bound = strike - width
-    upper_bound = strike + width
-
-    return lower_bound <= spot <= upper_bound
-
-
+    return strike - width <= spot <= strike + width
 
 def get_support_resistance_zones(df, spot):
     support_strikes = df[df['Level'] == "Support"]['strikePrice'].tolist()
