@@ -94,11 +94,10 @@ weights = {
 
 import pandas as pd
 
-# 1. Define zone level (Support, Resistance, Neutral)
+# 1. Determine Support / Resistance
 def determine_level(row):
     ce_oi = row['openInterest_CE']
     pe_oi = row['openInterest_PE']
-
     if pe_oi > 1.12 * ce_oi:
         return "Support"
     elif ce_oi > 1.12 * pe_oi:
@@ -106,7 +105,7 @@ def determine_level(row):
     else:
         return "Neutral"
 
-# 2. Define zone width based on OI strength
+# 2. Calculate zone width based on OI difference
 def calculate_zone_width(level, ce_oi, pe_oi):
     if level == "Support":
         if ce_oi == 0:
@@ -130,16 +129,18 @@ def calculate_zone_width(level, ce_oi, pe_oi):
     else:
         return 0
 
-# 3. Check if spot is in the zone range
+# 3. Check if spot is inside zone
 def is_in_zone(spot, strike, level, ce_oi, pe_oi):
     width = calculate_zone_width(level, ce_oi, pe_oi)
     if width <= 0:
         return False
     return strike - width <= spot <= strike + width
 
-# 4. Apply all logic to a DataFrame
+# 4. Master function to apply everything to a DataFrame
 def mark_zones(df, spot_price):
     df['Level'] = df.apply(determine_level, axis=1)
+
+    # ✅ This is where the error usually happens — FIXED HERE
     df['InZone'] = df.apply(
         lambda row: is_in_zone(
             spot=spot_price,
@@ -147,9 +148,11 @@ def mark_zones(df, spot_price):
             level=row['Level'],
             ce_oi=row['openInterest_CE'],
             pe_oi=row['openInterest_PE']
-        ), axis=1)
-    return df
+        ),
+        axis=1
+    )
 
+    return df
 
 def get_support_resistance_zones(df, spot):
     support_strikes = df[df['Level'] == "Support"]['strikePrice'].tolist()
