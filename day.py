@@ -92,67 +92,28 @@ weights = {
     "DVP_Bias": 1,
 }
 
-import pandas as pd
-
-# 1. Determine Support / Resistance
 def determine_level(row):
     ce_oi = row['openInterest_CE']
     pe_oi = row['openInterest_PE']
+    ce_chg = row['changeinOpenInterest_CE']
+    pe_chg = row['changeinOpenInterest_PE']
+
+    # Strong Support condition
     if pe_oi > 1.12 * ce_oi:
         return "Support"
+    # Strong Resistance condition
     elif ce_oi > 1.12 * pe_oi:
         return "Resistance"
+    # Neutral if none dominant
     else:
         return "Neutral"
 
-# 2. Calculate zone width based on OI difference
-def calculate_zone_width(level, ce_oi, pe_oi):
+def is_in_zone(spot, strike, level):
     if level == "Support":
-        if ce_oi == 0:
-            return 0
-        oi_diff_percent = ((pe_oi - ce_oi) / ce_oi) * 100
+        return strike - 20 <= spot <= strike + 20
     elif level == "Resistance":
-        if pe_oi == 0:
-            return 0
-        oi_diff_percent = ((ce_oi - pe_oi) / pe_oi) * 100
-    else:
-        return 0
-
-    if oi_diff_percent >= 50:
-        return 20
-    elif oi_diff_percent >= 30:
-        return 15
-    elif oi_diff_percent >= 20:
-        return 10
-    elif oi_diff_percent >= 10:
-        return 5
-    else:
-        return 0
-
-# 3. Check if spot is inside zone
-def is_in_zone(spot, strike, level, ce_oi, pe_oi):
-    width = calculate_zone_width(level, ce_oi, pe_oi)
-    if width <= 0:
-        return False
-    return strike - width <= spot <= strike + width
-
-# 4. Master function to apply everything to a DataFrame
-def mark_zones(df, spot_price):
-    df['Level'] = df.apply(determine_level, axis=1)
-
-    # ✅ This is where the error usually happens — FIXED HERE
-    df['InZone'] = df.apply(
-        lambda row: is_in_zone(
-            spot=spot_price,
-            strike=row['strikePrice'],
-            level=row['Level'],
-            ce_oi=row['openInterest_CE'],
-            pe_oi=row['openInterest_PE']
-        ),
-        axis=1
-    )
-
-    return df
+        return strike - 20 <= spot <= strike + 20
+    return False
 
 def get_support_resistance_zones(df, spot):
     support_strikes = df[df['Level'] == "Support"]['strikePrice'].tolist()
@@ -416,7 +377,7 @@ def analyze():
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("19:40", "%H:%M").time()
+        market_end = datetime.strptime("18:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
