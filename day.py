@@ -109,31 +109,31 @@ def determine_level(row):
         return "Neutral"
 
 def calculate_zone_width(level, ce_oi, pe_oi):
-    ce_oi = row['openInterest_CE']
-    pe_oi = row['openInterest_PE']
-    ce_chg = row['changeinOpenInterest_CE']
-    pe_chg = row['changeinOpenInterest_PE']
     # Avoid division by zero
     if level == "Support":
-        if call_oi == 0:
+        if ce_oi == 0:
             return 0
         oi_diff_percent = ((pe_oi - ce_oi) / ce_oi) * 100
+
     elif level == "Resistance":
-        if put_oi == 0:
+        if pe_oi == 0:
             return 0
         oi_diff_percent = ((ce_oi - pe_oi) / pe_oi) * 100
     else:
-        return 0  # Invalid level
+        return 0  # Neutral or invalid
 
-    # Width rules based on % difference
+    # Width rules (you can tune these)
     if oi_diff_percent >= 50:
         return 20
+    elif oi_diff_percent >= 30:
+        return 15
     elif oi_diff_percent >= 20:
-        return 5
+        return 10
     elif oi_diff_percent >= 10:
-        return -10  # Weak zone
+        return 5
     else:
         return 0  # Ignore zone
+
         
 def is_in_zone(spot, strike, level, ce_oi, pe_oi):
     width = calculate_zone_width(level, ce_oi, pe_oi)
@@ -145,6 +145,7 @@ def is_in_zone(spot, strike, level, ce_oi, pe_oi):
     upper_bound = strike + width
 
     return lower_bound <= spot <= upper_bound
+
 
 
 def get_support_resistance_zones(df, spot):
