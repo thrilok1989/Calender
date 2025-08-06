@@ -108,12 +108,40 @@ def determine_level(row):
     else:
         return "Neutral"
 
-def is_in_zone(spot, strike, level):
+def calculate_zone_width(level, call_oi, put_oi):
+    # Avoid division by zero
     if level == "Support":
-        return strike - 20 <= spot <= strike + 20
+        if call_oi == 0:
+            return 0
+        oi_diff_percent = ((put_oi - call_oi) / call_oi) * 100
     elif level == "Resistance":
-        return strike - 20 <= spot <= strike + 20
-    return False
+        if put_oi == 0:
+            return 0
+        oi_diff_percent = ((call_oi - put_oi) / put_oi) * 100
+    else:
+        return 0  # Invalid level
+
+    # Width rules based on % difference
+    if oi_diff_percent >= 50:
+        return 20
+    elif oi_diff_percent >= 20:
+        return 5
+    elif oi_diff_percent >= 10:
+        return -10  # Weak zone
+    else:
+        return 0  # Ignore zone
+        
+def is_in_zone(spot, strike, level, call_oi, put_oi):
+    width = calculate_zone_width(level, call_oi, put_oi)
+
+    if width <= 0:
+        return False  # Zone not valid
+
+    lower_bound = strike - width
+    upper_bound = strike + width
+
+    return lower_bound <= spot <= upper_bound
+
 
 def get_support_resistance_zones(df, spot):
     support_strikes = df[df['Level'] == "Support"]['strikePrice'].tolist()
