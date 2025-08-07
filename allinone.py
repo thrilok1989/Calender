@@ -284,25 +284,31 @@ def plot_price_with_sr(instrument):
     if price_df.empty or price_df['Spot'].isnull().all():
         st.info(f"Not enough {instrument} data to show price action chart yet.")
         return
+    
     price_df['Time'] = pd.to_datetime(price_df['Time'])
     support_zone = st.session_state.get(f'{instrument}_support_zone', (None, None))
     resistance_zone = st.session_state.get(f'{instrument}_resistance_zone', (None, None))
+    
     fig = go.Figure()
+    
+    # Main price line
     fig.add_trace(go.Scatter(
-        x=price_df['Time'], 
-        y=price_df['Spot'], 
-        mode='lines+markers', 
+        x=price_df['Time'],
+        y=price_df['Spot'],
+        mode='lines+markers',
         name='Spot Price',
         line=dict(color='blue', width=2)
-    )
+    ))
     
+    # Support zone
     if all(support_zone) and None not in support_zone:
         fig.add_shape(
             type="rect",
             xref="paper", yref="y",
             x0=0, x1=1,
             y0=support_zone[0], y1=support_zone[1],
-            fillcolor="rgba(0,255,0,0.08)", line=dict(width=0),
+            fillcolor="rgba(0,255,0,0.08)",
+            line=dict(width=0),
             layer="below"
         )
         fig.add_trace(go.Scatter(
@@ -320,13 +326,15 @@ def plot_price_with_sr(instrument):
             line=dict(color='green', dash='dot')
         ))
     
+    # Resistance zone
     if all(resistance_zone) and None not in resistance_zone:
         fig.add_shape(
             type="rect",
             xref="paper", yref="y",
             x0=0, x1=1,
             y0=resistance_zone[0], y1=resistance_zone[1],
-            fillcolor="rgba(255,0,0,0.08)", line=dict(width=0),
+            fillcolor="rgba(255,0,0,0.08)",
+            line=dict(width=0),
             layer="below"
         )
         fig.add_trace(go.Scatter(
@@ -344,6 +352,7 @@ def plot_price_with_sr(instrument):
             line=dict(color='red', dash='dot')
         ))
     
+    # Layout configuration
     fig.update_layout(
         title=f"{instrument} Spot Price Action with Support & Resistance",
         xaxis_title="Time",
@@ -351,6 +360,7 @@ def plot_price_with_sr(instrument):
         template="plotly_white",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
+    
     st.plotly_chart(fig, use_container_width=True)
 
 def auto_update_call_log(current_price, instrument):
@@ -385,8 +395,10 @@ def display_call_log_book(instrument):
     if not st.session_state[f'{instrument}_call_log_book']:
         st.info(f"No {instrument} calls have been made yet.")
         return
+    
     df_log = pd.DataFrame(st.session_state[f'{instrument}_call_log_book'])
     st.dataframe(df_log, use_container_width=True)
+    
     if st.button(f"Download {instrument} Call Log Book as CSV"):
         st.download_button(
             label="Download CSV",
@@ -412,7 +424,7 @@ def analyze_instrument(instrument):
         session.headers.update(headers)
         session.get("https://www.nseindia.com", timeout=5)
         
-        # Handle spaces in instrument names (like "NIFTY IT")
+        # Handle spaces in instrument names
         url_instrument = instrument.replace(' ', '%20')
         url = f"https://www.nseindia.com/api/option-chain-indices?symbol={url_instrument}" if instrument in INSTRUMENTS['indices'] else \
               f"https://www.nseindia.com/api/option-chain-equities?symbol={url_instrument}"
