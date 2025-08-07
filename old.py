@@ -9,10 +9,11 @@ from scipy.stats import norm
 from pytz import timezone
 import plotly.graph_objects as go
 import io
-
+import tkinter as tk
+from tkinter import ttk
 
 # ===== Greeks Calculation =====
-def calculate_greeks(optiFailed to fetch NSE data: 401 Client Error: Unauthorized for url: https://www.nseindia.com/api/option-chain-indices?symbol=NIFTYon_type, S, K, T, r, sigma):
+def calculate_greeks(option_type, S, K, T, r, sigma):
     d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
     delta = norm.cdf(d1) if option_type == 'CE' else -norm.cdf(-d1)
@@ -57,14 +58,33 @@ def final_verdict(score):
         return "Neutral"
 
 # ===== Fetch NSE Option Chain =====
-headers = {"User-Agent": "Mozilla/5.0"}
-session = requests.Session()
-session.headers.update(headers)
-session.get("https://www.nseindia.com", timeout=5)
+def fetch_nse_data():
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive"
+    }
+    
+    session = requests.Session()
+    session.headers.update(headers)
+    
+    try:
+        # First request to get cookies
+        session.get("https://www.nseindia.com", timeout=10)
+        # Second request to get data
+        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+        response = session.get(url, timeout=15)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Failed to fetch NSE data: {e}")
+        return None
 
-url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-response = session.get(url, timeout=10)
-data = response.json()
+# Main execution
+data = fetch_nse_data()
+if data is None:
+    st.stop()
 
 records = data["records"]["data"]
 expiry = data["records"]["expiryDates"][0]
