@@ -8,9 +8,6 @@ import math
 from scipy.stats import norm
 from pytz import timezone
 import plotly.graph_objects as go
-import io
-import tkinter as tk
-from tkinter import ttk
 
 # ===== Greeks Calculation =====
 def calculate_greeks(option_type, S, K, T, r, sigma):
@@ -58,6 +55,7 @@ def final_verdict(score):
         return "Neutral"
 
 # ===== Fetch NSE Option Chain =====
+@st.cache_data(ttl=60)  # Cache for 60 seconds
 def fetch_nse_data():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -81,7 +79,12 @@ def fetch_nse_data():
         st.error(f"Failed to fetch NSE data: {e}")
         return None
 
-# Main execution
+# Main Streamlit App
+st.title("Nifty Option Chain Bias Analyzer")
+
+# Auto-refresh every 60 seconds
+st_autorefresh(interval=60 * 1000, key="data_refresh")
+
 data = fetch_nse_data()
 if data is None:
     st.stop()
@@ -171,28 +174,27 @@ for _, row in df.iterrows():
 
     results.append(row_data)
 
-# ===== GUI Output =====
-root = tk.Tk()
-root.title("Nifty Option Chain Bias Summary")
-root.configure(bg="white")
+# ===== Streamlit Output =====
+# Convert results to DataFrame
+results_df = pd.DataFrame(results)
 
 # Top Suggestion Summary
-best = max(results, key=lambda x: abs(x['Score']))
-top_msg = f"\U0001F4E2 TRADE {'CALL' if best['Score'] > 0 else 'PUT'} | Momentum: {'STRONG' if abs(best['Score']) >= 4 else 'MODERATE'} | Move: {best['FakeReal'].upper()} | Suggested: {best['Scalp/Moment'].upper()}"
-top_label = tk.Label(root, text=top_msg, font=("Segoe UI", 12, "bold"), bg="white", fg="black")
-top_label.pack(pady=10)
+best = results_df.iloc[results_df['Score'].abs().idxmax()]
+top_msg = f"🚀 TRADE {'CALL' if best['Score'] > 0 else 'PUT'} | Momentum: {'STRONG' if abs(best['Score']) >= 4 else 'MODERATE'} | Move: {best['FakeReal'].upper()} | Suggested: {best['Scalp/Moment'].upper()}"
 
-cols = ["Strike", "Zone", "Verdict", "Score", "Operator Entry", "Scalp/Moment", "FakeReal", "ChgOI (C vs P)", "OI (C vs P)"]
-tree = ttk.Treeview(root, columns=cols, show="headings", height=8)
+st.subheader("Trade Recommendation")
+st.info(top_msg)
 
-for col in cols:
-    tree.heading(col, text=col)
-    tree.column(col, anchor="center", width=120)
+# Display the results table
+st.subheader("Option Chain Bias Analysis")
+cols_to_show = ["Strike", "Zone", "Verdict", "Score", "Operator Entry", "Scalp/Moment", "FakeReal", "ChgOI (C vs P)", "OI (C vs P)"]
+st.dataframe(results_df[cols_to_show], height=600)
 
-for row in results:
-    values = [row[c] for c in cols]
-    tree.insert("", tk.END, values=values)
+# Add some visualizations
+st.subheader("Bias Score Distribution")
+fig = go.Figure(data=[go.Histogram(x=results_df['Score'], nbinsx=20)])
+st.plotly_chart(fig)
 
-tree.pack(padx=20, pady=10)
-
-root.mainloop()
+st.subheader("Zone-wise Verdict Distribution")
+zone_verdict = results_df.groupby(['Zone', 'Verdict']).size().unstack().fillna(0)
+st.bar_chart(zone_verdict)
