@@ -293,7 +293,8 @@ def plot_price_with_sr(instrument):
         y=price_df['Spot'], 
         mode='lines+markers', 
         name='Spot Price',
-        line=dict(color='blue', width=2))
+        line=dict(color='blue', width=2)
+    )
     
     if all(support_zone) and None not in support_zone:
         fig.add_shape(
