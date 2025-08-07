@@ -11,26 +11,41 @@ import plotly.graph_objects as go
 import io
 
 # === Streamlit Config ===
-st.set_page_config(page_title="Indian Indices Options Analyzer", layout="wide")
+st.set_page_config(page_title="NSE Options Analyzer", layout="wide")
 st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 min
 
-# Initialize session states for all indices
-indices = ['NIFTY', 'BANKNIFTY', 'SENSEX']
-for index in indices:
-    if f'{index}_price_data' not in st.session_state:
-        st.session_state[f'{index}_price_data'] = pd.DataFrame(columns=["Time", "Spot"])
-    
-    if f'{index}_trade_log' not in st.session_state:
-        st.session_state[f'{index}_trade_log'] = []
-    
-    if f'{index}_call_log_book' not in st.session_state:
-        st.session_state[f'{index}_call_log_book'] = []
-    
-    if f'{index}_support_zone' not in st.session_state:
-        st.session_state[f'{index}_support_zone'] = (None, None)
-    
-    if f'{index}_resistance_zone' not in st.session_state:
-        st.session_state[f'{index}_resistance_zone'] = (None, None)
+# Define all instruments we'll analyze
+INSTRUMENTS = {
+    'indices': {
+        'NIFTY': {'lot_size': 75, 'zone_size': 20, 'atm_range': 200},
+        'BANKNIFTY': {'lot_size': 25, 'zone_size': 100, 'atm_range': 500},
+        'NIFTY IT': {'lot_size': 50, 'zone_size': 50, 'atm_range': 300},
+        'NIFTY AUTO': {'lot_size': 50, 'zone_size': 50, 'atm_range': 300}
+    },
+    'stocks': {
+        'TCS': {'lot_size': 150, 'zone_size': 30, 'atm_range': 150},
+        'RELIANCE': {'lot_size': 250, 'zone_size': 40, 'atm_range': 200},
+        'HDFCBANK': {'lot_size': 550, 'zone_size': 50, 'atm_range': 250}
+    }
+}
+
+# Initialize session states for all instruments
+for category in INSTRUMENTS:
+    for instrument in INSTRUMENTS[category]:
+        if f'{instrument}_price_data' not in st.session_state:
+            st.session_state[f'{instrument}_price_data'] = pd.DataFrame(columns=["Time", "Spot"])
+        
+        if f'{instrument}_trade_log' not in st.session_state:
+            st.session_state[f'{instrument}_trade_log'] = []
+        
+        if f'{instrument}_call_log_book' not in st.session_state:
+            st.session_state[f'{instrument}_call_log_book'] = []
+        
+        if f'{instrument}_support_zone' not in st.session_state:
+            st.session_state[f'{instrument}_support_zone'] = (None, None)
+        
+        if f'{instrument}_resistance_zone' not in st.session_state:
+            st.session_state[f'{instrument}_resistance_zone'] = (None, None)
 
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
@@ -106,13 +121,9 @@ def determine_level(row):
     else:
         return "Neutral"
 
-def is_in_zone(spot, strike, level, index):
-    if index == 'BANKNIFTY':
-        zone_size = 100  # Wider zone for Bank Nifty
-    elif index == 'SENSEX':
-        zone_size = 200  # Even wider for Sensex
-    else:  # NIFTY
-        zone_size = 20
+def is_in_zone(spot, strike, level, instrument):
+    zone_size = INSTRUMENTS['indices'].get(instrument, {}).get('zone_size', 20) or \
+                INSTRUMENTS['stocks'].get(instrument, {}).get('zone_size', 20)
     
     if level == "Support":
         return strike - zone_size <= spot <= strike + zone_size
@@ -120,7 +131,7 @@ def is_in_zone(spot, strike, level, index):
         return strike - zone_size <= spot <= strike + zone_size
     return False
 
-def get_support_resistance_zones(df, spot, index):
+def get_support_resistance_zones(df, spot, instrument):
     support_strikes = df[df['Level'] == "Support"]['strikePrice'].tolist()
     resistance_strikes = df[df['Level'] == "Resistance"]['strikePrice'].tolist()
 
@@ -135,7 +146,7 @@ def get_support_resistance_zones(df, spot, index):
 def expiry_bias_score(row):
     score = 0
 
-    # OI + Price Based Bias Logic (using available fields)
+    # OI + Price Based Bias Logic
     if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] > row['previousClose_CE']:
         score += 1  # New CE longs → Bullish
     if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] > row['previousClose_PE']:
@@ -145,7 +156,7 @@ def expiry_bias_score(row):
     if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] < row['previousClose_PE']:
         score += 1  # PE writing → Bullish
 
-    # Bid Volume Dominance (using available fields)
+    # Bid Volume Dominance
     if 'bidQty_CE' in row and 'bidQty_PE' in row:
         if row['bidQty_CE'] > row['bidQty_PE'] * 1.5:
             score += 1  # CE Bid dominance → Bullish
@@ -158,7 +169,7 @@ def expiry_bias_score(row):
     if row['totalTradedVolume_PE'] > 2 * row['openInterest_PE']:
         score += 0.5  # PE churn → Possibly noise
 
-    # Bid-Ask Pressure (using lastPrice and underlying price as proxy)
+    # Bid-Ask Pressure
     if 'underlyingValue' in row:
         if abs(row['lastPrice_CE'] - row['underlyingValue']) < abs(row['lastPrice_PE'] - row['underlyingValue']):
             score += 0.5  # CE closer to spot → Bullish
@@ -167,7 +178,7 @@ def expiry_bias_score(row):
 
     return score
 
-def expiry_entry_signal(df, support_levels, resistance_levels, index, score_threshold=1.5):
+def expiry_entry_signal(df, support_levels, resistance_levels, instrument, score_threshold=1.5):
     entries = []
     for _, row in df.iterrows():
         strike = row['strikePrice']
@@ -181,7 +192,7 @@ def expiry_entry_signal(df, support_levels, resistance_levels, index, score_thre
                 'score': score,
                 'ltp': row['lastPrice_CE'],
                 'reason': 'Bullish score + support zone',
-                'index': index
+                'instrument': instrument
             })
 
         if score <= -score_threshold and strike in resistance_levels:
@@ -191,23 +202,29 @@ def expiry_entry_signal(df, support_levels, resistance_levels, index, score_thre
                 'score': score,
                 'ltp': row['lastPrice_PE'],
                 'reason': 'Bearish score + resistance zone',
-                'index': index
+                'instrument': instrument
             })
 
     return entries
 
-def display_enhanced_trade_log(index):
-    if not st.session_state[f'{index}_trade_log']:
-        st.info(f"No {index} trades logged yet")
+def display_enhanced_trade_log(instrument):
+    if not st.session_state[f'{instrument}_trade_log']:
+        st.info(f"No {instrument} trades logged yet")
         return
-    st.markdown(f"### 📜 {index} Trade Log")
-    df_trades = pd.DataFrame(st.session_state[f'{index}_trade_log'])
+    st.markdown(f"### 📜 {instrument} Trade Log")
+    df_trades = pd.DataFrame(st.session_state[f'{instrument}_trade_log'])
+    
+    # Get lot size for P&L calculation
+    lot_size = INSTRUMENTS['indices'].get(instrument, {}).get('lot_size', 1) or \
+               INSTRUMENTS['stocks'].get(instrument, {}).get('lot_size', 1)
+    
     if 'Current_Price' not in df_trades.columns:
         df_trades['Current_Price'] = df_trades['LTP'] * np.random.uniform(0.8, 1.3, len(df_trades))
-        df_trades['Unrealized_PL'] = (df_trades['Current_Price'] - df_trades['LTP']) * (75 if index != 'SENSEX' else 15)
+        df_trades['Unrealized_PL'] = (df_trades['Current_Price'] - df_trades['LTP']) * lot_size
         df_trades['Status'] = df_trades['Unrealized_PL'].apply(
             lambda x: '🟢 Profit' if x > 0 else '🔴 Loss' if x < -100 else '🟡 Breakeven'
         )
+    
     def color_pnl(row):
         colors = []
         for col in row.index:
@@ -221,6 +238,7 @@ def display_enhanced_trade_log(index):
             else:
                 colors.append('')
         return colors
+    
     styled_trades = df_trades.style.apply(color_pnl, axis=1)
     st.dataframe(styled_trades, use_container_width=True)
     total_pl = df_trades['Unrealized_PL'].sum()
@@ -233,50 +251,50 @@ def display_enhanced_trade_log(index):
     with col3:
         st.metric("Total Trades", len(df_trades))
 
-def create_export_data(df_summary, trade_log, spot_price, index):
+def create_export_data(df_summary, trade_log, spot_price, instrument):
     # Create Excel data
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_summary.to_excel(writer, sheet_name=f'{index}_Option_Chain', index=False)
+        df_summary.to_excel(writer, sheet_name=f'{instrument}_Option_Chain', index=False)
         if trade_log:
-            pd.DataFrame(trade_log).to_excel(writer, sheet_name=f'{index}_Trade_Log', index=False)
+            pd.DataFrame(trade_log).to_excel(writer, sheet_name=f'{instrument}_Trade_Log', index=False)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{index.lower()}_analysis_{timestamp}.xlsx"
+    filename = f"{instrument.lower()}_analysis_{timestamp}.xlsx"
     
     return output.getvalue(), filename
 
-def handle_export_data(df_summary, spot_price, index):
-    if st.button(f"Prepare {index} Excel Export"):
+def handle_export_data(df_summary, spot_price, instrument):
+    if st.button(f"Prepare {instrument} Excel Export"):
         try:
-            excel_data, filename = create_export_data(df_summary, st.session_state[f'{index}_trade_log'], spot_price, index)
+            excel_data, filename = create_export_data(df_summary, st.session_state[f'{instrument}_trade_log'], spot_price, instrument)
             st.download_button(
-                label=f"📥 Download {index} Excel Report",
+                label=f"📥 Download {instrument} Excel Report",
                 data=excel_data,
                 file_name=filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
-            st.success(f"✅ {index} export ready! Click the download button above.")
+            st.success(f"✅ {instrument} export ready! Click the download button above.")
         except Exception as e:
-            st.error(f"❌ {index} export failed: {e}")
+            st.error(f"❌ {instrument} export failed: {e}")
 
-def plot_price_with_sr(index):
-    price_df = st.session_state[f'{index}_price_data'].copy()
+def plot_price_with_sr(instrument):
+    price_df = st.session_state[f'{instrument}_price_data'].copy()
     if price_df.empty or price_df['Spot'].isnull().all():
-        st.info(f"Not enough {index} data to show price action chart yet.")
+        st.info(f"Not enough {instrument} data to show price action chart yet.")
         return
     price_df['Time'] = pd.to_datetime(price_df['Time'])
-    support_zone = st.session_state.get(f'{index}_support_zone', (None, None))
-    resistance_zone = st.session_state.get(f'{index}_resistance_zone', (None, None))
+    support_zone = st.session_state.get(f'{instrument}_support_zone', (None, None))
+    resistance_zone = st.session_state.get(f'{instrument}_resistance_zone', (None, None))
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=price_df['Time'], 
         y=price_df['Spot'], 
         mode='lines+markers', 
         name='Spot Price',
-        line=dict(color='blue', width=2)
-    ))
+        line=dict(color='blue', width=2))
+    
     if all(support_zone) and None not in support_zone:
         fig.add_shape(
             type="rect",
@@ -300,6 +318,7 @@ def plot_price_with_sr(index):
             name='Support High',
             line=dict(color='green', dash='dot')
         ))
+    
     if all(resistance_zone) and None not in resistance_zone:
         fig.add_shape(
             type="rect",
@@ -323,8 +342,9 @@ def plot_price_with_sr(index):
             name='Resistance High',
             line=dict(color='red', dash='dot')
         ))
+    
     fig.update_layout(
-        title=f"{index} Spot Price Action with Support & Resistance",
+        title=f"{instrument} Spot Price Action with Support & Resistance",
         xaxis_title="Time",
         yaxis_title="Spot Price",
         template="plotly_white",
@@ -332,8 +352,8 @@ def plot_price_with_sr(index):
     )
     st.plotly_chart(fig, use_container_width=True)
 
-def auto_update_call_log(current_price, index):
-    for call in st.session_state[f'{index}_call_log_book']:
+def auto_update_call_log(current_price, instrument):
+    for call in st.session_state[f'{instrument}_call_log_book']:
         if call["Status"] != "Active":
             continue
         if call["Type"] == "CE":
@@ -359,28 +379,28 @@ def auto_update_call_log(current_price, index):
                 call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
                 call["Exit_Price"] = current_price
 
-def display_call_log_book(index):
-    st.markdown(f"### 📚 {index} Call Log Book")
-    if not st.session_state[f'{index}_call_log_book']:
-        st.info(f"No {index} calls have been made yet.")
+def display_call_log_book(instrument):
+    st.markdown(f"### 📚 {instrument} Call Log Book")
+    if not st.session_state[f'{instrument}_call_log_book']:
+        st.info(f"No {instrument} calls have been made yet.")
         return
-    df_log = pd.DataFrame(st.session_state[f'{index}_call_log_book'])
+    df_log = pd.DataFrame(st.session_state[f'{instrument}_call_log_book'])
     st.dataframe(df_log, use_container_width=True)
-    if st.button(f"Download {index} Call Log Book as CSV"):
+    if st.button(f"Download {instrument} Call Log Book as CSV"):
         st.download_button(
             label="Download CSV",
             data=df_log.to_csv(index=False).encode(),
-            file_name=f"{index.lower()}_call_log_book.csv",
+            file_name=f"{instrument.lower()}_call_log_book.csv",
             mime="text/csv"
         )
 
-def analyze_index(index):
+def analyze_instrument(instrument):
     try:
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("22:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
@@ -391,12 +411,11 @@ def analyze_index(index):
         session.headers.update(headers)
         session.get("https://www.nseindia.com", timeout=5)
         
-        if index == 'SENSEX':
-            # Sensex uses different API endpoint
-            url = "https://www.nseindia.com/api/option-chain-indices?symbol=SENSEX"
-        else:
-            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={index}"
-            
+        # Handle spaces in instrument names (like "NIFTY IT")
+        url_instrument = instrument.replace(' ', '%20')
+        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={url_instrument}" if instrument in INSTRUMENTS['indices'] else \
+              f"https://www.nseindia.com/api/option-chain-equities?symbol={url_instrument}"
+        
         response = session.get(url, timeout=10)
         data = response.json()
 
@@ -405,59 +424,60 @@ def analyze_index(index):
         underlying = data['records']['underlyingValue']
 
         # === Open Interest Change Comparison ===
-        total_ce_change = sum(item['CE']['changeinOpenInterest'] for item in records if 'CE' in item) / (100000 if index != 'SENSEX' else 10000)
-        total_pe_change = sum(item['PE']['changeinOpenInterest'] for item in records if 'PE' in item) / (100000 if index != 'SENSEX' else 10000)
+        total_ce_change = sum(item['CE']['changeinOpenInterest'] for item in records if 'CE' in item) / 100000
+        total_pe_change = sum(item['PE']['changeinOpenInterest'] for item in records if 'PE' in item) / 100000
         
-        st.markdown(f"## 📊 {index} Open Interest Change ({'Lakhs' if index != 'SENSEX' else 'Thousands'})")
+        st.markdown(f"## 📊 {instrument} Open Interest Change (Lakhs)")
         col1, col2 = st.columns(2)
         with col1:
             st.metric("📉 CALL ΔOI", 
-                     f"{total_ce_change:+.1f}{'L' if index != 'SENSEX' else 'K'}",
+                     f"{total_ce_change:+.1f}L",
                      delta_color="inverse")
             
         with col2:
             st.metric("📈 PUT ΔOI", 
-                     f"{total_pe_change:+.1f}{'L' if index != 'SENSEX' else 'K'}",
+                     f"{total_pe_change:+.1f}L",
                      delta_color="normal")
         
         # Dominance indicator
         if total_ce_change > total_pe_change:
-            st.error(f"🚨 Call OI Dominance (Difference: {abs(total_ce_change - total_pe_change):.1f}{'L' if index != 'SENSEX' else 'K'})")
+            st.error(f"🚨 Call OI Dominance (Difference: {abs(total_ce_change - total_pe_change):.1f}L")
         elif total_pe_change > total_ce_change:
-            st.success(f"🚀 Put OI Dominance (Difference: {abs(total_pe_change - total_ce_change):.1f}{'L' if index != 'SENSEX' else 'K'})")
+            st.success(f"🚀 Put OI Dominance (Difference: {abs(total_pe_change - total_ce_change):.1f}L")
         else:
             st.info("⚖️ OI Changes Balanced")
 
         today = datetime.now(timezone("Asia/Kolkata"))
         expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
         
-        # EXPIRY DAY LOGIC - Check if today is expiry day
+        # EXPIRY DAY LOGIC
         is_expiry_day = today.date() == expiry_date.date()
         
         if is_expiry_day:
             st.info(f"""
-📅 **{index} EXPIRY DAY DETECTED**
+📅 **{instrument} EXPIRY DAY DETECTED**
 - Using specialized expiry day analysis
 - IV Collapse, OI Unwind, Volume Spike expected
 - Modified signals will be generated
 """)
-            send_telegram_message(f"⚠️ {index} Expiry Day Detected. Using special expiry analysis.")
+            send_telegram_message(f"⚠️ {instrument} Expiry Day Detected. Using special expiry analysis.")
             
-            # Store spot history for expiry day too
+            # Store spot history for expiry day
             current_time_str = now.strftime("%H:%M:%S")
             new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-            st.session_state[f'{index}_price_data'] = pd.concat([st.session_state[f'{index}_price_data'], new_row], ignore_index=True)
+            st.session_state[f'{instrument}_price_data'] = pd.concat([st.session_state[f'{instrument}_price_data'], new_row], ignore_index=True)
             
-            st.markdown(f"### 📍 {index} Spot Price: {underlying}")
+            st.markdown(f"### 📍 {instrument} Spot Price: {underlying}")
             
-            # Get previous close data (needed for expiry day analysis)
-            if index == 'SENSEX':
-                prev_close_url = "https://www.nseindia.com/api/equity-stockIndices?index=S&P%20BSE%20SENSEX"
+            # Get previous close data
+            if instrument in INSTRUMENTS['indices']:
+                prev_close_url = f"https://www.nseindia.com/api/equity-stockIndices?index={url_instrument}%20INDEX"
             else:
-                prev_close_url = f"https://www.nseindia.com/api/equity-stockIndices?index={index}%20INDEX"
+                prev_close_url = f"https://www.nseindia.com/api/quote-equity?symbol={url_instrument}"
                 
             prev_close_data = session.get(prev_close_url, timeout=10).json()
-            prev_close = prev_close_data['data'][0]['previousClose']
+            prev_close = prev_close_data['data'][0]['previousClose'] if instrument in INSTRUMENTS['indices'] else \
+                         prev_close_data['priceInfo']['previousClose']
             
             # Process records with expiry day logic
             calls, puts = [], []
@@ -483,10 +503,10 @@ def analyze_index(index):
             resistance_levels = df[df['Level'] == "Resistance"]['strikePrice'].unique()
             
             # Generate expiry day signals
-            expiry_signals = expiry_entry_signal(df, support_levels, resistance_levels, index)
+            expiry_signals = expiry_entry_signal(df, support_levels, resistance_levels, instrument)
             
             # Display expiry day specific UI
-            st.markdown(f"### 🎯 {index} Expiry Day Signals")
+            st.markdown(f"### 🎯 {instrument} Expiry Day Signals")
             if expiry_signals:
                 for signal in expiry_signals:
                     st.success(f"""
@@ -496,7 +516,7 @@ def analyze_index(index):
                     """)
                     
                     # Add to trade log
-                    st.session_state[f'{index}_trade_log'].append({
+                    st.session_state[f'{instrument}_trade_log'].append({
                         "Time": now.strftime("%H:%M:%S"),
                         "Strike": signal['strike'],
                         "Type": 'CE' if 'CALL' in signal['type'] else 'PE',
@@ -507,7 +527,7 @@ def analyze_index(index):
                     
                     # Send Telegram alert
                     send_telegram_message(
-                        f"📅 {index} EXPIRY DAY SIGNAL\n"
+                        f"📅 {instrument} EXPIRY DAY SIGNAL\n"
                         f"Type: {signal['type']}\n"
                         f"Strike: {signal['strike']}\n"
                         f"Score: {signal['score']:.1f}\n"
@@ -516,10 +536,10 @@ def analyze_index(index):
                         f"Spot: {underlying}"
                     )
             else:
-                st.warning(f"No strong {index} expiry day signals detected")
+                st.warning(f"No strong {instrument} expiry day signals detected")
             
             # Show expiry day specific data
-            with st.expander(f"📊 {index} Expiry Day Option Chain"):
+            with st.expander(f"📊 {instrument} Expiry Day Option Chain"):
                 df['ExpiryBiasScore'] = df.apply(expiry_bias_score, axis=1)
                 st.dataframe(df[['strikePrice', 'ExpiryBiasScore', 'lastPrice_CE', 'lastPrice_PE', 
                                'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
@@ -552,14 +572,10 @@ def analyze_index(index):
         df_pe = pd.DataFrame(puts)
         df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
 
-        # Adjust ATM strike range based on index
-        if index == 'BANKNIFTY':
-            atm_range = 500
-        elif index == 'SENSEX':
-            atm_range = 1000
-        else:  # NIFTY
-            atm_range = 200
-            
+        # Get instrument-specific parameters
+        atm_range = INSTRUMENTS['indices'].get(instrument, {}).get('atm_range', 200) or \
+                    INSTRUMENTS['stocks'].get(instrument, {}).get('atm_range', 200)
+        
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
         df = df[df['strikePrice'].between(atm_strike - atm_range, atm_strike + atm_range)]
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
@@ -601,15 +617,15 @@ def analyze_index(index):
         df_summary = pd.DataFrame(bias_results)
         atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
         market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
-        support_zone, resistance_zone = get_support_resistance_zones(df, underlying, index)
+        support_zone, resistance_zone = get_support_resistance_zones(df, underlying, instrument)
         
-        # Store zones in session state for enhanced functions
-        st.session_state[f'{index}_support_zone'] = support_zone
-        st.session_state[f'{index}_resistance_zone'] = resistance_zone
+        # Store zones in session state
+        st.session_state[f'{instrument}_support_zone'] = support_zone
+        st.session_state[f'{instrument}_resistance_zone'] = resistance_zone
 
         current_time_str = now.strftime("%H:%M:%S")
         new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-        st.session_state[f'{index}_price_data'] = pd.concat([st.session_state[f'{index}_price_data'], new_row], ignore_index=True)
+        st.session_state[f'{instrument}_price_data'] = pd.concat([st.session_state[f'{instrument}_price_data'], new_row], ignore_index=True)
 
         support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
         resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
@@ -618,7 +634,7 @@ def analyze_index(index):
         signal_sent = False
 
         for row in bias_results:
-            if not is_in_zone(underlying, row['Strike'], row['Level'], index):
+            if not is_in_zone(underlying, row['Strike'], row['Level'], instrument):
                 continue
 
             if row['Level'] == "Support" and total_score >= 4 and "Bullish" in market_view:
@@ -637,7 +653,7 @@ def analyze_index(index):
             suggested_trade = f"Strike: {row['Strike']} {option_type} @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
 
             send_telegram_message(
-                f"📍 {index} Spot: {underlying}\n"
+                f"📍 {instrument} Spot: {underlying}\n"
                 f"🔹 {atm_signal}\n"
                 f"{suggested_trade}\n"
                 f"Bias Score (ATM ±2): {total_score} ({market_view})\n"
@@ -650,7 +666,7 @@ def analyze_index(index):
                 f"AskQty: {row['AskQty_Bias']}, BidQty: {row['BidQty_Bias']}, IV: {row['IV_Bias']}, DVP: {row['DVP_Bias']}"
             )
 
-            st.session_state[f'{index}_trade_log'].append({
+            st.session_state[f'{instrument}_trade_log'].append({
                 "Time": now.strftime("%H:%M:%S"),
                 "Strike": row['Strike'],
                 "Type": option_type,
@@ -663,59 +679,81 @@ def analyze_index(index):
             break
 
         # === Main Display ===
-        st.markdown(f"### 📍 {index} Spot Price: {underlying}")
-        st.success(f"🧠 {index} Market View: **{market_view}** Bias Score: {total_score}")
-        st.markdown(f"### 🛡️ {index} Support Zone: `{support_str}`")
-        st.markdown(f"### 🚧 {index} Resistance Zone: `{resistance_str}`")
+        st.markdown(f"### 📍 {instrument} Spot Price: {underlying}")
+        st.success(f"🧠 {instrument} Market View: **{market_view}** Bias Score: {total_score}")
+        st.markdown(f"### 🛡️ {instrument} Support Zone: `{support_str}`")
+        st.markdown(f"### 🚧 {instrument} Resistance Zone: `{resistance_str}`")
         
-        # Display price chart immediately after S/R zones
-        plot_price_with_sr(index)
+        # Display price chart
+        plot_price_with_sr(instrument)
 
         if suggested_trade:
             st.info(f"🔹 {atm_signal}\n{suggested_trade}")
         
-        with st.expander(f"📊 {index} Option Chain Summary"):
+        with st.expander(f"📊 {instrument} Option Chain Summary"):
             st.dataframe(df_summary)
         
-        if st.session_state[f'{index}_trade_log']:
-            st.markdown(f"### 📜 {index} Trade Log")
-            st.dataframe(pd.DataFrame(st.session_state[f'{index}_trade_log']))
+        if st.session_state[f'{instrument}_trade_log']:
+            st.markdown(f"### 📜 {instrument} Trade Log")
+            st.dataframe(pd.DataFrame(st.session_state[f'{instrument}_trade_log']))
 
         # === Enhanced Functions Display ===
         st.markdown("---")
-        st.markdown(f"## 📈 {index} Enhanced Features")
+        st.markdown(f"## 📈 {instrument} Enhanced Features")
         
         # Enhanced Trade Log
-        display_enhanced_trade_log(index)
+        display_enhanced_trade_log(instrument)
         
         # Export functionality
         st.markdown("---")
-        st.markdown(f"### 📥 {index} Data Export")
-        handle_export_data(df_summary, underlying, index)
+        st.markdown(f"### 📥 {instrument} Data Export")
+        handle_export_data(df_summary, underlying, instrument)
         
         # Call Log Book
         st.markdown("---")
-        display_call_log_book(index)
+        display_call_log_book(instrument)
         
         # Auto update call log with current price
-        auto_update_call_log(underlying, index)
+        auto_update_call_log(underlying, instrument)
 
     except Exception as e:
-        st.error(f"❌ {index} Error: {e}")
-        send_telegram_message(f"❌ {index} Error: {str(e)}")
+        st.error(f"❌ {instrument} Error: {e}")
+        send_telegram_message(f"❌ {instrument} Error: {str(e)}")
 
 # === Main Function Call ===
 if __name__ == "__main__":
-    st.title("🇮🇳 Indian Indices Options Analyzer")
+    st.title("📊 NSE Options Analyzer")
     
-    # Create tabs for each index
-    tab1, tab2, tab3 = st.tabs(["NIFTY", "BANKNIFTY", "SENSEX"])
+    # Create tabs for each category
+    tab_indices, tab_stocks = st.tabs(["Indices", "Stocks"])
     
-    with tab1:
-        analyze_index('NIFTY')
+    with tab_indices:
+        st.header("NSE Indices Analysis")
+        # Create subtabs for each index
+        nifty_tab, banknifty_tab, it_tab, auto_tab = st.tabs(["NIFTY", "BANKNIFTY", "NIFTY IT", "NIFTY AUTO"])
+        
+        with nifty_tab:
+            analyze_instrument('NIFTY')
+        
+        with banknifty_tab:
+            analyze_instrument('BANKNIFTY')
+        
+        with it_tab:
+            analyze_instrument('NIFTY IT')
+        
+        with auto_tab:
+            analyze_instrument('NIFTY AUTO')
     
-    with tab2:
-        analyze_index('BANKNIFTY')
-    
-    with tab3:
-        analyze_index('SENSEX')
+    with tab_stocks:
+        st.header("Stock Options Analysis")
+        # Create subtabs for each stock
+        tcs_tab, reliance_tab, hdfc_tab = st.tabs(["TCS", "RELIANCE", "HDFCBANK"])
+        
+        with tcs_tab:
+            analyze_instrument('TCS')
+        
+        with reliance_tab:
+            analyze_instrument('RELIANCE')
+        
+        with hdfc_tab:
+            analyze_instrument('HDFCBANK')
