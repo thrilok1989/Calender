@@ -1,11 +1,15 @@
+import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime
 import math
 from scipy.stats import norm
-import tkinter as tk
-from tkinter import ttk
+from pytz import timezone
+import plotly.graph_objects as go
+import io
+
 
 # ===== Greeks Calculation =====
 def calculate_greeks(optiFailed to fetch NSE data: 401 Client Error: Unauthorized for url: https://www.nseindia.com/api/option-chain-indices?symbol=NIFTYon_type, S, K, T, r, sigma):
