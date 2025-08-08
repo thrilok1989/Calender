@@ -12,7 +12,7 @@ import io
 
 # === Streamlit Config ===
 st.set_page_config(page_title="NSE Options Analyzer", layout="wide")
-st_autorefresh(interval=1200000000, key="datarefresh")  # 
+st_autorefresh(interval=1200000, key="datarefresh")  # 
 
 # Define all instruments we'll analyze
 INSTRUMENTS = {
@@ -48,8 +48,8 @@ for category in INSTRUMENTS:
             st.session_state[f'{instrument}_resistance_zone'] = (None, None)
 
 # === Telegram Config ===
-TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
-TELEGRAM_CHAT_ID = "5704496584"
+TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1AJvS95QL9xU"
+TELEGRAM_CHAT_ID = "57096584"
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
