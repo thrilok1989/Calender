@@ -58,8 +58,6 @@ def send_telegram_message(message):
         response = requests.post(url, data=data)
         if response.status_code != 200:
             st.warning("⚠️ Telegram message failed.")
-    except Exception as e:
-        st.error(f"❌ Telegram error: {e}")
 
 def calculate_greeks(option_type, S, K, T, r, sigma):
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -473,8 +471,7 @@ def analyze_instrument(instrument):
 - IV Collapse, OI Unwind, Volume Spike expected
 - Modified signals will be generated
 """)
-            send_telegram_message(f"⚠️ {instrument} Expiry Day Detected. Using special expiry analysis.")
-            
+                    
             # Store spot history for expiry day
             current_time_str = now.strftime("%H:%M:%S")
             new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
@@ -729,9 +726,7 @@ def analyze_instrument(instrument):
         # Auto update call log with current price
         auto_update_call_log(underlying, instrument)
 
-    except Exception as e:
-        st.error(f"❌ {instrument} Error: {e}")
-        send_telegram_message(f"❌ {instrument} Error: {str(e)}")
+
 
 # === Main Function Call ===
 if __name__ == "__main__":
