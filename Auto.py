@@ -9,6 +9,7 @@ from scipy.stats import norm
 from pytz import timezone
 import plotly.graph_objects as go
 import io
+from dhanhq import dhanhq
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
@@ -38,15 +39,6 @@ if 'resistance_zone' not in st.session_state:
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
 TELEGRAM_CHAT_ID = "5704496584"
 
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    try:
-        response = requests.post(url, data=data)
-        if response.status_code != 200:
-            st.warning("⚠️ Telegram message failed.")
-    except Exception as e:
-        st.error(f"❌ Telegram error: {e}")
 # === Dhan Trading Config ===
 if 'dhan' not in st.session_state:
     try:
@@ -81,25 +73,16 @@ def place_dhan_order(symbol, exchange_segment, transaction_type, quantity, order
         st.error(f"Dhan order failed: {str(e)}")
         return False
 
-# Then modify your trade logging section (around line 1080) to include auto-trading:
-if suggested_trade:
-    st.info(f"🔹 {atm_signal}\n{suggested_trade}")
-    
-    # Auto-trade execution if enabled
-    if st.secrets.get("AUTO_TRADE", False):
-        symbol = f"NIFTY{expiry.replace('-', '').upper()}{row['Strike']}{option_type}"
-        success = place_dhan_order(
-            symbol=symbol,
-            exchange_segment="NFO",
-            transaction_type="BUY",
-            quantity=50,  # 1 lot
-            order_type="LIMIT",
-            price=ltp
-        )
-        
-        if success:
-            send_telegram_message(f"✅ AUTO-TRADE EXECUTED: {symbol} @ {ltp}")
-            st.success("Auto-trade executed successfully")
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    try:
+        response = requests.post(url, data=data)
+        if response.status_code != 200:
+            st.warning("⚠️ Telegram message failed.")
+    except Exception as e:
+        st.error(f"❌ Telegram error: {e}")
+
 def calculate_greeks(option_type, S, K, T, r, sigma):
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
@@ -545,16 +528,21 @@ def analyze():
                         "SL": round(signal['ltp'] * 0.8, 2)
                     })
                     
-                    # Send Telegram alert
-                    send_telegram_message(
-                        f"📅 EXPIRY DAY SIGNAL\n"
-                        f"Type: {signal['type']}\n"
-                        f"Strike: {signal['strike']}\n"
-                        f"Score: {signal['score']:.1f}\n"
-                        f"LTP: ₹{signal['ltp']}\n"
-                        f"Reason: {signal['reason']}\n"
-                        f"Spot: {underlying}"
-                    )
+                    # Auto-trade execution if enabled
+                    if st.secrets.get("AUTO_TRADE", False):
+                        symbol = f"NIFTY{expiry.replace('-', '').upper()}{signal['strike']}{'CE' if 'CALL' in signal['type'] else 'PE'}"
+                        success = place_dhan_order(
+                            symbol=symbol,
+                            exchange_segment="NFO",
+                            transaction_type="BUY",
+                            quantity=50,
+                            order_type="LIMIT",
+                            price=signal['ltp']
+                        )
+                        
+                        if success:
+                            send_telegram_message(f"✅ AUTO-TRADE EXECUTED: {symbol} @ {signal['ltp']}")
+                            st.success("Auto-trade executed successfully")
             else:
                 st.warning("No strong expiry day signals detected")
             
@@ -646,7 +634,7 @@ def analyze():
         support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
         resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
 
-        atm_signal, suggested_trade = "No Signal", ""
+        atm_signal, suggested_trade = "No Signal", None
         signal_sent = False
 
         # Check if previous trade is still active (for cooldown)
@@ -671,6 +659,12 @@ def analyze():
                     and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
                 ):
                     option_type = 'CE'
+                    ltp = df.loc[df['strikePrice'] == row['Strike'], 'lastPrice_CE'].values[0]
+                    iv = df.loc[df['strikePrice'] == row['Strike'], 'impliedVolatility_CE'].values[0]
+                    target = round(ltp * (1 + iv / 100), 2)
+                    stop_loss = round(ltp * 0.8, 2)
+                    atm_signal = f"CALL Entry (Bias Based at {row['Level']})"
+                    suggested_trade = f"Strike: {row['Strike']} CE @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
 
                 # Resistance + Bearish conditions (with ATM bias checks)
                 elif (
@@ -681,16 +675,14 @@ def analyze():
                     and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
                 ):
                     option_type = 'PE'
+                    ltp = df.loc[df['strikePrice'] == row['Strike'], 'lastPrice_PE'].values[0]
+                    iv = df.loc[df['strikePrice'] == row['Strike'], 'impliedVolatility_PE'].values[0]
+                    target = round(ltp * (1 + iv / 100), 2)
+                    stop_loss = round(ltp * 0.8, 2)
+                    atm_signal = f"PUT Entry (Bias Based at {row['Level']})"
+                    suggested_trade = f"Strike: {row['Strike']} PE @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
                 else:
                     continue
-
-                ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
-                iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
-                target = round(ltp * (1 + iv / 100), 2)
-                stop_loss = round(ltp * 0.8, 2)
-
-                atm_signal = f"{'CALL' if option_type == 'CE' else 'PUT'} Entry (Bias Based at {row['Level']})"
-                suggested_trade = f"Strike: {row['Strike']} {option_type} @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
 
                 send_telegram_message(
                     f"📍 Spot: {underlying}\n"
@@ -714,9 +706,25 @@ def analyze():
                     "LTP": ltp,
                     "Target": target,
                     "SL": stop_loss,
-                    "TargetHit": False,  # Track target hit status
-                    "SLHit": False       # Track SL hit status
+                    "TargetHit": False,
+                    "SLHit": False
                 })
+
+                # Auto-trade execution if enabled
+                if st.secrets.get("AUTO_TRADE", False) and atm_signal != "No Signal":
+                    symbol = f"NIFTY{expiry.replace('-', '').upper()}{row['Strike']}{option_type}"
+                    success = place_dhan_order(
+                        symbol=symbol,
+                        exchange_segment="NFO",
+                        transaction_type="BUY",
+                        quantity=50,
+                        order_type="LIMIT",
+                        price=ltp
+                    )
+                    
+                    if success:
+                        send_telegram_message(f"✅ AUTO-TRADE EXECUTED: {symbol} @ {ltp}")
+                        st.success("Auto-trade executed successfully")
 
                 signal_sent = True
                 break
