@@ -12,7 +12,7 @@ import io
 
 # === Streamlit Config ===
 st.set_page_config(page_title="NSE Options Analyzer", layout="wide")
-st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 min
+st_autorefresh(interval=12000000, key="datarefresh")  # Refresh every 2 min
 
 # Define all instruments we'll analyze
 INSTRUMENTS = {
