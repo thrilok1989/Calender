@@ -39,6 +39,16 @@ if 'resistance_zone' not in st.session_state:
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
 TELEGRAM_CHAT_ID = "5704496584"
 
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    try:
+        response = requests.post(url, data=data)
+        if response.status_code != 200:
+            st.warning("⚠️ Telegram message failed.")
+    except Exception as e:
+        st.error(f"❌ Telegram error: {e}")
+
 # === Dhan Trading Config ===
 if 'dhan' not in st.session_state:
     try:
@@ -72,16 +82,6 @@ def place_dhan_order(symbol, exchange_segment, transaction_type, quantity, order
     except Exception as e:
         st.error(f"Dhan order failed: {str(e)}")
         return False
-
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    try:
-        response = requests.post(url, data=data)
-        if response.status_code != 200:
-            st.warning("⚠️ Telegram message failed.")
-    except Exception as e:
-        st.error(f"❌ Telegram error: {e}")
 
 def calculate_greeks(option_type, S, K, T, r, sigma):
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -581,6 +581,12 @@ def analyze():
         df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
 
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
+        
+        # === NEW: 3rd OTM/ITM STRIKE FILTER ===
+        strike_interval = int(df['strikePrice'].diff().mode()[0])  # Auto-detect interval
+        valid_call_strike = atm_strike + (3 * strike_interval)  # 3rd OTM for calls
+        valid_put_strike = atm_strike - (3 * strike_interval)   # 3rd ITM for puts
+        
         df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
@@ -658,6 +664,9 @@ def analyze():
                     and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
                     and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
                 ):
+                    if row['Strike'] != valid_call_strike:  # NEW FILTER
+                        continue  # Skip if not 3rd OTM
+                        
                     option_type = 'CE'
                     ltp = df.loc[df['strikePrice'] == row['Strike'], 'lastPrice_CE'].values[0]
                     iv = df.loc[df['strikePrice'] == row['Strike'], 'impliedVolatility_CE'].values[0]
@@ -674,6 +683,9 @@ def analyze():
                     and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
                     and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
                 ):
+                    if row['Strike'] != valid_put_strike:  # NEW FILTER
+                        continue  # Skip if not 3rd ITM
+                        
                     option_type = 'PE'
                     ltp = df.loc[df['strikePrice'] == row['Strike'], 'lastPrice_PE'].values[0]
                     iv = df.loc[df['strikePrice'] == row['Strike'], 'impliedVolatility_PE'].values[0]
@@ -711,7 +723,7 @@ def analyze():
                 })
 
                 # Auto-trade execution if enabled
-                if st.secrets.get("AUTO_TRADE", False) and atm_signal != "No Signal":
+                if st.session_state.dhan and st.secrets.get("AUTO_TRADE", False):
                     symbol = f"NIFTY{expiry.replace('-', '').upper()}{row['Strike']}{option_type}"
                     success = place_dhan_order(
                         symbol=symbol,
