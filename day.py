@@ -546,101 +546,128 @@ def analyze():
         df['Level'] = df.apply(determine_level, axis=1)
 
         bias_results, total_score = [], 0
-        for _, row in df.iterrows():
-            if abs(row['strikePrice'] - atm_strike) > 100:
-                continue
+for _, row in df.iterrows():
+    if abs(row['strikePrice'] - atm_strike) > 100:
+        continue
 
-            score = 0
-            row_data = {
-                "Strike": row['strikePrice'],
-                "Zone": row['Zone'],
-                "Level": row['Level'],
-                "ChgOI_Bias": "Bullish" if row['changeinOpenInterest_CE'] < row['changeinOpenInterest_PE'] else "Bearish",
-                "Volume_Bias": "Bullish" if row['totalTradedVolume_CE'] < row['totalTradedVolume_PE'] else "Bearish",
-                "Gamma_Bias": "Bullish" if row['Gamma_CE'] < row['Gamma_PE'] else "Bearish",
-                "AskQty_Bias": "Bullish" if row['askQty_PE'] > row['askQty_CE'] else "Bearish",
-                "BidQty_Bias": "Bearish" if row['bidQty_PE'] > row['bidQty_CE'] else "Bullish",
-                "IV_Bias": "Bullish" if row['impliedVolatility_CE'] > row['impliedVolatility_PE'] else "Bearish",
-                "DVP_Bias": delta_volume_bias(
-                    row['lastPrice_CE'] - row['lastPrice_PE'],
-                    row['totalTradedVolume_CE'] - row['totalTradedVolume_PE'],
-                    row['changeinOpenInterest_CE'] - row['changeinOpenInterest_PE']
-                )
-            }
+    score = 0
+    row_data = {
+        "Strike": row['strikePrice'],
+        "Zone": row['Zone'],
+        "Level": row['Level'],
+        "ChgOI_Bias": "Bullish" if row['changeinOpenInterest_CE'] < row['changeinOpenInterest_PE'] else "Bearish",
+        "Volume_Bias": "Bullish" if row['totalTradedVolume_CE'] < row['totalTradedVolume_PE'] else "Bearish",
+        "Gamma_Bias": "Bullish" if row['Gamma_CE'] < row['Gamma_PE'] else "Bearish",
+        "AskQty_Bias": "Bullish" if row['askQty_PE'] > row['askQty_CE'] else "Bearish",
+        "BidQty_Bias": "Bearish" if row['bidQty_PE'] > row['bidQty_CE'] else "Bullish",
+        "IV_Bias": "Bullish" if row['impliedVolatility_CE'] > row['impliedVolatility_PE'] else "Bearish",
+        "DVP_Bias": delta_volume_bias(
+            row['lastPrice_CE'] - row['lastPrice_PE'],
+            row['totalTradedVolume_CE'] - row['totalTradedVolume_PE'],
+            row['changeinOpenInterest_CE'] - row['changeinOpenInterest_PE']
+        )
+    }
 
-            for k in row_data:
-                if "_Bias" in k:
-                    bias = row_data[k]
-                    score += weights.get(k, 1) if bias == "Bullish" else -weights.get(k, 1)
+    for k in row_data:
+        if "_Bias" in k:
+            bias = row_data[k]
+            score += weights.get(k, 1) if bias == "Bullish" else -weights.get(k, 1)
 
-            row_data["BiasScore"] = score
-            row_data["Verdict"] = final_verdict(score)
-            total_score += score
-            bias_results.append(row_data)
+    row_data["BiasScore"] = score
+    row_data["Verdict"] = final_verdict(score)
+    total_score += score
+    bias_results.append(row_data)
 
-        df_summary = pd.DataFrame(bias_results)
-        atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
-        market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
-        support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
-        
-        # Store zones in session state for enhanced functions
-        st.session_state.support_zone = support_zone
-        st.session_state.resistance_zone = resistance_zone
+df_summary = pd.DataFrame(bias_results)
+atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
+market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
+support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
 
-        current_time_str = now.strftime("%H:%M:%S")
-        new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-        st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
+# Store zones in session state
+st.session_state.support_zone = support_zone
+st.session_state.resistance_zone = resistance_zone
 
-        support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
-        resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
+current_time_str = now.strftime("%H:%M:%S")
+new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
+st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
 
-        atm_signal, suggested_trade = "No Signal", ""
-        signal_sent = False
+support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
+resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
 
-        for row in bias_results:
-            if not is_in_zone(underlying, row['Strike'], row['Level']):
-                continue
+atm_signal, suggested_trade = "No Signal", ""
+signal_sent = False
 
-            if row['Level'] == "Support" and total_score >= 4 and "Bullish" in market_view:
-                option_type = 'CE'
-            elif row['Level'] == "Resistance" and total_score <= -4 and "Bearish" in market_view:
-                option_type = 'PE'
-            else:
-                continue
+# Check if previous trade is still active (for cooldown)
+last_trade = st.session_state.trade_log[-1] if st.session_state.trade_log else None
+if last_trade and not (last_trade.get("TargetHit", False) or last_trade.get("SLHit", False)):
+    continue  # Skip new signals if previous trade is active
 
-            ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
-            iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
-            target = round(ltp * (1 + iv / 100), 2)
-            stop_loss = round(ltp * 0.8, 2)
+for row in bias_results:
+    if not is_in_zone(underlying, row['Strike'], row['Level']):
+        continue
 
-            atm_signal = f"{'CALL' if option_type == 'CE' else 'PUT'} Entry (Bias Based at {row['Level']})"
-            suggested_trade = f"Strike: {row['Strike']} {option_type} @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
+    # Get ATM biases (strict mode - remove 'is None' conditions if needed)
+    atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
+    atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
 
-            send_telegram_message(
-                f"📍 Spot: {underlying}\n"
-                f"🔹 {atm_signal}\n"
-                f"{suggested_trade}\n"
-                f"Bias Score (ATM ±2): {total_score} ({market_view})\n"
-                f"Level: {row['Level']}\n"
-                f"📉 Support Zone: {support_str}\n"
-                f"📈 Resistance Zone: {resistance_str}\n"
-                f"Biases:\n"
-                f"Strike: {row['Strike']}\n"
-                f"ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Gamma: {row['Gamma_Bias']},\n"
-                f"AskQty: {row['AskQty_Bias']}, BidQty: {row['BidQty_Bias']}, IV: {row['IV_Bias']}, DVP: {row['DVP_Bias']}"
-            )
+    # Support + Bullish conditions (with ATM bias checks)
+    if (
+        row['Level'] == "Support" 
+        and total_score >= 4 
+        and "Bullish" in market_view
+        and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
+        and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
+    ):
+        option_type = 'CE'
 
-            st.session_state.trade_log.append({
-                "Time": now.strftime("%H:%M:%S"),
-                "Strike": row['Strike'],
-                "Type": option_type,
-                "LTP": ltp,
-                "Target": target,
-                "SL": stop_loss
-            })
+    # Resistance + Bearish conditions (with ATM bias checks)
+    elif (
+        row['Level'] == "Resistance" 
+        and total_score <= -4 
+        and "Bearish" in market_view
+        and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
+        and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
+    ):
+        option_type = 'PE'
+    else:
+        continue
 
-            signal_sent = True
-            break
+    ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
+    iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
+    target = round(ltp * (1 + iv / 100), 2)
+    stop_loss = round(ltp * 0.8, 2)
+
+    atm_signal = f"{'CALL' if option_type == 'CE' else 'PUT'} Entry (Bias Based at {row['Level']})"
+    suggested_trade = f"Strike: {row['Strike']} {option_type} @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
+
+    send_telegram_message(
+        f"📍 Spot: {underlying}\n"
+        f"🔹 {atm_signal}\n"
+        f"{suggested_trade}\n"
+        f"Bias Score (ATM ±2): {total_score} ({market_view})\n"
+        f"Level: {row['Level']}\n"
+        f"📉 Support Zone: {support_str}\n"
+        f"📈 Resistance Zone: {resistance_str}\n"
+        f"ATM Biases:\n"
+        f"ChgOI: {atm_chgoi_bias}, AskQty: {atm_askqty_bias}\n"
+        f"Strike {row['Strike']} Biases:\n"
+        f"ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Gamma: {row['Gamma_Bias']},\n"
+        f"AskQty: {row['AskQty_Bias']}, BidQty: {row['BidQty_Bias']}, IV: {row['IV_Bias']}, DVP: {row['DVP_Bias']}"
+    )
+
+    st.session_state.trade_log.append({
+        "Time": now.strftime("%H:%M:%S"),
+        "Strike": row['Strike'],
+        "Type": option_type,
+        "LTP": ltp,
+        "Target": target,
+        "SL": stop_loss,
+        "TargetHit": False,  # Track target hit status
+        "SLHit": False       # Track SL hit status
+    })
+
+    signal_sent = True
+    break
 
         # === Main Display ===
         st.markdown(f"### 📍 Spot Price: {underlying}")
