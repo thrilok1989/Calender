@@ -600,74 +600,74 @@ def analyze():
         # Check if previous trade is still active (for cooldown)
         last_trade = st.session_state.trade_log[-1] if st.session_state.trade_log else None
         if last_trade and not (last_trade.get("TargetHit", False) or last_trade.get("SLHit", False)):
-            continue  # Skip new signals if previous trade is active
+            pass  # Skip new signals if previous trade is active
+        else:
+            for row in bias_results:
+                if not is_in_zone(underlying, row['Strike'], row['Level']):
+                    continue
 
-        for row in bias_results:
-            if not is_in_zone(underlying, row['Strike'], row['Level']):
-                continue
+                # Get ATM biases (strict mode - remove 'is None' conditions if needed)
+                atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
+                atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
 
-            # Get ATM biases (strict mode - remove 'is None' conditions if needed)
-            atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
-            atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
+                # Support + Bullish conditions (with ATM bias checks)
+                if (
+                    row['Level'] == "Support" 
+                    and total_score >= 4 
+                    and "Bullish" in market_view
+                    and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
+                    and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
+                ):
+                    option_type = 'CE'
 
-            # Support + Bullish conditions (with ATM bias checks)
-            if (
-                row['Level'] == "Support" 
-                and total_score >= 4 
-                and "Bullish" in market_view
-                and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
-                and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
-            ):
-                option_type = 'CE'
+                # Resistance + Bearish conditions (with ATM bias checks)
+                elif (
+                    row['Level'] == "Resistance" 
+                    and total_score <= -4 
+                    and "Bearish" in market_view
+                    and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
+                    and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
+                ):
+                    option_type = 'PE'
+                else:
+                    continue
 
-            # Resistance + Bearish conditions (with ATM bias checks)
-            elif (
-                row['Level'] == "Resistance" 
-                and total_score <= -4 
-                and "Bearish" in market_view
-                and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
-                and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
-            ):
-                option_type = 'PE'
-            else:
-                continue
+                ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
+                iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
+                target = round(ltp * (1 + iv / 100), 2)
+                stop_loss = round(ltp * 0.8, 2)
 
-            ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
-            iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
-            target = round(ltp * (1 + iv / 100), 2)
-            stop_loss = round(ltp * 0.8, 2)
+                atm_signal = f"{'CALL' if option_type == 'CE' else 'PUT'} Entry (Bias Based at {row['Level']})"
+                suggested_trade = f"Strike: {row['Strike']} {option_type} @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
 
-            atm_signal = f"{'CALL' if option_type == 'CE' else 'PUT'} Entry (Bias Based at {row['Level']})"
-            suggested_trade = f"Strike: {row['Strike']} {option_type} @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
+                send_telegram_message(
+                    f"📍 Spot: {underlying}\n"
+                    f"🔹 {atm_signal}\n"
+                    f"{suggested_trade}\n"
+                    f"Bias Score (ATM ±2): {total_score} ({market_view})\n"
+                    f"Level: {row['Level']}\n"
+                    f"📉 Support Zone: {support_str}\n"
+                    f"📈 Resistance Zone: {resistance_str}\n"
+                    f"ATM Biases:\n"
+                    f"ChgOI: {atm_chgoi_bias}, AskQty: {atm_askqty_bias}\n"
+                    f"Strike {row['Strike']} Biases:\n"
+                    f"ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Gamma: {row['Gamma_Bias']},\n"
+                    f"AskQty: {row['AskQty_Bias']}, BidQty: {row['BidQty_Bias']}, IV: {row['IV_Bias']}, DVP: {row['DVP_Bias']}"
+                )
 
-            send_telegram_message(
-                f"📍 Spot: {underlying}\n"
-                f"🔹 {atm_signal}\n"
-                f"{suggested_trade}\n"
-                f"Bias Score (ATM ±2): {total_score} ({market_view})\n"
-                f"Level: {row['Level']}\n"
-                f"📉 Support Zone: {support_str}\n"
-                f"📈 Resistance Zone: {resistance_str}\n"
-                f"ATM Biases:\n"
-                f"ChgOI: {atm_chgoi_bias}, AskQty: {atm_askqty_bias}\n"
-                f"Strike {row['Strike']} Biases:\n"
-                f"ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Gamma: {row['Gamma_Bias']},\n"
-                f"AskQty: {row['AskQty_Bias']}, BidQty: {row['BidQty_Bias']}, IV: {row['IV_Bias']}, DVP: {row['DVP_Bias']}"
-            )
+                st.session_state.trade_log.append({
+                    "Time": now.strftime("%H:%M:%S"),
+                    "Strike": row['Strike'],
+                    "Type": option_type,
+                    "LTP": ltp,
+                    "Target": target,
+                    "SL": stop_loss,
+                    "TargetHit": False,  # Track target hit status
+                    "SLHit": False       # Track SL hit status
+                })
 
-            st.session_state.trade_log.append({
-                "Time": now.strftime("%H:%M:%S"),
-                "Strike": row['Strike'],
-                "Type": option_type,
-                "LTP": ltp,
-                "Target": target,
-                "SL": stop_loss,
-                "TargetHit": False,  # Track target hit status
-                "SLHit": False       # Track SL hit status
-            })
-
-            signal_sent = True
-            break
+                signal_sent = True
+                break
 
         # === Main Display ===
         st.markdown(f"### 📍 Spot Price: {underlying}")
@@ -699,7 +699,7 @@ def analyze():
         st.markdown("---")
         st.markdown("### 📥 Data Export")
         if st.button("Prepare Excel Export"):
-            st.session_state.export_data
+            st.session_state.export_data = True
         handle_export_data(df_summary, underlying)
         
         # Call Log Book
