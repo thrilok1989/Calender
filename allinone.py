@@ -54,10 +54,7 @@ TELEGRAM_CHAT_ID = "57096584"
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    try:
-        response = requests.post(url, data=data)
-        if response.status_code != 200:
-            st.warning("⚠️ Telegram message failed.")
+    requests.post(url, data=data)
 
 def calculate_greeks(option_type, S, K, T, r, sigma):
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -264,18 +261,14 @@ def create_export_data(df_summary, trade_log, spot_price, instrument):
 
 def handle_export_data(df_summary, spot_price, instrument):
     if st.button(f"Prepare {instrument} Excel Export"):
-        try:
-            excel_data, filename = create_export_data(df_summary, st.session_state[f'{instrument}_trade_log'], spot_price, instrument)
-            st.download_button(
-                label=f"📥 Download {instrument} Excel Report",
-                data=excel_data,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-            st.success(f"✅ {instrument} export ready! Click the download button above.")
-        except Exception as e:
-            st.error(f"❌ {instrument} export failed: {e}")
+        excel_data, filename = create_export_data(df_summary, st.session_state[f'{instrument}_trade_log'], spot_price, instrument)
+        st.download_button(
+            label=f"📥 Download {instrument} Excel Report",
+            data=excel_data,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
 def plot_price_with_sr(instrument):
     price_df = st.session_state[f'{instrument}_price_data'].copy()
@@ -471,7 +464,8 @@ def analyze_instrument(instrument):
 - IV Collapse, OI Unwind, Volume Spike expected
 - Modified signals will be generated
 """)
-                    
+            send_telegram_message(f"⚠️ {instrument} Expiry Day Detected. Using special expiry analysis.")
+            
             # Store spot history for expiry day
             current_time_str = now.strftime("%H:%M:%S")
             new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
@@ -726,7 +720,8 @@ def analyze_instrument(instrument):
         # Auto update call log with current price
         auto_update_call_log(underlying, instrument)
 
-
+    except Exception as e:
+        st.error(f"❌ {instrument} Error: {e}")
 
 # === Main Function Call ===
 if __name__ == "__main__":
