@@ -9,3 +9,50 @@ scipy==1.11.4
 plotly==5.18.0
 dhanhq==1.0.4
 openpyxl==3.1.2
+# Core packages
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+requests>=2.31.0
+
+# Excel & Timezone
+openpyxl>=3.1.0
+pytz>=2023.3
+
+# Plotting & Indicators
+plotly>=5.15.0
+matplotlib>=3.7.0
+ta>=0.10.2        # Technical analysis indicators
+ta-lib            # TA-Lib (requires system-level installation)
+
+# NLP & Sentiment
+textblob>=0.17.1
+vaderSentiment>=3.3.2
+
+# Google Auth & Sheets
+gspread>=5.10.0
+google-auth>=2.22.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.0.0
+
+# Web Scraping & Feeds
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+feedparser>=6.0.10
+
+# Realtime & Automation
+websockets>=11.0.0
+schedule>=1.2.0
+streamlit-autorefresh>=0.0.1
+
+
+# Supabase & Env
+supabase>=2.0.0
+python-dotenv>=1.0.0
+
+# Gradio for UI
+gradio>=3.39.0
+
+# Dhan API SDK (latest from GitHub)
+git+https://github.com/dhan-oss/DhanHQ-py.git@main
