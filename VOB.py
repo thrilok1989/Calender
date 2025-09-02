@@ -32,6 +32,8 @@ class EnhancedNiftyApp:
             st.session_state.sent_rsi_alerts = set()
         if 'last_alert_check' not in st.session_state:
             st.session_state.last_alert_check = None
+        if 'app_start_time' not in st.session_state:
+            st.session_state.app_start_time = datetime.now()
         
     def setup_secrets(self):
         """Setup API credentials from Streamlit secrets"""
@@ -682,10 +684,30 @@ class EnhancedNiftyApp:
         
         return fig
     
+    def check_runtime_limit(self):
+        """Check if 25 seconds have elapsed and stop execution"""
+        elapsed_time = (datetime.now() - st.session_state.app_start_time).total_seconds()
+        if elapsed_time >= 25:
+            st.warning("⏰ 25-second runtime limit reached. App will stop to avoid API rate limits.")
+            st.info(f"Total runtime: {elapsed_time:.1f} seconds")
+            st.stop()
+        return elapsed_time
+    
     def run(self):
         """Main application"""
         st.title("📈 Enhanced Nifty Trading Dashboard")
         st.markdown("*With VOB Zones, Ultimate RSI & OI Analysis*")
+        
+        # Check runtime limit at the start
+        elapsed = self.check_runtime_limit()
+        remaining_time = 25 - elapsed
+        
+        # Display runtime information
+        runtime_col1, runtime_col2 = st.columns(2)
+        with runtime_col1:
+            st.info(f"⏱️ Remaining Time: {remaining_time:.1f}s")
+        with runtime_col2:
+            st.info(f"🕐 Elapsed Time: {elapsed:.1f}s")
         
         # Sidebar controls
         with st.sidebar:
@@ -703,11 +725,11 @@ class EnhancedNiftyApp:
             vob_enabled = st.checkbox("Enable VOB Zones", value=True)
             vob_sensitivity = st.slider("VOB Sensitivity", 3, 10, 5)
             
-            # RSI Settings
+            # RSI Settings - Updated ranges from 5 to 20
             st.subheader("Ultimate RSI")
             rsi_enabled = st.checkbox("Enable Ultimate RSI", value=True)
-            rsi_length = st.slider("RSI Length", 10, 30, 14)
-            rsi_smooth = st.slider("RSI Smoothing", 10, 30, 14)
+            rsi_length = st.slider("RSI Length", 5, 20, 14)
+            rsi_smooth = st.slider("RSI Smoothing", 5, 20, 14)
             
             # OI Analysis Settings
             st.subheader("Options Analysis")
@@ -733,12 +755,19 @@ class EnhancedNiftyApp:
                 ["Live API", "Database", "Both"]
             )
             
-            # Auto refresh
-            auto_refresh = st.checkbox("Auto Refresh", value=True)
-            refresh_interval = st.slider("Refresh Interval (seconds)", 30, 300, 60)
+            # Runtime info in sidebar
+            st.subheader("⏱️ Runtime Info")
+            st.caption(f"Max Runtime: 25 seconds")
+            st.caption(f"Current: {elapsed:.1f}s")
+            progress = min(elapsed / 25, 1.0)
+            st.progress(progress)
             
             if st.button("🔄 Refresh Now"):
+                st.session_state.app_start_time = datetime.now()
                 st.rerun()
+        
+        # Check runtime limit before continuing
+        self.check_runtime_limit()
         
         # Main content area
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -760,6 +789,9 @@ class EnhancedNiftyApp:
                         if self.supabase:
                             self.save_to_supabase(df_api, timeframe)
         
+        # Check runtime limit after API call
+        self.check_runtime_limit()
+        
         if data_source in ["Database", "Both"] and df.empty:
             with st.spinner("Loading from database..."):
                 df = self.load_from_supabase(timeframe)
@@ -776,6 +808,9 @@ class EnhancedNiftyApp:
                 except Exception as e:
                     st.warning(f"OI analysis error: {str(e)}")
         
+        # Check runtime limit after OI analysis
+        self.check_runtime_limit()
+        
         # Calculate indicators
         if not df.empty:
             # VOB zones calculation
@@ -791,6 +826,9 @@ class EnhancedNiftyApp:
                         st.warning(f"VOB calculation error: {str(e)}")
                         vob_zones = []
             
+            # Check runtime limit before RSI calculation
+            self.check_runtime_limit()
+            
             # Ultimate RSI calculation
             if rsi_enabled and len(df) >= rsi_length + rsi_smooth:
                 with st.spinner("Calculating Ultimate RSI..."):
@@ -805,6 +843,9 @@ class EnhancedNiftyApp:
                     except Exception as e:
                         st.warning(f"RSI calculation error: {str(e)}")
                         rsi_data = None
+        
+        # Check runtime limit before displaying results
+        self.check_runtime_limit()
         
         # Display key metrics
         if not df.empty:
@@ -942,6 +983,9 @@ class EnhancedNiftyApp:
         else:
             st.warning("⚠️ No data available. Please check your API credentials or try refreshing.")
         
+        # Final runtime check before footer
+        final_elapsed = self.check_runtime_limit()
+        
         # Footer with status
         st.markdown("---")
         status_col1, status_col2, status_col3 = st.columns(3)
@@ -957,10 +1001,8 @@ class EnhancedNiftyApp:
             data_points = len(df) if not df.empty else 0
             st.caption(f"📊 Data Points: {data_points}")
         
-        # Auto refresh
-        if auto_refresh:
-            time.sleep(refresh_interval)
-            st.rerun()
+        # Show final runtime status
+        st.success(f"✅ Script completed successfully in {final_elapsed:.1f} seconds")
 
 # Initialize and run the app
 if __name__ == "__main__":
