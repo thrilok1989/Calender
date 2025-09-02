@@ -733,9 +733,8 @@ class EnhancedNiftyApp:
                 ["Live API", "Database", "Both"]
             )
             
-            # Auto refresh
-            auto_refresh = st.checkbox("Auto Refresh", value=True)
-            refresh_interval = st.slider("Refresh Interval (seconds)", 30, 300, 60)
+            # Auto refresh - Fixed to 25 seconds
+            auto_refresh = st.checkbox("Auto Refresh (25 seconds)", value=True)
             
             if st.button("🔄 Refresh Now"):
                 st.rerun()
@@ -957,9 +956,9 @@ class EnhancedNiftyApp:
             data_points = len(df) if not df.empty else 0
             st.caption(f"📊 Data Points: {data_points}")
         
-        # Auto refresh
+        # Auto refresh - Fixed to 25 seconds
         if auto_refresh:
-            time.sleep(refresh_interval)
+            time.sleep(25)  # Fixed 25-second interval
             st.rerun()
 
 # Initialize and run the app
