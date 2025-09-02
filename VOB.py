@@ -273,11 +273,11 @@ class EnhancedNiftyApp:
         if alert_id in st.session_state.sent_rsi_oi_alerts:
             return
         
-        # Determine RSI sentiment
+        # Determine RSI sentiment (Bearish if RSI ≥ 60, Bullish if RSI ≤ 40)
         rsi_sentiment = "Neutral"
-        if rsi_value >= 60:  # Bullish RSI
+        if rsi_value >= 60:  # Bearish RSI
             rsi_sentiment = "Bearish"
-        elif rsi_value <= 40:  # Bearish RSI
+        elif rsi_value <= 40:  # Bullish RSI
             rsi_sentiment = "Bullish"
         
         # Get OI sentiment
@@ -381,7 +381,7 @@ class EnhancedNiftyApp:
             "interval": interval,
             "oi": False,
             "fromDate": from_date,
-            "toDate": to_date
+            'toDate': to_date
         }
         
         try:
@@ -701,7 +701,7 @@ class EnhancedNiftyApp:
                     name='Ultimate RSI',
                     line=dict(color='#ffffff', width=2)
                 ),
-                row=3, col=1
+            row=3, col=1
             )
             
             # Signal line
