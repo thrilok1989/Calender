@@ -706,8 +706,8 @@ class EnhancedNiftyApp:
             # RSI Settings
             st.subheader("Ultimate RSI")
             rsi_enabled = st.checkbox("Enable Ultimate RSI", value=True)
-            rsi_length = st.slider("RSI Length", 10, 30, 14)
-            rsi_smooth = st.slider("RSI Smoothing", 10, 30, 14)
+            rsi_length = st.slider("RSI Length", 7,8,10, 30, 14)
+            rsi_smooth = st.slider("RSI Smoothing", 7,8,10, 30, 14)
             
             # OI Analysis Settings
             st.subheader("Options Analysis")
