@@ -32,6 +32,8 @@ class EnhancedNiftyApp:
             st.session_state.sent_rsi_alerts = set()
         if 'last_alert_check' not in st.session_state:
             st.session_state.last_alert_check = None
+        if 'app_start_time' not in st.session_state:
+            st.session_state.app_start_time = datetime.now()
         
     def setup_secrets(self):
         """Setup API credentials from Streamlit secrets"""
@@ -682,10 +684,137 @@ class EnhancedNiftyApp:
         
         return fig
     
+    def run_for_25_seconds(self):
+        """Run the app for exactly 25 seconds then stop"""
+        start_time = time.time()
+        end_time = start_time + 25
+        
+        # Create a placeholder for dynamic updates
+        status_placeholder = st.empty()
+        metrics_placeholder = st.empty()
+        chart_placeholder = st.empty()
+        
+        iteration = 0
+        while time.time() < end_time:
+            iteration += 1
+            current_time = time.time()
+            elapsed = current_time - start_time
+            remaining = 25 - elapsed
+            
+            # Update status
+            with status_placeholder.container():
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.info(f"⏱️ Running: {elapsed:.1f}s / 25s")
+                with col2:
+                    st.info(f"🔄 Iteration: {iteration}")
+                with col3:
+                    st.info(f"⏰ Remaining: {remaining:.1f}s")
+            
+            try:
+                # Fetch fresh data each iteration
+                api_data = self.fetch_intraday_data(interval=st.session_state.get('timeframe', '3'))
+                if api_data:
+                    df = self.process_data(api_data)
+                    
+                    if not df.empty:
+                        # Calculate indicators
+                        vob_zones = []
+                        oi_analysis = None
+                        rsi_data = None
+                        
+                        # VOB calculation
+                        if st.session_state.get('vob_enabled', True) and len(df) >= 18:
+                            vob_zones = self.detect_vob_zones(df, length1=st.session_state.get('vob_sensitivity', 5))
+                        
+                        # OI Analysis
+                        if st.session_state.get('oi_enabled', True):
+                            try:
+                                expiry = self.get_nearest_expiry()
+                                if expiry:
+                                    option_data = self.fetch_option_chain(expiry)
+                                    if option_data:
+                                        oi_analysis = self.analyze_oi_sentiment(option_data)
+                            except:
+                                pass
+                        
+                        # RSI calculation
+                        rsi_length = st.session_state.get('rsi_length', 14)
+                        rsi_smooth = st.session_state.get('rsi_smooth', 14)
+                        if st.session_state.get('rsi_enabled', True) and len(df) >= rsi_length + rsi_smooth:
+                            rsi_data = self.calculate_ultimate_rsi(df, rsi_length, rsi_smooth)
+                        
+                        # Update metrics
+                        with metrics_placeholder.container():
+                            self.display_metrics(df, rsi_data, oi_analysis, vob_zones)
+                        
+                        # Update chart
+                        with chart_placeholder.container():
+                            chart = self.create_enhanced_chart(df, st.session_state.get('timeframe', '3'), vob_zones, rsi_data)
+                            if chart:
+                                st.plotly_chart(chart, use_container_width=True)
+                        
+                        # Check for alerts
+                        if st.session_state.get('telegram_enabled', False):
+                            if vob_zones and oi_analysis:
+                                self.check_new_vob_zones(vob_zones, oi_analysis)
+                            if rsi_data and rsi_data[0] is not None and oi_analysis:
+                                latest_rsi = rsi_data[0].iloc[-1]
+                                latest_signal = rsi_data[1].iloc[-1]
+                                self.check_rsi_alerts(latest_rsi, latest_signal, oi_analysis)
+            
+            except Exception as e:
+                st.error(f"Error in iteration {iteration}: {str(e)}")
+            
+            # Wait 3 seconds before next iteration (to avoid too frequent API calls)
+            time.sleep(3)
+        
+        # Final completion message
+        st.success("✅ 25-second analysis completed! App has stopped to avoid API rate limits.")
+        st.info("🔄 Refresh the page to run another 25-second session.")
+    
+    def display_metrics(self, df, rsi_data, oi_analysis, vob_zones):
+        """Display key metrics"""
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        latest = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) > 1 else latest
+        
+        with col1:
+            change = latest['close'] - prev['close']
+            change_pct = (change / prev['close']) * 100
+            st.metric(
+                "Nifty Price", 
+                f"₹{latest['close']:.2f}",
+                f"{change:+.2f} ({change_pct:+.2f}%)"
+            )
+        
+        with col2:
+            st.metric("Day High", f"₹{df['high'].max():.2f}")
+        
+        with col3:
+            st.metric("Day Low", f"₹{df['low'].min():.2f}")
+        
+        with col4:
+            if rsi_data and rsi_data[0] is not None:
+                latest_rsi = rsi_data[0].iloc[-1]
+                rsi_status = "Overbought" if latest_rsi >= 80 else "Oversold" if latest_rsi <= 20 else "Normal"
+                st.metric("Ultimate RSI", f"{latest_rsi:.2f}", rsi_status)
+            else:
+                st.metric("Volume", f"{df['volume'].sum():,}")
+        
+        with col5:
+            if oi_analysis:
+                sentiment_color = {"Bullish": "🟢", "Bearish": "🔴", "Neutral": "🟡"}
+                st.metric("OI Sentiment", 
+                         f"{sentiment_color.get(oi_analysis['sentiment'], '🟡')} {oi_analysis['sentiment']}")
+            else:
+                st.metric("VOB Zones", len(vob_zones) if vob_zones else 0)
+    
     def run(self):
         """Main application"""
         st.title("📈 Enhanced Nifty Trading Dashboard")
-        st.markdown("*With VOB Zones, Ultimate RSI & OI Analysis*")
+        st.markdown("*With VOB Zones, Ultimate RSI & OI Analysis - 25 Second Auto Run*")
         
         # Sidebar controls
         with st.sidebar:
@@ -697,26 +826,34 @@ class EnhancedNiftyApp:
                 index=1,
                 format_func=lambda x: f"{x} Min"
             )
+            st.session_state.timeframe = timeframe
             
             # VOB Settings
             st.subheader("VOB Indicator")
             vob_enabled = st.checkbox("Enable VOB Zones", value=True)
             vob_sensitivity = st.slider("VOB Sensitivity", 3, 10, 5)
+            st.session_state.vob_enabled = vob_enabled
+            st.session_state.vob_sensitivity = vob_sensitivity
             
-            # RSI Settings
+            # RSI Settings - Updated ranges from 5 to 20
             st.subheader("Ultimate RSI")
             rsi_enabled = st.checkbox("Enable Ultimate RSI", value=True)
-            rsi_length = st.slider("RSI Length", 10, 30, 14)
-            rsi_smooth = st.slider("RSI Smoothing", 10, 30, 14)
+            rsi_length = st.slider("RSI Length", 5, 20, 14)
+            rsi_smooth = st.slider("RSI Smoothing", 5, 20, 14)
+            st.session_state.rsi_enabled = rsi_enabled
+            st.session_state.rsi_length = rsi_length
+            st.session_state.rsi_smooth = rsi_smooth
             
             # OI Analysis Settings
             st.subheader("Options Analysis")
             oi_enabled = st.checkbox("Enable OI Analysis", value=True)
+            st.session_state.oi_enabled = oi_enabled
             
             # Telegram Settings
             st.subheader("Telegram Alerts")
             telegram_enabled = st.checkbox("Enable Telegram Alerts", 
                                          value=bool(self.telegram_bot_token))
+            st.session_state.telegram_enabled = telegram_enabled
             
             if telegram_enabled:
                 st.info(f"VOB Alerts: {len(st.session_state.sent_vob_alerts)}")
@@ -725,242 +862,17 @@ class EnhancedNiftyApp:
                     st.session_state.sent_vob_alerts.clear()
                     st.session_state.sent_rsi_alerts.clear()
                     st.success("Alert history cleared!")
-                    st.rerun()
             
-            # Data source
-            data_source = st.radio(
-                "Data Source",
-                ["Live API", "Database", "Both"]
-            )
+            # Auto-run control
+            st.subheader("🚀 Auto Run Control")
+            st.info("📌 App will auto-run for 25 seconds")
             
-            # Auto refresh
-            auto_refresh = st.checkbox("Auto Refresh", value=True)
-            refresh_interval = st.slider("Refresh Interval (seconds)", 30, 300, 60)
-            
-            if st.button("🔄 Refresh Now"):
+            if st.button("🔄 Start New 25s Session"):
                 st.rerun()
         
-        # Main content area
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        # Fetch and process data
-        df = pd.DataFrame()
-        vob_zones = []
-        oi_analysis = None
-        rsi_data = None
-        
-        # Fetch price data
-        if data_source in ["Live API", "Both"]:
-            with st.spinner("Fetching live data..."):
-                api_data = self.fetch_intraday_data(interval=timeframe)
-                if api_data:
-                    df_api = self.process_data(api_data)
-                    if not df_api.empty:
-                        df = df_api
-                        if self.supabase:
-                            self.save_to_supabase(df_api, timeframe)
-        
-        if data_source in ["Database", "Both"] and df.empty:
-            with st.spinner("Loading from database..."):
-                df = self.load_from_supabase(timeframe)
-        
-        # Fetch option chain data for OI analysis
-        if oi_enabled and not df.empty:
-            with st.spinner("Analyzing options data..."):
-                try:
-                    expiry = self.get_nearest_expiry()
-                    if expiry:
-                        option_data = self.fetch_option_chain(expiry)
-                        if option_data:
-                            oi_analysis = self.analyze_oi_sentiment(option_data)
-                except Exception as e:
-                    st.warning(f"OI analysis error: {str(e)}")
-        
-        # Calculate indicators
-        if not df.empty:
-            # VOB zones calculation
-            if vob_enabled and len(df) >= 18:
-                with st.spinner("Calculating VOB zones..."):
-                    try:
-                        vob_zones = self.detect_vob_zones(df, length1=vob_sensitivity)
-                        
-                        # Check for new VOB zones and send enhanced alerts
-                        if telegram_enabled and vob_zones and oi_analysis:
-                            self.check_new_vob_zones(vob_zones, oi_analysis)
-                    except Exception as e:
-                        st.warning(f"VOB calculation error: {str(e)}")
-                        vob_zones = []
-            
-            # Ultimate RSI calculation
-            if rsi_enabled and len(df) >= rsi_length + rsi_smooth:
-                with st.spinner("Calculating Ultimate RSI..."):
-                    try:
-                        rsi_data = self.calculate_ultimate_rsi(df, rsi_length, rsi_smooth)
-                        
-                        # Check RSI alerts
-                        if telegram_enabled and rsi_data[0] is not None and oi_analysis:
-                            latest_rsi = rsi_data[0].iloc[-1]
-                            latest_signal = rsi_data[1].iloc[-1]
-                            self.check_rsi_alerts(latest_rsi, latest_signal, oi_analysis)
-                    except Exception as e:
-                        st.warning(f"RSI calculation error: {str(e)}")
-                        rsi_data = None
-        
-        # Display key metrics
-        if not df.empty:
-            latest = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else latest
-            
-            with col1:
-                change = latest['close'] - prev['close']
-                change_pct = (change / prev['close']) * 100
-                st.metric(
-                    "Nifty Price", 
-                    f"₹{latest['close']:.2f}",
-                    f"{change:+.2f} ({change_pct:+.2f}%)"
-                )
-            
-            with col2:
-                st.metric("Day High", f"₹{df['high'].max():.2f}")
-            
-            with col3:
-                st.metric("Day Low", f"₹{df['low'].min():.2f}")
-            
-            with col4:
-                if rsi_data and rsi_data[0] is not None:
-                    latest_rsi = rsi_data[0].iloc[-1]
-                    rsi_status = "Overbought" if latest_rsi >= 80 else "Oversold" if latest_rsi <= 20 else "Normal"
-                    st.metric("Ultimate RSI", f"{latest_rsi:.2f}", rsi_status)
-                else:
-                    st.metric("Volume", f"{df['volume'].sum():,}")
-            
-            with col5:
-                if oi_analysis:
-                    sentiment_color = {"Bullish": "🟢", "Bearish": "🔴", "Neutral": "🟡"}
-                    st.metric("OI Sentiment", 
-                             f"{sentiment_color.get(oi_analysis['sentiment'], '🟡')} {oi_analysis['sentiment']}")
-                else:
-                    st.metric("VOB Zones", len(vob_zones) if vob_zones else 0)
-        
-        # Options Analysis Panel
-        if oi_analysis:
-            st.subheader("📊 Options Analysis")
-            oi_col1, oi_col2, oi_col3, oi_col4 = st.columns(4)
-            
-            with oi_col1:
-                st.metric("ATM Strike", f"{oi_analysis['atm_strike']:.0f}")
-            
-            with oi_col2:
-                st.metric("ATM CE LTP", f"₹{oi_analysis['atm_ce_ltp']:.2f}")
-            
-            with oi_col3:
-                st.metric("ATM PE LTP", f"₹{oi_analysis['atm_pe_ltp']:.2f}")
-            
-            with oi_col4:
-                oi_ratio = abs(oi_analysis['put_oi_change'] / max(oi_analysis['call_oi_change'], 1))
-                st.metric("Put/Call OI Ratio", f"{oi_ratio:.2f}")
-            
-            # OI Change Details
-            oi_change_col1, oi_change_col2 = st.columns(2)
-            with oi_change_col1:
-                st.info(f"📈 Call OI Change: {oi_analysis['call_oi_change']:+,}")
-            with oi_change_col2:
-                st.info(f"📉 Put OI Change: {oi_analysis['put_oi_change']:+,}")
-        
-        # VOB Zone Summary
-        if vob_enabled and vob_zones:
-            st.subheader("🎯 Recent VOB Zones")
-            vob_cols = st.columns(min(3, len(vob_zones[-3:])))
-            
-            for i, zone in enumerate(vob_zones[-3:]):
-                col = vob_cols[i]
-                zone_type = zone['type'].title()
-                zone_color = "🟢" if zone['type'] == 'bullish' else "🔴"
-                signal_time = zone['signal_time'].strftime("%H:%M")
-                
-                with col:
-                    if zone['type'] == 'bullish':
-                        st.success(f"{zone_color} **{zone_type} VOB** at {signal_time}\n"
-                                 f"Support: ₹{zone['lowest_price']:.2f}\n"
-                                 f"Base: ₹{zone['base_price']:.2f}")
-                    else:
-                        st.error(f"{zone_color} **{zone_type} VOB** at {signal_time}\n"
-                               f"Resistance: ₹{zone['highest_price']:.2f}\n"
-                               f"Base: ₹{zone['base_price']:.2f}")
-        
-        # Create and display enhanced chart
-        if not df.empty:
-            chart = self.create_enhanced_chart(df, timeframe, vob_zones, rsi_data)
-            if chart:
-                st.plotly_chart(chart, use_container_width=True)
-            
-            # Trading Signals Summary
-            if rsi_data and oi_analysis:
-                st.subheader("🚦 Trading Signals")
-                signal_col1, signal_col2, signal_col3 = st.columns(3)
-                
-                latest_rsi = rsi_data[0].iloc[-1] if rsi_data[0] is not None else 50
-                
-                with signal_col1:
-                    if latest_rsi >= 80:
-                        st.error("🔻 RSI Overbought - Consider PE positions")
-                    elif latest_rsi <= 20:
-                        st.success("🔺 RSI Oversold - Consider CE positions")
-                    else:
-                        st.info("📊 RSI in normal range")
-                
-                with signal_col2:
-                    sentiment = oi_analysis['sentiment']
-                    if sentiment == "Bullish":
-                        st.success(f"🟢 OI Sentiment: {sentiment}")
-                    elif sentiment == "Bearish":
-                        st.error(f"🔴 OI Sentiment: {sentiment}")
-                    else:
-                        st.info(f"🟡 OI Sentiment: {sentiment}")
-                
-                with signal_col3:
-                    if vob_zones:
-                        latest_vob = vob_zones[-1]['type']
-                        if latest_vob == 'bullish':
-                            st.success("🟢 Latest VOB: Bullish")
-                        else:
-                            st.error("🔴 Latest VOB: Bearish")
-                    else:
-                        st.info("📊 No recent VOB zones")
-            
-            # Data tables
-            with st.expander("📈 Price Data"):
-                st.dataframe(df.tail(20), use_container_width=True)
-            
-            if rsi_data and rsi_data[0] is not None:
-                with st.expander("📊 RSI Data"):
-                    rsi_df = pd.DataFrame({
-                        'Ultimate_RSI': rsi_data[0],
-                        'Signal_Line': rsi_data[1]
-                    }).tail(20)
-                    st.dataframe(rsi_df, use_container_width=True)
-        else:
-            st.warning("⚠️ No data available. Please check your API credentials or try refreshing.")
-        
-        # Footer with status
-        st.markdown("---")
-        status_col1, status_col2, status_col3 = st.columns(3)
-        
-        with status_col1:
-            st.caption(f"🕐 Last Updated: {datetime.now(self.ist).strftime('%H:%M:%S IST')}")
-        
-        with status_col2:
-            if st.session_state.last_alert_check:
-                st.caption(f"📱 Last Alert Check: {st.session_state.last_alert_check.strftime('%H:%M:%S')}")
-        
-        with status_col3:
-            data_points = len(df) if not df.empty else 0
-            st.caption(f"📊 Data Points: {data_points}")
-        
-        # Auto refresh
-        if auto_refresh:
-            time.sleep(refresh_interval)
-            st.rerun()
+        # Auto-run the 25-second session
+        st.info("🚀 Starting 25-second auto-analysis session...")
+        self.run_for_25_seconds()
 
 # Initialize and run the app
 if __name__ == "__main__":
