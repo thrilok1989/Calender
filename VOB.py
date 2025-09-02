@@ -275,9 +275,9 @@ class EnhancedNiftyApp:
         
         # Determine RSI sentiment (Bearish if RSI ≥ 60, Bullish if RSI ≤ 40)
         rsi_sentiment = "Neutral"
-        if rsi_value >= 60:  # Bearish RSI
+        if rsi_value >= 80:  # Bearish RSI
             rsi_sentiment = "Bearish"
-        elif rsi_value <= 40:  # Bullish RSI
+        elif rsi_value <= 30:  # Bullish RSI
             rsi_sentiment = "Bullish"
         
         # Get OI sentiment
