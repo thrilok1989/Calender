@@ -30,6 +30,8 @@ class EnhancedNiftyApp:
             st.session_state.sent_vob_alerts = set()
         if 'sent_rsi_alerts' not in st.session_state:
             st.session_state.sent_rsi_alerts = set()
+        if 'sent_rsi_oi_alerts' not in st.session_state:
+            st.session_state.sent_rsi_oi_alerts = set()
         if 'last_alert_check' not in st.session_state:
             st.session_state.last_alert_check = None
         
@@ -162,7 +164,7 @@ class EnhancedNiftyApp:
             'put_oi_change': total_put_oi_change
         }
     
-    def calculate_ultimate_rsi(self, df, length=14, smooth=14):
+    def calculate_ultimate_rsi(self, df, length=7, smooth=14):
         """Calculate Ultimate RSI as per LuxAlgo implementation"""
         if len(df) < length + smooth:
             return pd.Series(index=df.index, dtype=float)
@@ -258,6 +260,76 @@ class EnhancedNiftyApp:
         if len(st.session_state.sent_rsi_alerts) > 20:
             alerts_list = list(st.session_state.sent_rsi_alerts)
             st.session_state.sent_rsi_alerts = set(alerts_list[-10:])
+    
+    def check_rsi_oi_alignment(self, rsi_value, signal_value, oi_analysis):
+        """Check if RSI and OI sentiment align and send Telegram alerts"""
+        if pd.isna(rsi_value) or pd.isna(signal_value) or not oi_analysis:
+            return
+        
+        current_time = datetime.now(self.ist)
+        alert_id = f"rsi_oi_{current_time.strftime('%Y%m%d_%H%M')}"
+        
+        # Check if we already sent an alert for this time period (avoid spam)
+        if alert_id in st.session_state.sent_rsi_oi_alerts:
+            return
+        
+        # Determine RSI sentiment
+        rsi_sentiment = "Neutral"
+        if rsi_value >= 60:  # Bullish RSI
+            rsi_sentiment = "Bullish"
+        elif rsi_value <= 40:  # Bearish RSI
+            rsi_sentiment = "Bearish"
+        
+        # Get OI sentiment
+        oi_sentiment = oi_analysis['sentiment']
+        
+        message = None
+        
+        # Check for alignment
+        if rsi_sentiment == "Bullish" and oi_sentiment == "Bullish":
+            message = f"""🚀 BULLISH CONFIRMATION ALERT!
+            
+📊 Nifty 50 Analysis
+⏰ Time: {current_time.strftime('%H:%M:%S')} IST
+
+📈 RSI: {rsi_value:.2f} (Bullish)
+📊 OI Sentiment: {oi_sentiment}
+
+💰 Current Price: ₹{oi_analysis['underlying_price']:.2f}
+🎯 ATM Strike: {oi_analysis['atm_strike']:.0f}
+
+💡 STRONG BULLISH SIGNAL:
+🔺 Consider CE Buy: ₹{oi_analysis['atm_ce_ltp']:.2f}
+📊 OI Analysis: Call OI Change: {oi_analysis['call_oi_change']:,} | Put OI Change: {oi_analysis['put_oi_change']:,}
+
+✅ Both RSI and OI indicate BULLISH momentum"""
+            
+        elif rsi_sentiment == "Bearish" and oi_sentiment == "Bearish":
+            message = f"""🔻 BEARISH CONFIRMATION ALERT!
+            
+📊 Nifty 50 Analysis
+⏰ Time: {current_time.strftime('%H:%M:%S')} IST
+
+📈 RSI: {rsi_value:.2f} (Bearish)
+📊 OI Sentiment: {oi_sentiment}
+
+💰 Current Price: ₹{oi_analysis['underlying_price']:.2f}
+🎯 ATM Strike: {oi_analysis['atm_strike']:.0f}
+
+💡 STRONG BEARISH SIGNAL:
+🔻 Consider PE Buy: ₹{oi_analysis['atm_pe_ltp']:.2f}
+📊 OI Analysis: Call OI Change: {oi_analysis['call_oi_change']:,} | Put OI Change: {oi_analysis['put_oi_change']:,}
+
+✅ Both RSI and OI indicate BEARISH momentum"""
+        
+        if message and self.send_telegram_message(message):
+            st.session_state.sent_rsi_oi_alerts.add(alert_id)
+            st.success(f"RSI+OI alignment alert sent at {current_time.strftime('%H:%M:%S')}")
+        
+        # Clean up old RSI+OI alerts (keep only last 20)
+        if len(st.session_state.sent_rsi_oi_alerts) > 20:
+            alerts_list = list(st.session_state.sent_rsi_oi_alerts)
+            st.session_state.sent_rsi_oi_alerts = set(alerts_list[-10:])
     
     def enhanced_vob_alert(self, zone, oi_analysis):
         """Enhanced VOB alert with OI analysis and trade suggestions"""
@@ -706,7 +778,7 @@ class EnhancedNiftyApp:
             # RSI Settings
             st.subheader("Ultimate RSI")
             rsi_enabled = st.checkbox("Enable Ultimate RSI", value=True)
-            rsi_length = st.slider("RSI Length", 10, 30, 14)
+            rsi_length = st.slider("RSI Length", 5, 20, 7)  # Changed default to 7, range 5-20
             rsi_smooth = st.slider("RSI Smoothing", 10, 30, 14)
             
             # OI Analysis Settings
@@ -721,9 +793,11 @@ class EnhancedNiftyApp:
             if telegram_enabled:
                 st.info(f"VOB Alerts: {len(st.session_state.sent_vob_alerts)}")
                 st.info(f"RSI Alerts: {len(st.session_state.sent_rsi_alerts)}")
+                st.info(f"RSI+OI Alerts: {len(st.session_state.sent_rsi_oi_alerts)}")
                 if st.button("Clear Alert History"):
                     st.session_state.sent_vob_alerts.clear()
                     st.session_state.sent_rsi_alerts.clear()
+                    st.session_state.sent_rsi_oi_alerts.clear()
                     st.success("Alert history cleared!")
                     st.rerun()
             
@@ -800,7 +874,12 @@ class EnhancedNiftyApp:
                         if telegram_enabled and rsi_data[0] is not None and oi_analysis:
                             latest_rsi = rsi_data[0].iloc[-1]
                             latest_signal = rsi_data[1].iloc[-1]
+                            
+                            # Check regular RSI alerts
                             self.check_rsi_alerts(latest_rsi, latest_signal, oi_analysis)
+                            
+                            # Check RSI + OI alignment
+                            self.check_rsi_oi_alignment(latest_rsi, latest_signal, oi_analysis)
                     except Exception as e:
                         st.warning(f"RSI calculation error: {str(e)}")
                         rsi_data = None
