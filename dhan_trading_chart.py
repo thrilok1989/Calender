@@ -1,10 +1,11 @@
+import streamlit as st
 import requests
 import json
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.animation import FuncAnimation
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.express as px
 from datetime import datetime, timedelta
 import time
 import threading
@@ -12,38 +13,21 @@ from collections import defaultdict
 import warnings
 from supabase import create_client, Client
 import asyncio
-import asyncpg
 from typing import Dict, List, Optional
 warnings.filterwarnings('ignore')
+
+# Page config
+st.set_page_config(
+    page_title="DhanHQ Trading Dashboard",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 class SupabaseManager:
     def __init__(self, supabase_url: str, supabase_key: str):
         self.supabase: Client = create_client(supabase_url, supabase_key)
         
-    def create_tables(self):
-        """Create necessary tables for storing market data"""
-        # Market data table
-        try:
-            self.supabase.table('market_data').select('*').limit(1).execute()
-        except:
-            print("Creating market_data table...")
-            # Table should be created in Supabase dashboard with this structure:
-            # market_data (id, timestamp, security_id, exchange_segment, open, high, low, close, volume, buy_quantity, sell_quantity, created_at)
-        
-        # Volume footprint table
-        try:
-            self.supabase.table('volume_footprint').select('*').limit(1).execute()
-        except:
-            print("Creating volume_footprint table...")
-            # volume_footprint (id, timestamp, security_id, price_level, volume, is_poc, session_high, session_low, created_at)
-        
-        # Alerts table
-        try:
-            self.supabase.table('alerts').select('*').limit(1).execute()
-        except:
-            print("Creating alerts table...")
-            # alerts (id, timestamp, alert_type, message, security_id, price, volume, is_sent, created_at)
-    
     def insert_market_data(self, data: Dict):
         """Insert market data into Supabase"""
         try:
@@ -61,7 +45,7 @@ class SupabaseManager:
             }).execute()
             return result.data
         except Exception as e:
-            print(f"Error inserting market data: {e}")
+            st.error(f"Database error: {e}")
             return None
     
     def insert_volume_footprint(self, security_id: str, footprint_data: Dict, session_high: float, session_low: float):
@@ -74,6 +58,7 @@ class SupabaseManager:
                 records.append({
                     'timestamp': datetime.now().isoformat(),
                     'security_id': security_id,
+                    'exchange_segment': 'NSE_EQ',
                     'price_level': float(price_level),
                     'volume': float(volume),
                     'is_poc': price_level == poc_price,
@@ -85,7 +70,7 @@ class SupabaseManager:
                 result = self.supabase.table('volume_footprint').insert(records).execute()
                 return result.data
         except Exception as e:
-            print(f"Error inserting volume footprint: {e}")
+            st.error(f"Volume footprint database error: {e}")
             return None
     
     def insert_alert(self, alert_type: str, message: str, security_id: str, price: float = None, volume: int = None):
@@ -96,13 +81,14 @@ class SupabaseManager:
                 'alert_type': alert_type,
                 'message': message,
                 'security_id': security_id,
+                'exchange_segment': 'NSE_EQ',
                 'price': float(price) if price else None,
                 'volume': int(volume) if volume else None,
                 'is_sent': False
             }).execute()
             return result.data
         except Exception as e:
-            print(f"Error inserting alert: {e}")
+            st.error(f"Alert database error: {e}")
             return None
     
     def get_recent_market_data(self, security_id: str, limit: int = 100):
@@ -116,33 +102,8 @@ class SupabaseManager:
                 .execute()
             return result.data
         except Exception as e:
-            print(f"Error fetching market data: {e}")
+            st.error(f"Error fetching market data: {e}")
             return []
-    
-    def get_unsent_alerts(self):
-        """Get alerts that haven't been sent yet"""
-        try:
-            result = self.supabase.table('alerts')\
-                .select('*')\
-                .eq('is_sent', False)\
-                .order('timestamp', desc=False)\
-                .execute()
-            return result.data
-        except Exception as e:
-            print(f"Error fetching alerts: {e}")
-            return []
-    
-    def mark_alert_sent(self, alert_id: int):
-        """Mark alert as sent"""
-        try:
-            result = self.supabase.table('alerts')\
-                .update({'is_sent': True})\
-                .eq('id', alert_id)\
-                .execute()
-            return result.data
-        except Exception as e:
-            print(f"Error marking alert as sent: {e}")
-            return None
 
 class TelegramNotifier:
     def __init__(self, bot_token: str, chat_id: str):
@@ -164,10 +125,10 @@ class TelegramNotifier:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Error sending Telegram message: {response.text}")
+                st.error(f"Telegram error: {response.text}")
                 return None
         except Exception as e:
-            print(f"Exception sending Telegram message: {e}")
+            st.error(f"Telegram exception: {e}")
             return None
     
     def send_chart_alert(self, alert_type: str, security_id: str, price: float, volume: int, additional_info: str = ""):
@@ -187,54 +148,39 @@ class TelegramNotifier:
         
         return self.send_message(message)
 
-class DhanTradingChart:
-    def __init__(self, access_token: str, client_id: str, supabase_url: str, supabase_key: str, 
-                 telegram_bot_token: str, telegram_chat_id: str):
-        self.access_token = access_token
-        self.client_id = client_id
+class DhanTradingDashboard:
+    def __init__(self):
+        # Initialize from Streamlit secrets
+        self.access_token = st.secrets["DHAN_ACCESS_TOKEN"]
+        self.client_id = st.secrets["DHAN_CLIENT_ID"]
         self.base_url = "https://api.dhan.co/v2"
         self.headers = {
             'Accept': 'application/json',
             'Content-Type': 'application/json',
-            'access-token': access_token,
-            'client-id': client_id
+            'access-token': self.access_token,
+            'client-id': self.client_id
         }
         
         # Initialize database and notifications
-        self.db = SupabaseManager(supabase_url, supabase_key)
-        self.telegram = TelegramNotifier(telegram_bot_token, telegram_chat_id)
+        self.db = SupabaseManager(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+        self.telegram = TelegramNotifier(st.secrets["TELEGRAM_BOT_TOKEN"], st.secrets["TELEGRAM_CHAT_ID"])
         
-        # Chart data storage
-        self.chart_data = pd.DataFrame()
-        self.volume_footprint_data = {}
-        
-        # Volume Footprint settings (converted from Pine Script)
+        # Volume Footprint settings
         self.bins = 20
         self.timeframe = '1D'
-        self.poc_color = '#298ada'
-        self.bg_color = 'rgba(120, 123, 134, 0.9)'
-        
-        # Current session data
-        self.current_high = None
-        self.current_low = None
-        self.volume_profile = defaultdict(float)
-        self.session_start_time = None
-        self.previous_poc = None
         
         # Alert thresholds
-        self.volume_spike_threshold = 2.0  # 2x average volume
-        self.price_change_threshold = 0.02  # 2% price change
+        self.volume_spike_threshold = 2.0
+        self.price_change_threshold = 0.02
         
-        # Chart figure
-        self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(14, 10), 
-                                                     gridspec_kw={'height_ratios': [3, 1]})
-        self.fig.patch.set_facecolor('black')
-        
-        # Initialize database tables
-        self.db.create_tables()
-        
-        # Start alert monitoring thread
-        self.start_alert_monitoring()
+        # Session data
+        if 'current_high' not in st.session_state:
+            st.session_state.current_high = None
+            st.session_state.current_low = None
+            st.session_state.volume_profile = defaultdict(float)
+            st.session_state.chart_data = pd.DataFrame()
+            st.session_state.previous_poc = None
+            st.session_state.last_update = None
     
     def fetch_market_data(self, security_id="11536", exchange_segment="NSE_EQ"):
         """Fetch real-time market data using DhanHQ API"""
@@ -250,7 +196,6 @@ class DhanTradingChart:
                     market_data = data['data'][exchange_segment][security_id]
                     processed_data = self.process_market_data(market_data)
                     
-                    # Add metadata
                     if processed_data:
                         processed_data['security_id'] = security_id
                         processed_data['exchange_segment'] = exchange_segment
@@ -260,11 +205,11 @@ class DhanTradingChart:
                     
                     return processed_data
             else:
-                print(f"Error fetching data: {response.status_code}, {response.text}")
+                st.error(f"API Error: {response.status_code}")
                 return None
                 
         except Exception as e:
-            print(f"Exception in fetch_market_data: {e}")
+            st.error(f"Exception in API call: {e}")
             return None
     
     def process_market_data(self, raw_data):
@@ -280,94 +225,17 @@ class DhanTradingChart:
                 'close': raw_data['last_price'],
                 'volume': raw_data['volume'],
                 'buy_quantity': raw_data['buy_quantity'],
-                'sell_quantity': raw_data['sell_quantity'],
-                'depth': raw_data['depth']
+                'sell_quantity': raw_data['sell_quantity']
             }
             
             return processed_data
             
         except Exception as e:
-            print(f"Error processing market data: {e}")
+            st.error(f"Error processing market data: {e}")
             return None
     
-    def check_alerts(self, market_data, security_id):
-        """Check for various trading alerts"""
-        if not market_data or len(self.chart_data) < 10:
-            return
-        
-        current_price = market_data['close']
-        current_volume = market_data['volume']
-        
-        # Calculate average volume (last 20 periods)
-        recent_volumes = self.chart_data.tail(20)['volume'].values
-        avg_volume = np.mean(recent_volumes) if len(recent_volumes) > 0 else current_volume
-        
-        # Volume spike alert
-        if current_volume > avg_volume * self.volume_spike_threshold and avg_volume > 0:
-            alert_msg = f"Volume spike detected! Current: {current_volume:,}, Average: {avg_volume:,.0f}"
-            self.db.insert_alert("VOLUME_SPIKE", alert_msg, security_id, current_price, current_volume)
-        
-        # Price change alert
-        if len(self.chart_data) > 1:
-            previous_price = self.chart_data.iloc[-2]['close']
-            price_change_pct = abs((current_price - previous_price) / previous_price)
-            
-            if price_change_pct > self.price_change_threshold:
-                direction = "UP" if current_price > previous_price else "DOWN"
-                alert_msg = f"Significant price movement {direction}: {price_change_pct*100:.1f}% change"
-                self.db.insert_alert("PRICE_CHANGE", alert_msg, security_id, current_price, current_volume)
-        
-        # POC shift alert
-        current_poc = self.calculate_poc()
-        if current_poc and self.previous_poc:
-            poc_change_pct = abs((current_poc['price'] - self.previous_poc['price']) / self.previous_poc['price'])
-            if poc_change_pct > 0.01:  # 1% POC shift
-                alert_msg = f"Point of Control shifted: {self.previous_poc['price']:.2f} → {current_poc['price']:.2f}"
-                self.db.insert_alert("POC_SHIFT", alert_msg, security_id, current_poc['price'], current_poc['volume'])
-        
-        if current_poc:
-            self.previous_poc = current_poc
-    
-    def start_alert_monitoring(self):
-        """Start monitoring and sending alerts"""
-        def alert_loop():
-            while True:
-                try:
-                    # Get unsent alerts
-                    alerts = self.db.get_unsent_alerts()
-                    
-                    for alert in alerts:
-                        # Send Telegram notification
-                        additional_info = f"Alert ID: {alert['id']}"
-                        
-                        result = self.telegram.send_chart_alert(
-                            alert['alert_type'],
-                            alert['security_id'],
-                            alert['price'] or 0,
-                            alert['volume'] or 0,
-                            additional_info
-                        )
-                        
-                        if result:
-                            # Mark as sent
-                            self.db.mark_alert_sent(alert['id'])
-                            print(f"Sent alert: {alert['alert_type']} for {alert['security_id']}")
-                        
-                        # Small delay between messages
-                        time.sleep(1)
-                    
-                    # Check every 30 seconds for new alerts
-                    time.sleep(30)
-                    
-                except Exception as e:
-                    print(f"Error in alert monitoring: {e}")
-                    time.sleep(30)
-        
-        alert_thread = threading.Thread(target=alert_loop, daemon=True)
-        alert_thread.start()
-    
     def update_volume_footprint(self, market_data):
-        """Update volume footprint data (converted from Pine Script logic)"""
+        """Update volume footprint data"""
         if not market_data:
             return
             
@@ -377,230 +245,214 @@ class DhanTradingChart:
         low = market_data['low']
         
         # Initialize session if needed
-        if self.current_high is None or self.current_low is None:
-            self.current_high = high
-            self.current_low = low
-            self.session_start_time = market_data['timestamp']
+        if st.session_state.current_high is None or st.session_state.current_low is None:
+            st.session_state.current_high = high
+            st.session_state.current_low = low
         else:
             # Update session high/low
-            if high > self.current_high:
-                self.current_high = high
-            if low < self.current_low:
-                self.current_low = low
+            if high > st.session_state.current_high:
+                st.session_state.current_high = high
+            if low < st.session_state.current_low:
+                st.session_state.current_low = low
         
         # Calculate volume footprint
-        if self.current_high > self.current_low:
-            price_range = self.current_high - self.current_low
+        if st.session_state.current_high > st.session_state.current_low:
+            price_range = st.session_state.current_high - st.session_state.current_low
             step = price_range / self.bins if self.bins > 0 else 1
             
-            # Volume weighted calculation (similar to Pine Script)
-            recent_data = self.get_recent_data()
-            volumes = [d.get('volume', 0) for d in recent_data]
-            volume_stdev = np.std(volumes) if len(volumes) > 1 else 1
-            volume_val = volume / volume_stdev if volume_stdev > 0 else volume
+            # Volume weighted calculation
+            recent_data = st.session_state.chart_data.tail(200) if len(st.session_state.chart_data) > 0 else pd.DataFrame()
+            if len(recent_data) > 1:
+                volume_stdev = recent_data['volume'].std()
+                volume_val = volume / volume_stdev if volume_stdev > 0 else volume
+            else:
+                volume_val = volume
             
             # Find which bin this price falls into
             if step > 0:
-                bin_index = int((current_price - self.current_low) / step)
+                bin_index = int((current_price - st.session_state.current_low) / step)
                 bin_index = max(0, min(bin_index, self.bins - 1))
                 
                 # Update volume profile
-                bin_price = self.current_low + (bin_index * step)
-                self.volume_profile[bin_price] += volume_val
+                bin_price = st.session_state.current_low + (bin_index * step)
+                st.session_state.volume_profile[bin_price] += volume_val
         
         # Store volume footprint in database
         if market_data.get('security_id'):
             self.db.insert_volume_footprint(
                 market_data['security_id'],
-                dict(self.volume_profile),
-                self.current_high,
-                self.current_low
+                dict(st.session_state.volume_profile),
+                st.session_state.current_high,
+                st.session_state.current_low
             )
     
-    def get_recent_data(self, periods=200):
-        """Get recent data for calculations"""
-        if len(self.chart_data) > periods:
-            return self.chart_data.tail(periods).to_dict('records')
-        return self.chart_data.to_dict('records')
-    
     def calculate_poc(self):
-        """Calculate Point of Control (highest volume price level)"""
-        if not self.volume_profile:
+        """Calculate Point of Control"""
+        if not st.session_state.volume_profile:
             return None
             
-        poc_price = max(self.volume_profile, key=self.volume_profile.get)
-        poc_volume = self.volume_profile[poc_price]
+        poc_price = max(st.session_state.volume_profile, key=st.session_state.volume_profile.get)
+        poc_volume = st.session_state.volume_profile[poc_price]
         
         return {'price': poc_price, 'volume': poc_volume}
     
-    def draw_candlestick_chart(self):
-        """Draw candlestick chart with volume footprint"""
-        self.ax1.clear()
-        self.ax2.clear()
-        
-        # Set dark theme
-        self.ax1.set_facecolor('black')
-        self.ax2.set_facecolor('black')
-        
-        if len(self.chart_data) == 0:
+    def check_alerts(self, market_data, security_id):
+        """Check for trading alerts"""
+        if not market_data or len(st.session_state.chart_data) < 10:
             return
         
-        # Get recent data for display
-        display_data = self.chart_data.tail(50) if len(self.chart_data) > 50 else self.chart_data
+        current_price = market_data['close']
+        current_volume = market_data['volume']
         
-        # Draw candlesticks
-        for i, (idx, row) in enumerate(display_data.iterrows()):
-            x = i
-            open_price = row['open']
-            high_price = row['high'] 
-            low_price = row['low']
-            close_price = row['close']
+        # Calculate average volume
+        recent_volumes = st.session_state.chart_data.tail(20)['volume']
+        avg_volume = recent_volumes.mean() if len(recent_volumes) > 0 else current_volume
+        
+        # Volume spike alert
+        if current_volume > avg_volume * self.volume_spike_threshold and avg_volume > 0:
+            alert_msg = f"Volume spike: {current_volume:,} vs avg {avg_volume:,.0f}"
+            self.db.insert_alert("VOLUME_SPIKE", alert_msg, security_id, current_price, current_volume)
+            self.telegram.send_chart_alert("VOLUME_SPIKE", security_id, current_price, current_volume, alert_msg)
+            st.success(f"🚨 Volume Spike Alert: {alert_msg}")
+        
+        # Price change alert
+        if len(st.session_state.chart_data) > 1:
+            previous_price = st.session_state.chart_data.iloc[-1]['close']
+            price_change_pct = abs((current_price - previous_price) / previous_price)
             
-            # Determine candle color
-            color = 'green' if close_price >= open_price else 'red'
-            
-            # Draw high-low line
-            self.ax1.plot([x, x], [low_price, high_price], color='white', linewidth=1)
-            
-            # Draw candle body
-            body_height = abs(close_price - open_price)
-            body_bottom = min(open_price, close_price)
-            
-            rect = patches.Rectangle((x-0.4, body_bottom), 0.8, body_height, 
-                                   facecolor=color, edgecolor='white', alpha=0.8)
-            self.ax1.add_patch(rect)
-        
-        # Draw Volume Footprint
-        self.draw_volume_footprint()
-        
-        # Draw volume bars
-        volumes = display_data['volume'].values
-        volume_colors = ['green' if display_data.iloc[i]['close'] >= display_data.iloc[i]['open'] 
-                        else 'red' for i in range(len(display_data))]
-        
-        self.ax2.bar(range(len(volumes)), volumes, color=volume_colors, alpha=0.7)
-        
-        # Style the charts
-        self.ax1.set_title('Price Action with Volume Footprint (Supabase + Telegram)', color='white', fontsize=14)
-        self.ax1.tick_params(colors='white')
-        self.ax1.grid(True, alpha=0.3)
-        
-        self.ax2.set_title('Volume', color='white', fontsize=12)
-        self.ax2.tick_params(colors='white')
-        self.ax2.grid(True, alpha=0.3)
-        
-        # Set labels
-        if len(display_data) > 0:
-            timestamps = [t.strftime('%H:%M') for t in display_data['timestamp']]
-            tick_positions = range(0, len(timestamps), max(1, len(timestamps)//10))
-            self.ax1.set_xticks(tick_positions)
-            self.ax1.set_xticklabels([timestamps[i] for i in tick_positions], rotation=45)
-            self.ax2.set_xticks(tick_positions)
-            self.ax2.set_xticklabels([timestamps[i] for i in tick_positions], rotation=45)
+            if price_change_pct > self.price_change_threshold:
+                direction = "UP" if current_price > previous_price else "DOWN"
+                alert_msg = f"Price movement {direction}: {price_change_pct*100:.1f}%"
+                self.db.insert_alert("PRICE_CHANGE", alert_msg, security_id, current_price, current_volume)
+                self.telegram.send_chart_alert("PRICE_CHANGE", security_id, current_price, current_volume, alert_msg)
+                st.warning(f"📈 Price Change Alert: {alert_msg}")
     
-    def draw_volume_footprint(self):
-        """Draw volume footprint boxes (converted from Pine Script)"""
-        if not self.volume_profile or not self.current_high or not self.current_low:
-            return
-            
-        # Calculate POC
+    def create_candlestick_chart(self, data):
+        """Create candlestick chart with volume footprint using Plotly"""
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            subplot_titles=('Price Action with Volume Footprint', 'Volume'),
+            row_heights=[0.7, 0.3]
+        )
+        
+        # Candlestick chart
+        fig.add_trace(
+            go.Candlestick(
+                x=data['timestamp'],
+                open=data['open'],
+                high=data['high'],
+                low=data['low'],
+                close=data['close'],
+                name='Price'
+            ),
+            row=1, col=1
+        )
+        
+        # Volume bars
+        colors = ['green' if close >= open else 'red' 
+                 for close, open in zip(data['close'], data['open'])]
+        
+        fig.add_trace(
+            go.Bar(
+                x=data['timestamp'],
+                y=data['volume'],
+                name='Volume',
+                marker_color=colors,
+                opacity=0.7
+            ),
+            row=2, col=1
+        )
+        
+        # Add POC line if available
         poc_data = self.calculate_poc()
-        if not poc_data:
-            return
-            
-        max_volume = max(self.volume_profile.values())
-        price_range = self.current_high - self.current_low
-        
-        if price_range <= 0:
-            return
-            
-        step = price_range / self.bins
-        
-        # Get current chart x-axis limits
-        xlims = self.ax1.get_xlim()
-        chart_width = xlims[1] - xlims[0]
-        
-        # Draw volume footprint boxes
-        for i in range(self.bins):
-            lower_price = self.current_low + (i * step)
-            upper_price = lower_price + step
-            
-            # Find volume for this price level
-            volume_in_bin = 0
-            for price, volume in self.volume_profile.items():
-                if lower_price <= price < upper_price:
-                    volume_in_bin += volume
-            
-            if volume_in_bin > 0:
-                # Calculate box dimensions
-                box_width = (volume_in_bin / max_volume) * (chart_width * 0.1)
-                x_start = xlims[1] - (chart_width * 0.15)
-                
-                # Determine color
-                is_poc = (poc_data['price'] >= lower_price and poc_data['price'] < upper_price)
-                color = self.poc_color if is_poc else 'gray'
-                alpha = 0.8 if is_poc else 0.5
-                
-                # Draw box
-                rect = patches.Rectangle((x_start, lower_price), box_width, step,
-                                       facecolor=color, alpha=alpha, edgecolor='white')
-                self.ax1.add_patch(rect)
-                
-                # Add volume text for POC
-                if is_poc:
-                    self.ax1.text(x_start + box_width/2, (lower_price + upper_price)/2, 
-                                f'{volume_in_bin:.1f}', ha='center', va='center', 
-                                color='white', fontsize=8, weight='bold')
-        
-        # Draw POC line
         if poc_data:
-            self.ax1.axhline(y=poc_data['price'], color=self.poc_color, 
-                           linestyle='--', alpha=0.8, linewidth=2)
-            
-            # Add POC label
-            self.ax1.text(xlims[1], poc_data['price'], f' POC: {poc_data["price"]:.2f}', 
-                         va='center', ha='left', color=self.poc_color, fontsize=10, weight='bold')
+            fig.add_hline(
+                y=poc_data['price'],
+                line_dash="dash",
+                line_color="#298ada",
+                annotation_text=f"POC: {poc_data['price']:.2f}",
+                row=1, col=1
+            )
         
-        # Add high/low labels
-        self.ax1.text(xlims[1], self.current_high, f' High: {self.current_high:.2f}', 
-                     va='bottom', ha='left', color='white', fontsize=10)
-        self.ax1.text(xlims[1], self.current_low, f' Low: {self.current_low:.2f}', 
-                     va='top', ha='left', color='white', fontsize=10)
+        # Add session high/low lines
+        if st.session_state.current_high and st.session_state.current_low:
+            fig.add_hline(
+                y=st.session_state.current_high,
+                line_color="green",
+                line_width=1,
+                annotation_text=f"High: {st.session_state.current_high:.2f}",
+                row=1, col=1
+            )
+            fig.add_hline(
+                y=st.session_state.current_low,
+                line_color="red", 
+                line_width=1,
+                annotation_text=f"Low: {st.session_state.current_low:.2f}",
+                row=1, col=1
+            )
+        
+        # Update layout
+        fig.update_layout(
+            title="DhanHQ Real-time Trading Dashboard",
+            xaxis_rangeslider_visible=False,
+            height=800,
+            showlegend=True,
+            template="plotly_dark"
+        )
+        
+        return fig
     
-    def add_market_info(self):
-        """Add market information display"""
-        if len(self.chart_data) == 0:
-            return
-            
-        latest = self.chart_data.iloc[-1]
-        alert_count = len(self.db.get_unsent_alerts())
+    def create_volume_footprint_chart(self):
+        """Create volume footprint visualization"""
+        if not st.session_state.volume_profile:
+            return None
         
-        info_text = f"""
-Timeframe: {self.timeframe} | DB: Connected | Alerts: {alert_count}
-Current Price: {latest['close']:.2f}
-High: {self.current_high:.2f} | Low: {self.current_low:.2f}
-Volume: {latest['volume']:,}
-Buy: {latest.get('buy_quantity', 0):,} | Sell: {latest.get('sell_quantity', 0):,}
-Last Update: {latest['timestamp'].strftime('%H:%M:%S')}
-        """.strip()
+        prices = list(st.session_state.volume_profile.keys())
+        volumes = list(st.session_state.volume_profile.values())
         
-        # Add info box
-        self.ax1.text(0.02, 0.98, info_text, transform=self.ax1.transAxes, 
-                     va='top', ha='left', bbox=dict(boxstyle="round,pad=0.5", 
-                     facecolor='black', alpha=0.8), color='white', fontsize=9)
+        # Create horizontal bar chart
+        fig = go.Figure(go.Bar(
+            x=volumes,
+            y=prices,
+            orientation='h',
+            marker_color='#298ada',
+            name='Volume Profile'
+        ))
+        
+        # Highlight POC
+        poc_data = self.calculate_poc()
+        if poc_data:
+            max_volume_idx = volumes.index(max(volumes))
+            fig.data[0].marker.color = ['red' if i == max_volume_idx else '#298ada' 
+                                       for i in range(len(volumes))]
+        
+        fig.update_layout(
+            title="Volume Footprint",
+            xaxis_title="Volume",
+            yaxis_title="Price Level",
+            template="plotly_dark",
+            height=400
+        )
+        
+        return fig
     
-    def update_chart_data(self, security_id="11536", exchange_segment="NSE_EQ"):
-        """Update chart data and redraw"""
+    def update_data(self, security_id, exchange_segment):
+        """Update market data"""
         market_data = self.fetch_market_data(security_id, exchange_segment)
         
         if market_data:
-            # Add to chart data
+            # Add to session state chart data
             new_row = pd.DataFrame([market_data])
-            self.chart_data = pd.concat([self.chart_data, new_row], ignore_index=True)
+            if len(st.session_state.chart_data) == 0:
+                st.session_state.chart_data = new_row
+            else:
+                st.session_state.chart_data = pd.concat([st.session_state.chart_data, new_row], ignore_index=True)
             
             # Keep only recent data (last 1000 points)
-            if len(self.chart_data) > 1000:
-                self.chart_data = self.chart_data.tail(1000).reset_index(drop=True)
+            if len(st.session_state.chart_data) > 1000:
+                st.session_state.chart_data = st.session_state.chart_data.tail(1000).reset_index(drop=True)
             
             # Update volume footprint
             self.update_volume_footprint(market_data)
@@ -608,228 +460,94 @@ Last Update: {latest['timestamp'].strftime('%H:%M:%S')}
             # Check for alerts
             self.check_alerts(market_data, security_id)
             
-            # Redraw chart
-            self.draw_candlestick_chart()
-            self.add_market_info()
+            st.session_state.last_update = datetime.now()
             
-            print(f"Updated at {market_data['timestamp'].strftime('%H:%M:%S')} - "
-                  f"Price: {market_data['close']:.2f}, Volume: {market_data['volume']:,}")
-    
-    def start_real_time_updates(self, security_id="11536", exchange_segment="NSE_EQ", interval=23):
-        """Start real-time updates every 23 seconds"""
-        def update_loop():
-            while True:
-                try:
-                    self.update_chart_data(security_id, exchange_segment)
-                    plt.pause(0.1)  # Small pause to update display
-                    time.sleep(interval)
-                except KeyboardInterrupt:
-                    break
-                except Exception as e:
-                    print(f"Error in update loop: {e}")
-                    time.sleep(interval)
+            return market_data
         
-        # Start update thread
-        update_thread = threading.Thread(target=update_loop, daemon=True)
-        update_thread.start()
-        
-        return update_thread
-    
-    def show_chart(self, security_id="11536", exchange_segment="NSE_EQ"):
-        """Display the chart with real-time updates"""
-        plt.ion()  # Turn on interactive mode
-        
-        # Send startup notification
-        self.telegram.send_message(f"🚀 <b>Trading Chart Started</b>\n\n📊 Security: {security_id}\n💱 Exchange: {exchange_segment}\n⏰ Started at: {datetime.now().strftime('%H:%M:%S')}")
-        
-        # Initial data fetch
-        self.update_chart_data(security_id, exchange_segment)
-        
-        # Start real-time updates
-        update_thread = self.start_real_time_updates(security_id, exchange_segment, 23)
-        
-        try:
-            plt.show()
-            
-            # Keep the main thread alive
-            while True:
-                plt.pause(1)
-                
-        except KeyboardInterrupt:
-            self.telegram.send_message("🛑 <b>Trading Chart Stopped</b>\n\nChart monitoring has been stopped by user.")
-            print("Chart closed by user")
-        finally:
-            plt.ioff()
-            plt.close()
+        return None
 
 def main():
-    """Main function to run the trading chart"""
-    # Configuration - Replace with your actual credentials
-    CONFIG = {
-        'DHAN_ACCESS_TOKEN': 'your_dhan_access_token_here',
-        'DHAN_CLIENT_ID': 'your_dhan_client_id_here',
-        'SUPABASE_URL': 'your_supabase_project_url_here',
-        'SUPABASE_KEY': 'your_supabase_anon_key_here',
-        'TELEGRAM_BOT_TOKEN': 'your_telegram_bot_token_here',
-        'TELEGRAM_CHAT_ID': 'your_telegram_chat_id_here'
-    }
+    st.title("📈 DhanHQ Real-time Trading Dashboard")
     
-    # Validate all credentials
-    missing_configs = [key for key, value in CONFIG.items() if value.startswith('your_')]
-    if missing_configs:
-        print("Please update the following configuration values:")
-        for config in missing_configs:
-            print(f"  - {config}")
+    # Check if secrets are configured
+    try:
+        dashboard = DhanTradingDashboard()
+    except KeyError as e:
+        st.error(f"Missing secret: {e}")
+        st.info("Please configure the following secrets in your Streamlit app:")
+        st.code("""
+DHAN_ACCESS_TOKEN = "your_dhan_access_token"
+DHAN_CLIENT_ID = "your_dhan_client_id"
+SUPABASE_URL = "your_supabase_url"
+SUPABASE_KEY = "your_supabase_key"
+TELEGRAM_BOT_TOKEN = "your_telegram_bot_token"
+TELEGRAM_CHAT_ID = "your_telegram_chat_id"
+        """)
         return
     
-    # Create and start the trading chart
-    chart = DhanTradingChart(
-        access_token=CONFIG['DHAN_ACCESS_TOKEN'],
-        client_id=CONFIG['DHAN_CLIENT_ID'],
-        supabase_url=CONFIG['SUPABASE_URL'],
-        supabase_key=CONFIG['SUPABASE_KEY'],
-        telegram_bot_token=CONFIG['TELEGRAM_BOT_TOKEN'],
-        telegram_chat_id=CONFIG['TELEGRAM_CHAT_ID']
+    # Sidebar configuration
+    st.sidebar.header("Configuration")
+    
+    security_id = st.sidebar.text_input("Security ID", value="11536")
+    exchange_segment = st.sidebar.selectbox(
+        "Exchange Segment",
+        ["NSE_EQ", "BSE_EQ", "NSE_FNO", "BSE_FNO", "MCX_FO"]
     )
     
-    print("Starting DhanHQ Trading Chart with Supabase & Telegram...")
-    print("Features:")
-    print("- Real-time chart updates every 23 seconds")
-    print("- Volume Footprint indicator")
-    print("- Data storage in Supabase database")
-    print("- Telegram notifications for alerts")
-    print("- Volume spike, price change, and POC shift alerts")
-    print("\nPress Ctrl+C to stop")
+    update_interval = st.sidebar.slider("Update Interval (seconds)", 20, 60, 23)
     
-    try:
-        # You can customize the security and exchange here
-        chart.show_chart(security_id="11536", exchange_segment="NSE_EQ")
-    except Exception as e:
-        print(f"Error running chart: {e}")
-
-# Database Schema for Supabase Tables
-"""
-Create these tables in your Supabase dashboard:
-
-1. market_data table:
-CREATE TABLE market_data (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-    security_id TEXT NOT NULL,
-    exchange_segment TEXT NOT NULL,
-    open DECIMAL(10,2) NOT NULL,
-    high DECIMAL(10,2) NOT NULL,
-    low DECIMAL(10,2) NOT NULL,
-    close DECIMAL(10,2) NOT NULL,
-    volume BIGINT NOT NULL,
-    buy_quantity BIGINT DEFAULT 0,
-    sell_quantity BIGINT DEFAULT 0,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE INDEX idx_market_data_timestamp ON market_data(timestamp DESC);
-CREATE INDEX idx_market_data_security ON market_data(security_id, timestamp DESC);
-
-2. volume_footprint table:
-CREATE TABLE volume_footprint (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-    security_id TEXT NOT NULL,
-    price_level DECIMAL(10,2) NOT NULL,
-    volume DECIMAL(15,4) NOT NULL,
-    is_poc BOOLEAN DEFAULT FALSE,
-    session_high DECIMAL(10,2),
-    session_low DECIMAL(10,2),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE INDEX idx_volume_footprint_timestamp ON volume_footprint(timestamp DESC);
-CREATE INDEX idx_volume_footprint_security ON volume_footprint(security_id, timestamp DESC);
-
-3. alerts table:
-CREATE TABLE alerts (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-    alert_type TEXT NOT NULL,
-    message TEXT NOT NULL,
-    security_id TEXT NOT NULL,
-    price DECIMAL(10,2),
-    volume BIGINT,
-    is_sent BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE INDEX idx_alerts_unsent ON alerts(is_sent, timestamp) WHERE is_sent = FALSE;
-CREATE INDEX idx_alerts_security ON alerts(security_id, timestamp DESC);
-
-4. Row Level Security (RLS) - Enable if needed:
-ALTER TABLE market_data ENABLE ROW LEVEL SECURITY;
-ALTER TABLE volume_footprint ENABLE ROW LEVEL SECURITY;
-ALTER TABLE alerts ENABLE ROW LEVEL SECURITY;
-
--- Create policies as needed for your use case
-"""
-
-# Installation Requirements
-"""
-Install required packages:
-pip install supabase pandas numpy matplotlib requests python-telegram-bot
-
-Package versions:
-- supabase>=2.0.0
-- pandas>=1.5.0
-- numpy>=1.24.0
-- matplotlib>=3.6.0
-- requests>=2.28.0
-"""
-
-# Telegram Bot Setup Instructions
-"""
-1. Create a Telegram Bot:
-   - Message @BotFather on Telegram
-   - Send /newbot command
-   - Choose a name and username for your bot
-   - Copy the bot token
-
-2. Get your Chat ID:
-   - Start a chat with your bot
-   - Send a message to your bot
-   - Visit: https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
-   - Look for "chat":{"id": YOUR_CHAT_ID}
-   - Use this chat ID in the configuration
-
-3. Test your bot:
-   - Send a test message using the bot token and chat ID
-"""
-
-# Supabase Setup Instructions
-"""
-1. Create a Supabase project:
-   - Go to https://supabase.com
-   - Create a new project
-   - Copy your project URL and anon key
-
-2. Create tables:
-   - Go to your Supabase dashboard
-   - Navigate to SQL Editor
-   - Run the SQL commands provided in the database schema above
-
-3. Configure API access:
-   - Ensure your anon key has access to insert/select on the tables
-   - Configure Row Level Security if needed
-"""
-
-# Configuration Template
-"""
-Replace the following in CONFIG dictionary:
-
-DHAN_ACCESS_TOKEN: Your DhanHQ API access token
-DHAN_CLIENT_ID: Your DhanHQ client ID
-SUPABASE_URL: https://your-project.supabase.co
-SUPABASE_KEY: Your Supabase anon key
-TELEGRAM_BOT_TOKEN: Your Telegram bot token (from BotFather)
-TELEGRAM_CHAT_ID: Your Telegram chat ID (numeric)
-"""
+    auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
+    
+    if st.sidebar.button("Manual Update") or auto_refresh:
+        market_data = dashboard.update_data(security_id, exchange_segment)
+        
+        if market_data:
+            # Main chart area
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                if len(st.session_state.chart_data) > 0:
+                    chart = dashboard.create_candlestick_chart(st.session_state.chart_data)
+                    st.plotly_chart(chart, use_container_width=True)
+            
+            with col2:
+                st.subheader("Market Info")
+                st.metric("Current Price", f"₹{market_data['close']:.2f}")
+                st.metric("Volume", f"{market_data['volume']:,}")
+                st.metric("Buy Qty", f"{market_data['buy_quantity']:,}")
+                st.metric("Sell Qty", f"{market_data['sell_quantity']:,}")
+                
+                if st.session_state.current_high and st.session_state.current_low:
+                    st.metric("Session High", f"₹{st.session_state.current_high:.2f}")
+                    st.metric("Session Low", f"₹{st.session_state.current_low:.2f}")
+                
+                poc_data = dashboard.calculate_poc()
+                if poc_data:
+                    st.metric("POC Price", f"₹{poc_data['price']:.2f}")
+                    st.metric("POC Volume", f"{poc_data['volume']:.1f}")
+            
+            # Volume footprint chart
+            st.subheader("Volume Footprint")
+            footprint_chart = dashboard.create_volume_footprint_chart()
+            if footprint_chart:
+                st.plotly_chart(footprint_chart, use_container_width=True)
+            
+            # Recent data table
+            st.subheader("Recent Market Data")
+            if len(st.session_state.chart_data) > 0:
+                recent_data = st.session_state.chart_data.tail(10).copy()
+                recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%H:%M:%S')
+                st.dataframe(recent_data)
+            
+            # Status info
+            st.sidebar.success(f"✅ Connected to DhanHQ API")
+            if st.session_state.last_update:
+                st.sidebar.info(f"Last Update: {st.session_state.last_update.strftime('%H:%M:%S')}")
+            
+            # Auto-refresh functionality
+            if auto_refresh:
+                time.sleep(update_interval)
+                st.rerun()
 
 if __name__ == "__main__":
     main()
