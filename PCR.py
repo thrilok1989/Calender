@@ -4,14 +4,12 @@ import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import math
-from scipy.stats import norm
-from pytz import timezone
 import plotly.graph_objects as go
 import io
 import json
 from supabase import create_client, Client
 import time
+from pytz import timezone
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
@@ -44,6 +42,25 @@ if 'pcr_threshold_bear' not in st.session_state:
     st.session_state.pcr_threshold_bear = 0.4  # Will be adjusted based on VIX
 if 'use_pcr_filter' not in st.session_state:
     st.session_state.use_pcr_filter = True
+
+# DhanHQ API Configuration
+DHAN_API_BASE_URL = "https://api.dhan.co/v2"
+
+# Initialize DhanHQ credentials from secrets
+def get_dhan_config():
+    try:
+        return {
+            "client_id": st.secrets.get("DHAN_CLIENT_ID"),
+            "access_token": st.secrets.get("DHAN_ACCESS_TOKEN")
+        }
+    except:
+        return {
+            "client_id": None,
+            "access_token": None
+        }
+
+dhan_config = get_dhan_config()
+
 # Initialize Supabase client
 @st.cache_resource
 def init_supabase():
@@ -84,11 +101,215 @@ def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
-        response = requests.post(url, data=data)
+        response = requests.post(url, data=data, timeout=10)
         if response.status_code != 200:
             st.warning("⚠️ Telegram message failed.")
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
+
+def get_dhan_headers():
+    """Get DhanHQ API headers"""
+    if not dhan_config["client_id"] or not dhan_config["access_token"]:
+        st.error("DhanHQ credentials not configured. Please add DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN to secrets.")
+        return None
+    
+    return {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "access-token": dhan_config["access_token"],
+        "client-id": dhan_config["client_id"]
+    }
+
+def get_nifty_spot_price():
+    """Get Nifty spot price using DhanHQ API"""
+    headers = get_dhan_headers()
+    if not headers:
+        return None
+    
+    try:
+        # Nifty 50 security ID for NSE_EQ is typically 26000
+        payload = {
+            "NSE_EQ": [26000]  # Nifty 50 security ID
+        }
+        
+        response = requests.post(
+            f"{DHAN_API_BASE_URL}/marketfeed/ltp",
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'data' in data and 'NSE_EQ' in data['data'] and '26000' in data['data']['NSE_EQ']:
+                return data['data']['NSE_EQ']['26000']['last_price']
+        
+        st.error(f"Failed to get Nifty spot price: {response.status_code}")
+        return None
+        
+    except Exception as e:
+        st.error(f"Error fetching Nifty spot price: {e}")
+        return None
+
+def get_vix_data():
+    """Get VIX data using DhanHQ API"""
+    headers = get_dhan_headers()
+    if not headers:
+        return 11  # Default VIX value
+    
+    try:
+        # India VIX security ID for NSE_EQ is typically 26017
+        payload = {
+            "NSE_EQ": [26017]  # India VIX security ID
+        }
+        
+        response = requests.post(
+            f"{DHAN_API_BASE_URL}/marketfeed/ltp",
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'data' in data and 'NSE_EQ' in data['data'] and '26017' in data['data']['NSE_EQ']:
+                return data['data']['NSE_EQ']['26017']['last_price']
+        
+        return 11  # Default VIX value if API fails
+        
+    except Exception as e:
+        st.warning(f"Failed to get VIX data, using default: {e}")
+        return 11
+
+def get_nifty_expiry_list():
+    """Get Nifty option expiry dates using DhanHQ API"""
+    headers = get_dhan_headers()
+    if not headers:
+        return []
+    
+    try:
+        payload = {
+            "UnderlyingScrip": 13,  # Nifty underlying scrip ID
+            "UnderlyingSeg": "IDX_I"
+        }
+        
+        response = requests.post(
+            f"{DHAN_API_BASE_URL}/optionchain/expirylist",
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'data' in data:
+                return data['data']
+        
+        return []
+        
+    except Exception as e:
+        st.error(f"Error fetching expiry list: {e}")
+        return []
+
+def get_option_chain_data(expiry_date):
+    """Get option chain data using DhanHQ API"""
+    headers = get_dhan_headers()
+    if not headers:
+        return None
+    
+    try:
+        payload = {
+            "UnderlyingScrip": 13,  # Nifty underlying scrip ID
+            "UnderlyingSeg": "IDX_I",
+            "Expiry": expiry_date
+        }
+        
+        response = requests.post(
+            f"{DHAN_API_BASE_URL}/optionchain",
+            headers=headers,
+            json=payload,
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'data' in data:
+                return data['data']
+        
+        st.error(f"Failed to get option chain data: {response.status_code}")
+        return None
+        
+    except Exception as e:
+        st.error(f"Error fetching option chain data: {e}")
+        return None
+
+def process_option_chain_data(option_data, spot_price):
+    """Process option chain data into DataFrame format"""
+    if not option_data or 'oc' not in option_data:
+        return pd.DataFrame()
+    
+    processed_data = []
+    
+    for strike_str, strike_data in option_data['oc'].items():
+        strike = float(strike_str)
+        
+        # Process CE data
+        ce_data = strike_data.get('ce', {})
+        pe_data = strike_data.get('pe', {})
+        
+        row = {
+            'strikePrice': strike,
+            # CE data
+            'lastPrice_CE': ce_data.get('last_price', 0),
+            'openInterest_CE': ce_data.get('oi', 0),
+            'changeinOpenInterest_CE': ce_data.get('oi', 0) - ce_data.get('previous_oi', 0),
+            'totalTradedVolume_CE': ce_data.get('volume', 0),
+            'impliedVolatility_CE': ce_data.get('implied_volatility', 0),
+            'askQty_CE': ce_data.get('top_ask_quantity', 0),
+            'bidQty_CE': ce_data.get('top_bid_quantity', 0),
+            'askPrice_CE': ce_data.get('top_ask_price', 0),
+            'bidPrice_CE': ce_data.get('top_bid_price', 0),
+            'previous_close_price_CE': ce_data.get('previous_close_price', 0),
+            'previous_volume_CE': ce_data.get('previous_volume', 0),
+            # Greeks for CE
+            'Delta_CE': ce_data.get('greeks', {}).get('delta', 0),
+            'Gamma_CE': ce_data.get('greeks', {}).get('gamma', 0),
+            'Vega_CE': ce_data.get('greeks', {}).get('vega', 0),
+            'Theta_CE': ce_data.get('greeks', {}).get('theta', 0),
+            
+            # PE data
+            'lastPrice_PE': pe_data.get('last_price', 0),
+            'openInterest_PE': pe_data.get('oi', 0),
+            'changeinOpenInterest_PE': pe_data.get('oi', 0) - pe_data.get('previous_oi', 0),
+            'totalTradedVolume_PE': pe_data.get('volume', 0),
+            'impliedVolatility_PE': pe_data.get('implied_volatility', 0),
+            'askQty_PE': pe_data.get('top_ask_quantity', 0),
+            'bidQty_PE': pe_data.get('top_bid_quantity', 0),
+            'askPrice_PE': pe_data.get('top_ask_price', 0),
+            'bidPrice_PE': pe_data.get('top_bid_price', 0),
+            'previous_close_price_PE': pe_data.get('previous_close_price', 0),
+            'previous_volume_PE': pe_data.get('previous_volume', 0),
+            # Greeks for PE
+            'Delta_PE': pe_data.get('greeks', {}).get('delta', 0),
+            'Gamma_PE': pe_data.get('greeks', {}).get('gamma', 0),
+            'Vega_PE': pe_data.get('greeks', {}).get('vega', 0),
+            'Theta_PE': pe_data.get('greeks', {}).get('theta', 0)
+        }
+        
+        processed_data.append(row)
+    
+    df = pd.DataFrame(processed_data)
+    
+    if df.empty:
+        return df
+    
+    # Add zone classification
+    atm_strike = min(df['strikePrice'], key=lambda x: abs(x - spot_price))
+    df['Zone'] = df['strikePrice'].apply(
+        lambda x: 'ATM' if x == atm_strike else 'ITM' if x < spot_price else 'OTM'
+    )
+    
+    return df.sort_values('strikePrice')
 
 def store_oi_volume_data(timestamp, strike, oi_ce, oi_pe, volume_ce, volume_pe):
     """Store OI and volume data in Supabase"""
@@ -149,25 +370,6 @@ def check_oi_volume_spikes(current_data, historical_data, strike, threshold=2.0)
         alerts.append(f"🔥 Volume Spike PE at {strike}: {current_data['volume_pe']:,.0f} (avg: {avg_volume_pe:,.0f})")
     
     return alerts
-
-def calculate_greeks(option_type, S, K, T, r, sigma):
-    """Calculate option greeks using Black-Scholes model"""
-    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-    d2 = d1 - sigma * math.sqrt(T)
-    
-    if option_type == 'CE':
-        delta = norm.cdf(d1)
-        theta = (-(S * norm.pdf(d1) * sigma)/(2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2))/365
-        rho = (K * T * math.exp(-r * T) * norm.cdf(d2))/100
-    else:
-        delta = -norm.cdf(-d1)
-        theta = (-(S * norm.pdf(d1) * sigma)/(2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2))/365
-        rho = (-K * T * math.exp(-r * T) * norm.cdf(-d2))/100
-    
-    gamma = norm.pdf(d1)/(S * sigma * math.sqrt(T))
-    vega = S * norm.pdf(d1) * math.sqrt(T)/100
-    
-    return round(delta, 4), round(gamma, 4), round(vega, 4), round(theta, 4), round(rho, 4)
 
 def final_verdict(score):
     """Convert bias score to trading verdict"""
@@ -413,7 +615,7 @@ def display_call_log_book():
         )
 
 def analyze():
-    """Main analysis function"""
+    """Main analysis function using DhanHQ API"""
     if 'trade_log' not in st.session_state:
         st.session_state.trade_log = []
     
@@ -422,36 +624,21 @@ def analyze():
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("19:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         # Check market hours
         if current_day >= 5 or not (market_start <= current_time <= market_end):
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
             return
 
-        # Initialize session
-        headers = {"User-Agent": "Mozilla/5.0"}
-        session = requests.Session()
-        session.headers.update(headers)
-        
-        # First request to establish session
-        try:
-            session.get("https://www.nseindia.com", timeout=5)
-        except requests.exceptions.RequestException as e:
-            st.error(f"❌ Failed to establish NSE session: {e}")
+        # Check DhanHQ credentials
+        if not dhan_config["client_id"] or not dhan_config["access_token"]:
+            st.error("❌ DhanHQ credentials not configured. Please add DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN to secrets.")
             return
 
-        # Get VIX data first
-        vix_url = "https://www.nseindia.com/api/equity-stockIndices?index=INDIA%20VIX"
-        try:
-            vix_response = session.get(vix_url, timeout=10)
-            vix_response.raise_for_status()
-            vix_data = vix_response.json()
-            vix_value = vix_data['data'][0]['lastPrice']
-        except Exception as e:
-            st.error(f"❌ Failed to get VIX data: {e}")
-            vix_value = 11 # Default value if API fails
-
+        # Get VIX data
+        vix_value = get_vix_data()
+        
         # Set dynamic PCR thresholds based on VIX
         if vix_value > 12:
             st.session_state.pcr_threshold_bull = 2.0
@@ -462,60 +649,41 @@ def analyze():
             st.session_state.pcr_threshold_bear = 0.7
             volatility_status = "Low Volatility"
 
+        # Get Nifty spot price
+        spot_price = get_nifty_spot_price()
+        if not spot_price:
+            st.error("❌ Failed to get Nifty spot price")
+            return
+
+        # Get expiry dates
+        expiry_dates = get_nifty_expiry_list()
+        if not expiry_dates:
+            st.error("❌ Failed to get expiry dates")
+            return
+
+        # Use the nearest expiry
+        current_expiry = expiry_dates[0]
+        
         # Get option chain data
-        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-        try:
-            response = session.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-        except Exception as e:
-            st.error(f"❌ Failed to get option chain data: {e}")
+        option_data = get_option_chain_data(current_expiry)
+        if not option_data:
+            st.error("❌ Failed to get option chain data")
             return
-
-        # Check if data is empty
-        if not data or 'records' not in data:
-            st.error("❌ Empty or invalid response from NSE API")
-            return
-
-        records = data['records']['data']
-        expiry = data['records']['expiryDates'][0]
-        underlying = data['records']['underlyingValue']
 
         # Display market info
-        st.markdown(f"### 📍 Spot Price: {underlying}")
+        st.markdown(f"### 📍 Spot Price: {spot_price}")
         st.markdown(f"### 📊 VIX: {vix_value} ({volatility_status}) | PCR Thresholds: Bull >{st.session_state.pcr_threshold_bull} | Bear <{st.session_state.pcr_threshold_bear}")
 
-        # Non-expiry day processing
-        expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
-        today = datetime.now(timezone("Asia/Kolkata"))
-        T = max((expiry_date - today).days, 1) / 365
-        r = 0.06
-
         # Process option chain data
-        calls, puts = [], []
-        for item in records:
-            if 'CE' in item and item['CE']['expiryDate'] == expiry:
-                ce = item['CE']
-                if ce['impliedVolatility'] > 0:
-                    greeks = calculate_greeks('CE', underlying, ce['strikePrice'], T, r, ce['impliedVolatility'] / 100)
-                    ce.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
-                calls.append(ce)
-
-            if 'PE' in item and item['PE']['expiryDate'] == expiry:
-                pe = item['PE']
-                if pe['impliedVolatility'] > 0:
-                    greeks = calculate_greeks('PE', underlying, pe['strikePrice'], T, r, pe['impliedVolatility'] / 100)
-                    pe.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
-                puts.append(pe)
-
-        df_ce = pd.DataFrame(calls)
-        df_pe = pd.DataFrame(puts)
-        df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
+        df = process_option_chain_data(option_data, spot_price)
+        
+        if df.empty:
+            st.error("❌ No option chain data available")
+            return
 
         # Filter strikes around ATM
-        atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
+        atm_strike = min(df['strikePrice'], key=lambda x: abs(x - spot_price))
         df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
-        df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
 
         # === OI/VOLUME SPIKE DETECTION ===
@@ -564,7 +732,7 @@ def analyze():
                         if "Spike" in alert:
                             send_telegram_message(
                                 f"🚨 {alert}\n"
-                                f"📍 Spot: {underlying}\n"
+                                f"📍 Spot: {spot_price}\n"
                                 f"⏰ Time: {current_time_str}\n"
                                 f"📊 VIX: {vix_value}"
                             )
@@ -675,14 +843,14 @@ def analyze():
 
         atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
         market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
-        support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
+        support_zone, resistance_zone = get_support_resistance_zones(df, spot_price)
 
         # Store zones in session state
         st.session_state.support_zone = support_zone
         st.session_state.resistance_zone = resistance_zone
 
         # Update price history
-        new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
+        new_row = pd.DataFrame([[current_time_str, spot_price]], columns=["Time", "Spot"])
         st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
 
         # Format support/resistance strings
@@ -698,7 +866,7 @@ def analyze():
             pass  # Skip new signals if previous trade is active
         else:
             for row in bias_results:
-                if not is_in_zone(underlying, row['Strike'], row['Level']):
+                if not is_in_zone(spot_price, row['Strike'], row['Level']):
                     continue
 
                 # Get current PCR signal for this strike
@@ -756,7 +924,7 @@ def analyze():
                     f"VIX: {vix_value} ({volatility_status})\n"
                     f"PCR: {pcr_value} ({pcr_signal})\n"
                     f"Thresholds: Bull>{st.session_state.pcr_threshold_bull} Bear<{st.session_state.pcr_threshold_bear}\n"
-                    f"📍 Spot: {underlying}\n"
+                    f"📍 Spot: {spot_price}\n"
                     f"🔹 {atm_signal}\n"
                     f"{suggested_trade}\n"
                     f"Bias Score: {total_score} ({market_view})\n"
@@ -878,21 +1046,15 @@ def analyze():
         st.markdown("### 📥 Data Export")
         if st.button("Prepare Excel Export"):
             st.session_state.export_data = True
-        handle_export_data(df_summary, underlying)
+        handle_export_data(df_summary, spot_price)
         
         # Call Log Book
         st.markdown("---")
         display_call_log_book()
         
         # Auto update call log with current price
-        auto_update_call_log(underlying)
+        auto_update_call_log(spot_price)
 
-    except json.JSONDecodeError as e:
-        st.error("❌ Failed to decode JSON response from NSE API. The market might be closed or the API is unavailable.")
-        send_telegram_message("❌ NSE API JSON decode error - Market may be closed")
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Network error: {e}")
-        send_telegram_message(f"❌ Network error: {str(e)}")
     except Exception as e:
         st.error(f"❌ Unexpected error: {e}")
         send_telegram_message(f"❌ Unexpected error: {str(e)}")
