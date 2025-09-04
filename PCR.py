@@ -265,13 +265,10 @@ def is_in_zone(spot, strike, level):
 def get_support_resistance_zones(df, spot):
     support_strikes = df[df['Level'] == "Support"]['strikePrice'].tolist()
     resistance_strikes = df[df['Level'] == "Resistance"]['strikePrice'].tolist()
-
     nearest_supports = sorted([s for s in support_strikes if s <= spot], reverse=True)[:2]
     nearest_resistances = sorted([r for r in resistance_strikes if r >= spot])[:2]
-
     support_zone = (min(nearest_supports), max(nearest_supports)) if len(nearest_supports) >= 2 else (nearest_supports[0], nearest_supports[0]) if nearest_supports else (None, None)
     resistance_zone = (min(nearest_resistances), max(nearest_resistances)) if len(nearest_resistances) >= 2 else (nearest_resistances[0], nearest_resistances[0]) if nearest_resistances else (None, None)
-
     return support_zone, resistance_zone
 
 def store_option_chain_data(option_chain_data):
@@ -611,17 +608,14 @@ def analyze():
                 store_trade_log(trade_data)
                 signal_sent = True
                 break
-
         st.markdown(f"### 📍 Spot Price: {underlying}")
         st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
         if st.session_state.use_market_logic:
             st.info(f"📈 Market Bias: **{st.session_state.market_bias}** - {market_reason}")
         st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
         st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
-
         if suggested_trade:
             st.info(f"🔹 {atm_signal}\n{suggested_trade}")
-
         with st.expander("📊 Option Chain Summary"):
             st.info(f"""
             ℹ️ PCR Interpretation:
@@ -638,7 +632,6 @@ def analyze():
             - Call PCR > Put PCR + Price Falling → Bearish
             """)
             st.dataframe(styled_df)
-
         trade_data = get_trade_log()
         if trade_data:
             st.markdown("### 📜 Trade Log")
@@ -658,64 +651,11 @@ def analyze():
                 'exit_time': 'Exit_Time'
             }, inplace=True)
             st.dataframe(df_trades)
-
-        st.markdown("---")
-        st.markdown("## 📈 Enhanced Features")
-
-        st.markdown("### 🧮 PCR Configuration")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.session_state.pcr_threshold_bull = st.number_input(
-                "Bullish PCR Threshold (>)",
-                min_value=1.0, max_value=5.0,
-                value=st.session_state.pcr_threshold_bull,
-                step=0.1
-            )
-        with col2:
-            st.session_state.pcr_threshold_bear = st.number_input(
-                "Bearish PCR Threshold (<)",
-                min_value=0.1, max_value=1.0,
-                value=st.session_state.pcr_threshold_bear,
-                step=0.1
-            )
-        with col3:
-            st.session_state.use_pcr_filter = st.checkbox(
-                "Enable PCR Filtering",
-                value=st.session_state.use_pcr_filter
-            )
-
-        st.markdown("### 🔄 Market Logic Configuration")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.session_state.use_market_logic = st.checkbox(
-                "Enable Market Logic",
-                value=st.session_state.use_market_logic,
-                help="Uses historical data to determine market bias based on PCR and price trends"
-            )
-
-        with st.expander("📈 PCR History"):
-            if not st.session_state.pcr_history.empty:
-                pcr_pivot = st.session_state.pcr_history.pivot_table(
-                    index='Time',
-                    columns='Strike',
-                    values='PCR',
-                    aggfunc='last'
-                )
-                st.line_chart(pcr_pivot)
-                st.dataframe(st.session_state.pcr_history)
-            else:
-                st.info("No PCR history recorded yet")
-
-        display_enhanced_trade_log()
-
         st.markdown("---")
         st.markdown("### 📥 Data Export")
         if st.button("Prepare Excel Export"):
             st.session_state.export_data = True
         handle_export_data(df_summary, underlying)
-
-        auto_update_call_log(underlying)
-
     except Exception as e:
         st.error(f"❌ Error: {e}")
         send_telegram_message(f"❌ Error: {str(e)}")
