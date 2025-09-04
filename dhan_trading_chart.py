@@ -1,4 +1,4 @@
-import str eamlit as st
+import streamlit as st
 import requests
 import json
 import pandas as pd
@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 from datetime import datetime, timedelta
+import pytz
 import time
 import threading
 from collections import defaultdict
@@ -16,9 +17,12 @@ import asyncio
 from typing import Dict, List, Optional
 warnings.filterwarnings('ignore')
 
+# IST timezone
+IST = pytz.timezone('Asia/Kolkata')
+
 # Page config
 st.set_page_config(
-    page_title="DhanHQ Trading Dashboard",
+    page_title="DhanHQ Trading Dashboard - IST",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -56,7 +60,7 @@ class SupabaseManager:
             
             for price_level, volume in footprint_data.items():
                 records.append({
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': datetime.now(IST).isoformat(),
                     'security_id': security_id,
                     'exchange_segment': 'NSE_EQ',
                     'price_level': float(price_level),
@@ -72,38 +76,6 @@ class SupabaseManager:
         except Exception as e:
             st.error(f"Volume footprint database error: {e}")
             return None
-    
-    def insert_alert(self, alert_type: str, message: str, security_id: str, price: float = None, volume: int = None):
-        """Insert alert into database"""
-        try:
-            result = self.supabase.table('alerts').insert({
-                'timestamp': datetime.now().isoformat(),
-                'alert_type': alert_type,
-                'message': message,
-                'security_id': security_id,
-                'exchange_segment': 'NSE_EQ',
-                'price': float(price) if price else None,
-                'volume': int(volume) if volume else None,
-                'is_sent': False
-            }).execute()
-            return result.data
-        except Exception as e:
-            st.error(f"Alert database error: {e}")
-            return None
-    
-    def get_recent_market_data(self, security_id: str, limit: int = 100):
-        """Get recent market data from database"""
-        try:
-            result = self.supabase.table('market_data')\
-                .select('*')\
-                .eq('security_id', security_id)\
-                .order('timestamp', desc=True)\
-                .limit(limit)\
-                .execute()
-            return result.data
-        except Exception as e:
-            st.error(f"Error fetching market data: {e}")
-            return []
 
 class TelegramNotifier:
     def __init__(self, bot_token: str, chat_id: str):
@@ -133,13 +105,14 @@ class TelegramNotifier:
     
     def send_chart_alert(self, alert_type: str, security_id: str, price: float, volume: int, additional_info: str = ""):
         """Send formatted trading alert"""
+        current_time = datetime.now(IST).strftime('%H:%M:%S IST')
         message = f"""
 🚨 <b>{alert_type.upper()} ALERT</b> 🚨
 
 📊 <b>Security:</b> {security_id}
 💰 <b>Price:</b> ₹{price:.2f}
 📈 <b>Volume:</b> {volume:,}
-⏰ <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}
+⏰ <b>Time:</b> {current_time}
 
 {additional_info}
 
@@ -147,6 +120,115 @@ class TelegramNotifier:
         """.strip()
         
         return self.send_message(message)
+
+class VolumeFootprintIndicator:
+    """Pine Script Volume Footprint Indicator converted to Python"""
+    
+    def __init__(self, bins=20, timeframe='1D'):
+        self.bins = bins
+        self.timeframe = timeframe
+        self.poc_color = '#298ada'
+        self.bg_color = 'rgba(120, 123, 134, 0.9)'
+        
+        # State variables (equivalent to Pine Script var declarations)
+        self.source_h = None
+        self.source_l = None
+        self.src_h = []
+        self.src_l = []
+        self.array_freq = [0.0] * bins
+        self.volume_profile = defaultdict(float)
+        self.current_session_start = None
+        
+    def detect_htf_change(self, current_data, previous_data):
+        """Detect higher timeframe change"""
+        if not previous_data or not current_data:
+            return True
+            
+        current_time = pd.to_datetime(current_data['timestamp'])
+        previous_time = pd.to_datetime(previous_data['timestamp'])
+        
+        if self.timeframe == '1D':
+            return current_time.date() != previous_time.date()
+        elif self.timeframe == '1W':
+            return current_time.isocalendar()[1] != previous_time.isocalendar()[1]
+        elif self.timeframe == '1M':
+            return current_time.month != previous_time.month
+        else:
+            return False
+    
+    def update_volume_footprint(self, data_df):
+        """Update volume footprint based on Pine Script logic"""
+        if data_df.empty:
+            return None, None
+            
+        current_data = data_df.iloc[-1]
+        previous_data = data_df.iloc[-2] if len(data_df) > 1 else None
+        
+        htf_change = self.detect_htf_change(current_data, previous_data)
+        
+        if htf_change:
+            # Reset for new session
+            self.src_h = []
+            self.src_l = []
+            self.array_freq = [0.0] * self.bins
+            self.volume_profile = defaultdict(float)
+            self.current_session_start = current_data['timestamp']
+        
+        # Update high and low arrays
+        self.src_h.append(current_data['high'])
+        self.src_l.append(current_data['low'])
+        
+        # Calculate session high and low
+        self.source_h = max(self.src_h) if self.src_h else current_data['high']
+        self.source_l = min(self.src_l) if self.src_l else current_data['low']
+        
+        # Update high and lows as in Pine Script
+        if current_data['high'] > self.source_h:
+            self.source_h = current_data['high']
+        if current_data['low'] < self.source_l:
+            self.source_l = current_data['low']
+        
+        # Calculate step size
+        price_range = self.source_h - self.source_l
+        step = price_range / self.bins if price_range > 0 else 0
+        
+        if step > 0:
+            # Calculate normalized volume (equivalent to Pine Script volume / ta.stdev(volume, 200))
+            volume_series = data_df['volume'].tail(200)
+            volume_stdev = volume_series.std() if len(volume_series) > 1 else 1
+            volume_val = current_data['volume'] / volume_stdev if volume_stdev > 0 else current_data['volume']
+            
+            # Update frequency array
+            for i in range(self.bins):
+                lower = self.source_l + i * step
+                upper = lower + step
+                
+                # Check if current close price falls in this bin
+                if current_data['close'] >= lower and current_data['close'] < upper:
+                    self.array_freq[i] += volume_val
+                    self.volume_profile[lower] = self.array_freq[i]
+        
+        return self.source_h, self.source_l
+    
+    def get_poc(self):
+        """Get Point of Control"""
+        if not self.volume_profile:
+            return None
+            
+        poc_price = max(self.volume_profile, key=self.volume_profile.get)
+        poc_volume = self.volume_profile[poc_price]
+        
+        return {'price': poc_price, 'volume': poc_volume}
+    
+    def get_volume_profile_data(self):
+        """Get volume profile data for visualization"""
+        if not self.volume_profile:
+            return [], []
+            
+        prices = list(self.volume_profile.keys())
+        volumes = list(self.volume_profile.values())
+        
+        return prices, volumes
 
 class DhanTradingDashboard:
     def __init__(self):
@@ -165,41 +247,30 @@ class DhanTradingDashboard:
         self.db = SupabaseManager(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
         self.telegram = TelegramNotifier(st.secrets["TELEGRAM_BOT_TOKEN"], st.secrets["TELEGRAM_CHAT_ID"])
         
-        # Volume Footprint settings
-        self.bins = 20
-        self.timeframe = '1D'
+        # Initialize Volume Footprint Indicator
+        self.volume_footprint_indicator = VolumeFootprintIndicator(bins=20, timeframe='1D')
         
         # Alert thresholds
         self.volume_spike_threshold = 2.0
         self.price_change_threshold = 0.02
         
-        # Session data
-        if 'current_high' not in st.session_state:
+        # Session data initialization
+        if 'chart_data' not in st.session_state:
+            st.session_state.chart_data = pd.DataFrame()
             st.session_state.current_high = None
             st.session_state.current_low = None
-            st.session_state.volume_profile = defaultdict(float)
-            st.session_state.chart_data = pd.DataFrame()
-            st.session_state.previous_poc = None
             st.session_state.last_update = None
+    
+    def get_ist_time(self):
+        """Get current IST time"""
+        return datetime.now(IST)
     
     def fetch_historical_data(self, security_id="13", exchange_segment="IDX_I", 
                             instrument="INDEX", from_date=None, to_date=None, 
                             interval=None, oi=False):
-        """
-        Fetch historical data from DhanHQ API
-        
-        Parameters:
-        - security_id: Exchange standard ID for each scrip
-        - exchange_segment: Exchange & segment for which data is to be fetched
-        - instrument: Instrument type of the scrip
-        - from_date: Start date of the desired range (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)
-        - to_date: End date of the desired range (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)
-        - interval: For intraday data - 1, 5, 15, 25, 60 minutes
-        - oi: Boolean to include Open Interest data for Futures & Options
-        """
+        """Fetch historical data from DhanHQ API with IST timezone"""
         try:
             if interval:
-                # Intraday historical data
                 url = f"{self.base_url}/charts/intraday"
                 payload = {
                     "securityId": security_id,
@@ -211,7 +282,6 @@ class DhanTradingDashboard:
                     "toDate": to_date
                 }
             else:
-                # Daily historical data
                 url = f"{self.base_url}/charts/historical"
                 payload = {
                     "securityId": security_id,
@@ -234,9 +304,9 @@ class DhanTradingDashboard:
                     st.warning("No historical data available for this instrument")
                     return self.create_sample_data(security_id, exchange_segment, instrument)
                 
-                # Convert to DataFrame
+                # Convert to DataFrame with IST timezone
                 df = pd.DataFrame({
-                    'timestamp': pd.to_datetime(data['timestamp'], unit='s'),
+                    'timestamp': pd.to_datetime(data['timestamp'], unit='s', utc=True).dt.tz_convert(IST),
                     'open': data['open'],
                     'high': data['high'],
                     'low': data['low'],
@@ -266,9 +336,8 @@ class DhanTradingDashboard:
             return self.create_sample_data(security_id, exchange_segment, instrument)
     
     def create_sample_data(self, security_id, exchange_segment, instrument):
-        """Create sample data when API is unavailable"""
+        """Create sample data with IST timezone"""
         try:
-            # Base prices for different instruments
             base_prices = {
                 "13": 24000,    # Nifty 50
                 "51": 80000,    # Sensex
@@ -280,18 +349,19 @@ class DhanTradingDashboard:
             
             base_price = base_prices.get(security_id, 4500)
             
-            # Generate 30 days of sample data
-            end_time = datetime.now()
+            # Generate sample data with IST timezone
+            end_time = self.get_ist_time()
             start_time = end_time - timedelta(days=30)
             
-            # Create timestamps
             timestamps = []
             current_time = start_time
             
             while current_time < end_time:
                 if current_time.weekday() < 5:  # Weekdays only
-                    timestamps.append(current_time)
-                current_time += timedelta(hours=1)
+                    # Market hours: 9:15 AM to 3:30 PM IST
+                    if 9 <= current_time.hour <= 15:
+                        timestamps.append(current_time)
+                current_time += timedelta(minutes=5)
             
             # Generate OHLC data
             np.random.seed(42)
@@ -325,7 +395,7 @@ class DhanTradingDashboard:
                 current_price = close_price
             
             df = pd.DataFrame(data)
-            st.info(f"Using sample data with {len(df)} candles for {security_id}")
+            st.info(f"Using sample data with {len(df)} candles for {security_id} (IST timezone)")
             
             return df
             
@@ -334,7 +404,7 @@ class DhanTradingDashboard:
             return pd.DataFrame()
     
     def fetch_market_data(self, security_id="13", exchange_segment="IDX_I"):
-        """Fetch real-time market data using DhanHQ API"""
+        """Fetch real-time market data with IST timestamp"""
         try:
             quote_url = f"{self.base_url}/marketfeed/quote"
             quote_payload = {exchange_segment: [int(security_id)]}
@@ -370,9 +440,9 @@ class DhanTradingDashboard:
             return None
     
     def process_market_data(self, raw_data):
-        """Process raw market data into structured format"""
+        """Process raw market data with IST timestamp"""
         try:
-            current_time = datetime.now()
+            current_time = self.get_ist_time()
             
             processed_data = {
                 'timestamp': current_time,
@@ -391,67 +461,16 @@ class DhanTradingDashboard:
             st.error(f"Error processing market data: {e}")
             return None
     
-    def update_volume_footprint(self, market_data):
-        """Update volume footprint data"""
-        if not market_data:
+    def update_volume_footprint_with_indicator(self, data_df):
+        """Update volume footprint using Pine Script indicator logic"""
+        if data_df.empty:
             return
             
-        current_price = market_data['close']
-        volume = market_data['volume']
-        high = market_data['high']
-        low = market_data['low']
+        session_high, session_low = self.volume_footprint_indicator.update_volume_footprint(data_df)
         
-        # Initialize session if needed
-        if st.session_state.current_high is None or st.session_state.current_low is None:
-            st.session_state.current_high = high
-            st.session_state.current_low = low
-        else:
-            # Update session high/low
-            if high > st.session_state.current_high:
-                st.session_state.current_high = high
-            if low < st.session_state.current_low:
-                st.session_state.current_low = low
-        
-        # Calculate volume footprint
-        if st.session_state.current_high > st.session_state.current_low:
-            price_range = st.session_state.current_high - st.session_state.current_low
-            step = price_range / self.bins if self.bins > 0 else 1
-            
-            # Volume weighted calculation
-            recent_data = st.session_state.chart_data.tail(200) if len(st.session_state.chart_data) > 0 else pd.DataFrame()
-            if len(recent_data) > 1:
-                volume_stdev = recent_data['volume'].std()
-                volume_val = volume / volume_stdev if volume_stdev > 0 else volume
-            else:
-                volume_val = volume
-            
-            # Find which bin this price falls into
-            if step > 0:
-                bin_index = int((current_price - st.session_state.current_low) / step)
-                bin_index = max(0, min(bin_index, self.bins - 1))
-                
-                # Update volume profile
-                bin_price = st.session_state.current_low + (bin_index * step)
-                st.session_state.volume_profile[bin_price] += volume_val
-        
-        # Store volume footprint in database
-        if market_data.get('security_id'):
-            self.db.insert_volume_footprint(
-                market_data['security_id'],
-                dict(st.session_state.volume_profile),
-                st.session_state.current_high,
-                st.session_state.current_low
-            )
-    
-    def calculate_poc(self):
-        """Calculate Point of Control"""
-        if not st.session_state.volume_profile:
-            return None
-            
-        poc_price = max(st.session_state.volume_profile, key=st.session_state.volume_profile.get)
-        poc_volume = st.session_state.volume_profile[poc_price]
-        
-        return {'price': poc_price, 'volume': poc_volume}
+        if session_high and session_low:
+            st.session_state.current_high = session_high
+            st.session_state.current_low = session_low
     
     def check_alerts(self, market_data, security_id):
         """Check for trading alerts"""
@@ -468,24 +487,22 @@ class DhanTradingDashboard:
         # Volume spike alert
         if current_volume > avg_volume * self.volume_spike_threshold and avg_volume > 0:
             alert_msg = f"Volume spike: {current_volume:,} vs avg {avg_volume:,.0f}"
-            self.db.insert_alert("VOLUME_SPIKE", alert_msg, security_id, current_price, current_volume)
             self.telegram.send_chart_alert("VOLUME_SPIKE", security_id, current_price, current_volume, alert_msg)
             st.success(f"🚨 Volume Spike Alert: {alert_msg}")
         
         # Price change alert
         if len(st.session_state.chart_data) > 1:
-            previous_price = st.session_state.chart_data.iloc[-1]['close']
+            previous_price = st.session_state.chart_data.iloc[-2]['close']
             price_change_pct = abs((current_price - previous_price) / previous_price)
             
             if price_change_pct > self.price_change_threshold:
                 direction = "UP" if current_price > previous_price else "DOWN"
                 alert_msg = f"Price movement {direction}: {price_change_pct*100:.1f}%"
-                self.db.insert_alert("PRICE_CHANGE", alert_msg, security_id, current_price, current_volume)
                 self.telegram.send_chart_alert("PRICE_CHANGE", security_id, current_price, current_volume, alert_msg)
                 st.warning(f"📈 Price Change Alert: {alert_msg}")
     
-    def create_candlestick_chart(self, data):
-        """Create candlestick chart with volume footprint using Plotly"""
+    def create_candlestick_chart_with_footprint(self, data, show_volume_boxes=True):
+        """Create candlestick chart with Pine Script volume footprint overlay"""
         if data is None or len(data) == 0:
             return None
             
@@ -493,7 +510,7 @@ class DhanTradingDashboard:
             rows=2, cols=1,
             shared_xaxes=True,
             vertical_spacing=0.03,
-            subplot_titles=('Price Action with Volume Footprint', 'Volume'),
+            subplot_titles=('Price Action with Volume Footprint [BigBeluga]', 'Volume'),
             row_heights=[0.7, 0.3]
         )
         
@@ -505,13 +522,15 @@ class DhanTradingDashboard:
                 high=data['high'],
                 low=data['low'],
                 close=data['close'],
-                name='Price'
+                name='Price',
+                increasing_line_color='#26a69a',
+                decreasing_line_color='#ef5350'
             ),
             row=1, col=1
         )
         
         # Volume bars
-        colors = ['green' if close >= open else 'red' 
+        colors = ['#26a69a' if close >= open else '#ef5350' 
                  for close, open in zip(data['close'], data['open'])]
         
         fig.add_trace(
@@ -525,91 +544,132 @@ class DhanTradingDashboard:
             row=2, col=1
         )
         
-        # Add POC line if available
-        poc_data = self.calculate_poc()
+        # Add Volume Footprint Boxes (Pine Script style)
+        if show_volume_boxes:
+            prices, volumes = self.volume_footprint_indicator.get_volume_profile_data()
+            poc_data = self.volume_footprint_indicator.get_poc()
+            
+            if prices and volumes:
+                max_volume = max(volumes)
+                
+                for i, (price, volume) in enumerate(zip(prices, volumes)):
+                    # Calculate box width based on volume
+                    width_ratio = volume / max_volume if max_volume > 0 else 0
+                    
+                    # Color based on POC
+                    is_poc = poc_data and abs(price - poc_data['price']) < 0.01
+                    color = self.volume_footprint_indicator.poc_color if is_poc else 'rgba(126, 132, 146, 0.5)'
+                    
+                    # Add volume footprint rectangles
+                    step = (st.session_state.current_high - st.session_state.current_low) / self.volume_footprint_indicator.bins
+                    
+                    fig.add_shape(
+                        type="rect",
+                        x0=data['timestamp'].iloc[-1],
+                        x1=data['timestamp'].iloc[-1] + pd.Timedelta(minutes=int(width_ratio * 60)),
+                        y0=price,
+                        y1=price + step,
+                        fillcolor=color,
+                        opacity=0.6,
+                        line=dict(color=color, width=1),
+                        row=1, col=1
+                    )
+        
+        # Add POC line
+        poc_data = self.volume_footprint_indicator.get_poc()
         if poc_data:
             fig.add_hline(
                 y=poc_data['price'],
                 line_dash="dash",
-                line_color="#298ada",
+                line_color=self.volume_footprint_indicator.poc_color,
+                line_width=2,
                 annotation_text=f"POC: {poc_data['price']:.2f}",
                 row=1, col=1
             )
         
-        # Add session high/low lines
+        # Add session high/low lines (Pine Script style)
         if st.session_state.current_high and st.session_state.current_low:
             fig.add_hline(
                 y=st.session_state.current_high,
-                line_color="green",
+                line_color="#26a69a",
                 line_width=1,
                 annotation_text=f"High: {st.session_state.current_high:.2f}",
                 row=1, col=1
             )
             fig.add_hline(
                 y=st.session_state.current_low,
-                line_color="red", 
+                line_color="#ef5350", 
                 line_width=1,
                 annotation_text=f"Low: {st.session_state.current_low:.2f}",
                 row=1, col=1
             )
         
-        # Update layout
+        # Update layout with dark theme (TradingView style)
         fig.update_layout(
-            title="DhanHQ Real-time Trading Dashboard",
+            title="DhanHQ Real-time Trading Dashboard with Volume Footprint [BigBeluga]",
             xaxis_rangeslider_visible=False,
             height=800,
             showlegend=True,
-            template="plotly_dark"
+            template="plotly_dark",
+            font=dict(color='white'),
+            paper_bgcolor='#131722',
+            plot_bgcolor='#131722'
         )
         
         return fig
     
     def create_volume_footprint_chart(self):
-        """Create volume footprint visualization"""
-        if not st.session_state.volume_profile:
+        """Create separate volume footprint visualization"""
+        prices, volumes = self.volume_footprint_indicator.get_volume_profile_data()
+        
+        if not prices or not volumes:
             return None
         
-        prices = list(st.session_state.volume_profile.keys())
-        volumes = list(st.session_state.volume_profile.values())
-        
         # Create horizontal bar chart
-        fig = go.Figure(go.Bar(
+        fig = go.Figure()
+        
+        # Get POC for highlighting
+        poc_data = self.volume_footprint_indicator.get_poc()
+        
+        colors = []
+        for i, (price, volume) in enumerate(zip(prices, volumes)):
+            is_poc = poc_data and abs(price - poc_data['price']) < 0.01
+            colors.append(self.volume_footprint_indicator.poc_color if is_poc else 'rgba(126, 132, 146, 0.7)')
+        
+        fig.add_trace(go.Bar(
             x=volumes,
             y=prices,
             orientation='h',
-            marker_color='#298ada',
-            name='Volume Profile'
+            marker_color=colors,
+            name='Volume Profile',
+            text=[f'{v:.1f}' for v in volumes],
+            textposition='auto'
         ))
         
-        # Highlight POC
-        poc_data = self.calculate_poc()
-        if poc_data:
-            max_volume_idx = volumes.index(max(volumes))
-            fig.data[0].marker.color = ['red' if i == max_volume_idx else '#298ada' 
-                                       for i in range(len(volumes))]
-        
         fig.update_layout(
-            title="Volume Footprint",
+            title="Volume Footprint Profile [BigBeluga]",
             xaxis_title="Volume",
             yaxis_title="Price Level",
             template="plotly_dark",
-            height=400
+            height=400,
+            font=dict(color='white'),
+            paper_bgcolor='#131722',
+            plot_bgcolor='#131722'
         )
         
         return fig
     
     def update_data(self, security_id, exchange_segment):
-        """Update market data with rate limit handling"""
-        # Check if we should attempt real-time fetch
+        """Update market data with rate limit handling and IST timezone"""
         last_api_call = st.session_state.get(f'last_api_call_{security_id}', datetime.min)
-        time_since_last_call = (datetime.now() - last_api_call).total_seconds()
+        time_since_last_call = (self.get_ist_time() - last_api_call).total_seconds()
         
         market_data = None
         
         # Only call API if enough time has passed (25+ seconds)
         if time_since_last_call >= 25:
             market_data = self.fetch_market_data(security_id, exchange_segment)
-            st.session_state[f'last_api_call_{security_id}'] = datetime.now()
+            st.session_state[f'last_api_call_{security_id}'] = self.get_ist_time()
             
             if market_data:
                 # Add to session state chart data
@@ -623,13 +683,13 @@ class DhanTradingDashboard:
                 if len(st.session_state.chart_data) > 1000:
                     st.session_state.chart_data = st.session_state.chart_data.tail(1000).reset_index(drop=True)
                 
-                # Update volume footprint
-                self.update_volume_footprint(market_data)
+                # Update volume footprint using Pine Script indicator
+                self.update_volume_footprint_with_indicator(st.session_state.chart_data)
                 
                 # Check for alerts
                 self.check_alerts(market_data, security_id)
                 
-                st.session_state.last_update = datetime.now()
+                st.session_state.last_update = self.get_ist_time()
         
         # Return market data or latest historical data
         if market_data:
@@ -642,7 +702,11 @@ class DhanTradingDashboard:
         return None
 
 def main():
-    st.title("📈 DhanHQ Real-time Trading Dashboard")
+    st.title("📈 DhanHQ Trading Dashboard with Volume Footprint [BigBeluga] - IST")
+    
+    # Display current IST time
+    current_ist = datetime.now(IST)
+    st.sidebar.info(f"Current IST Time: {current_ist.strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Check if secrets are configured
     try:
@@ -671,9 +735,9 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
     }
     
     # Sidebar configuration
-    st.sidebar.header("Configuration")
+    st.sidebar.header("📊 Configuration")
     
-    # Let user select from available instruments or enter custom ID
+    # Instrument selection
     instrument_options = list(instruments.keys()) + ["Custom"]
     selected_instrument = st.sidebar.selectbox("Select Instrument", instrument_options)
     
@@ -694,25 +758,66 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
         instrument_type = instruments[selected_instrument]["instrument"]
         selected_instrument_name = selected_instrument
     
+    # Trading session settings
+    st.sidebar.header("⚡ Live Trading")
     update_interval = st.sidebar.slider("Update Interval (seconds)", 20, 60, 23)
-    auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
+    auto_refresh = st.sidebar.checkbox("Auto Refresh Live Data", value=True)
+    
+    # Data display options
+    st.sidebar.header("📈 Data Display Options")
+    data_mode = st.sidebar.radio(
+        "Select Data Mode",
+        ["Present Day Only", "Historical + Live", "Historical Only"],
+        index=1
+    )
+    
+    # Volume Footprint settings
+    st.sidebar.header("📊 Volume Footprint [BigBeluga]")
+    vf_bins = st.sidebar.slider("Volume Footprint Bins", 10, 40, 20)
+    vf_timeframe = st.sidebar.selectbox(
+        "Footprint Timeframe",
+        ["1D", "2D", "3D", "4D", "5D", "1W", "2W", "3W", "1M", "2M", "3M"],
+        index=0
+    )
+    show_dynamic_poc = st.sidebar.checkbox("Show Dynamic POC", value=False)
+    show_volume_boxes = st.sidebar.checkbox("Show Volume Boxes", value=True)
+    
+    # Update volume footprint settings
+    dashboard.volume_footprint_indicator.bins = vf_bins
+    dashboard.volume_footprint_indicator.timeframe = vf_timeframe
     
     # Historical data section
-    st.sidebar.header("Historical Data")
-    historical_days = st.sidebar.slider("Days of Historical Data", 1, 90, 30)
-    use_intraday = st.sidebar.checkbox("Use Intraday Data (5min)", value=True)
+    st.sidebar.header("📅 Historical Data")
     
-    if st.sidebar.button("Load Historical Data"):
+    if data_mode == "Present Day Only":
+        # Load only today's data
+        historical_days = 1
+        use_intraday = True
+        st.sidebar.info("Loading present day data only")
+    else:
+        historical_days = st.sidebar.slider("Days of Historical Data", 1, 90, 7)
+        use_intraday = st.sidebar.checkbox("Use Intraday Data (5min)", value=True)
+    
+    if st.sidebar.button("🔄 Reload Historical Data"):
         with st.spinner("Loading historical data..."):
-            to_date = datetime.now().strftime("%Y-%m-%d")
-            from_date = (datetime.now() - timedelta(days=historical_days)).strftime("%Y-%m-%d")
+            current_ist = dashboard.get_ist_time()
             
-            if use_intraday:
-                from_date += " 09:15:00"
-                to_date += " 15:30:00"
+            if data_mode == "Present Day Only":
+                # Today's data only
+                from_date = current_ist.strftime("%Y-%m-%d 09:15:00")
+                to_date = current_ist.strftime("%Y-%m-%d 15:30:00")
                 interval = "5"
             else:
-                interval = None
+                # Multi-day data
+                to_date = current_ist.strftime("%Y-%m-%d")
+                from_date = (current_ist - timedelta(days=historical_days)).strftime("%Y-%m-%d")
+                
+                if use_intraday:
+                    from_date += " 09:15:00"
+                    to_date += " 15:30:00"
+                    interval = "5"
+                else:
+                    interval = None
             
             historical_data = dashboard.fetch_historical_data(
                 security_id=security_id,
@@ -728,32 +833,32 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
                 
                 # Initialize volume footprint from historical data
                 if len(historical_data) > 0:
-                    st.session_state.current_high = historical_data['high'].max()
-                    st.session_state.current_low = historical_data['low'].min()
-                    
-                    # Calculate volume footprint from historical data
-                    st.session_state.volume_profile = defaultdict(float)
-                    price_range = st.session_state.current_high - st.session_state.current_low
-                    
-                    if price_range > 0:
-                        step = price_range / dashboard.bins
-                        for _, row in historical_data.iterrows():
-                            if step > 0:
-                                bin_index = int((row['close'] - st.session_state.current_low) / step)
-                                bin_index = max(0, min(bin_index, dashboard.bins - 1))
-                                bin_price = st.session_state.current_low + (bin_index * step)
-                                st.session_state.volume_profile[bin_price] += row['volume']
+                    dashboard.update_volume_footprint_with_indicator(historical_data)
                 
-                st.success(f"Loaded {len(historical_data)} historical data points for {selected_instrument_name}")
+                st.success(f"Loaded {len(historical_data)} data points for {selected_instrument_name}")
             else:
                 st.error("Failed to load historical data")
     
-    # Auto-load historical data on first run
-    if 'data_initialized' not in st.session_state:
+    # Auto-load data on first run or instrument change
+    if ('data_initialized' not in st.session_state or 
+        st.session_state.get('last_instrument') != selected_instrument):
+        
         st.session_state.data_initialized = True
-        with st.spinner(f"Auto-loading historical data for {selected_instrument_name}..."):
-            to_date = datetime.now().strftime("%Y-%m-%d 15:30:00")
-            from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d 09:15:00")
+        st.session_state.last_instrument = selected_instrument
+        
+        with st.spinner(f"Auto-loading data for {selected_instrument_name}..."):
+            current_ist = dashboard.get_ist_time()
+            
+            if data_mode == "Present Day Only":
+                from_date = current_ist.strftime("%Y-%m-%d 09:15:00")
+                to_date = current_ist.strftime("%Y-%m-%d 15:30:00")
+                interval = "5"
+                days = 1
+            else:
+                days = 7  # Default 7 days
+                to_date = current_ist.strftime("%Y-%m-%d 15:30:00")
+                from_date = (current_ist - timedelta(days=days)).strftime("%Y-%m-%d 09:15:00")
+                interval = "5"
             
             historical_data = dashboard.fetch_historical_data(
                 security_id=security_id,
@@ -761,66 +866,56 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
                 instrument=instrument_type,
                 from_date=from_date,
                 to_date=to_date,
-                interval="5"
+                interval=interval
             )
             
             if historical_data is not None and len(historical_data) > 0:
                 st.session_state.chart_data = historical_data
-                
-                # Initialize volume footprint from historical data
-                if len(historical_data) > 0:
-                    st.session_state.current_high = historical_data['high'].max()
-                    st.session_state.current_low = historical_data['low'].min()
-                    
-                    # Calculate volume footprint from historical data
-                    st.session_state.volume_profile = defaultdict(float)
-                    price_range = st.session_state.current_high - st.session_state.current_low
-                    
-                    if price_range > 0:
-                        step = price_range / dashboard.bins
-                        for _, row in historical_data.iterrows():
-                            if step > 0:
-                                bin_index = int((row['close'] - st.session_state.current_low) / step)
-                                bin_index = max(0, min(bin_index, dashboard.bins - 1))
-                                bin_price = st.session_state.current_low + (bin_index * step)
-                                st.session_state.volume_profile[bin_price] += row['volume']
+                dashboard.update_volume_footprint_with_indicator(historical_data)
     
-    # Multi-instrument tracking option
-    track_multiple = st.sidebar.checkbox("Track Multiple Instruments", value=False)
+    # Market status
+    current_ist_time = dashboard.get_ist_time()
+    is_market_hours = (current_ist_time.weekday() < 5 and 
+                      9 <= current_ist_time.hour < 16 and
+                      not (current_ist_time.hour == 15 and current_ist_time.minute > 30))
     
-    if track_multiple:
-        st.sidebar.subheader("Additional Instruments")
-        additional_instruments = st.sidebar.multiselect(
-            "Select additional instruments to track",
-            [key for key in instruments.keys() if key != selected_instrument],
-            default=[]
-        )
+    if is_market_hours:
+        st.sidebar.success("🟢 Market is Open")
+    else:
+        st.sidebar.warning("🔴 Market is Closed")
     
     # Main update logic
-    if st.sidebar.button("Manual Update") or auto_refresh:
-        # Update primary instrument
-        market_data = dashboard.update_data(security_id, exchange_segment)
-        
-        # Store additional instruments data
-        additional_data = {}
-        if track_multiple and additional_instruments:
-            for instrument_name in additional_instruments:
-                inst_config = instruments[instrument_name]
-                additional_data[instrument_name] = dashboard.update_data(
-                    inst_config["security_id"], 
-                    inst_config["exchange_segment"]
-                )
+    if st.sidebar.button("🔄 Manual Update") or (auto_refresh and data_mode != "Historical Only"):
+        # Update with live data (if not historical only mode)
+        if data_mode != "Historical Only":
+            market_data = dashboard.update_data(security_id, exchange_segment)
+        else:
+            market_data = None
+            if len(st.session_state.chart_data) > 0:
+                market_data = st.session_state.chart_data.iloc[-1].to_dict()
         
         if market_data or len(st.session_state.chart_data) > 0:
-            # Main layout
+            # Main chart layout
             col1, col2 = st.columns([3, 1])
             
             with col1:
                 if len(st.session_state.chart_data) > 0:
                     try:
-                        chart = dashboard.create_candlestick_chart(st.session_state.chart_data)
+                        # Filter data based on mode
+                        display_data = st.session_state.chart_data.copy()
+                        
+                        if data_mode == "Present Day Only":
+                            today = current_ist_time.date()
+                            display_data = display_data[display_data['timestamp'].dt.date == today]
+                        
+                        chart = dashboard.create_candlestick_chart_with_footprint(
+                            display_data, 
+                            show_volume_boxes=show_volume_boxes
+                        )
+                        
                         if chart:
-                            chart.update_layout(title=f"{selected_instrument_name} - Real-time Chart")
+                            mode_text = f" ({data_mode})" if data_mode != "Historical + Live" else ""
+                            chart.update_layout(title=f"{selected_instrument_name} - Volume Footprint [BigBeluga]{mode_text}")
                             st.plotly_chart(chart, use_container_width=True)
                         else:
                             st.error("Unable to create chart")
@@ -830,77 +925,117 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
                     st.info("Loading chart data...")
             
             with col2:
-                st.subheader("Market Info")
-                if market_data:
-                    st.metric("Current Price", f"₹{market_data['close']:.2f}")
-                    st.metric("Volume", f"{market_data['volume']:,}")
-                    st.metric("Buy Qty", f"{market_data.get('buy_quantity', 0):,}")
-                    st.metric("Sell Qty", f"{market_data.get('sell_quantity', 0):,}")
+                st.subheader("📊 Market Info")
+                
+                # Current/Latest price info
+                if market_data and data_mode != "Historical Only":
+                    st.metric("💰 Current Price", f"₹{market_data['close']:.2f}")
+                    st.metric("📈 Volume", f"{market_data['volume']:,}")
+                    st.metric("🟢 Buy Qty", f"{market_data.get('buy_quantity', 0):,}")
+                    st.metric("🔴 Sell Qty", f"{market_data.get('sell_quantity', 0):,}")
                 elif len(st.session_state.chart_data) > 0:
                     latest = st.session_state.chart_data.iloc[-1]
-                    st.metric("Last Price", f"₹{latest['close']:.2f}")
-                    st.metric("Volume", f"{latest['volume']:,}")
+                    st.metric("💰 Last Price", f"₹{latest['close']:.2f}")
+                    st.metric("📈 Volume", f"{latest['volume']:,}")
+                    st.metric("🕐 Last Update", latest['timestamp'].strftime('%H:%M IST'))
                 
+                # Session High/Low
                 if st.session_state.current_high and st.session_state.current_low:
-                    st.metric("Session High", f"₹{st.session_state.current_high:.2f}")
-                    st.metric("Session Low", f"₹{st.session_state.current_low:.2f}")
+                    st.metric("🔝 Session High", f"₹{st.session_state.current_high:.2f}")
+                    st.metric("🔻 Session Low", f"₹{st.session_state.current_low:.2f}")
                 
-                poc_data = dashboard.calculate_poc()
+                # POC Info
+                poc_data = dashboard.volume_footprint_indicator.get_poc()
                 if poc_data:
-                    st.metric("POC Price", f"₹{poc_data['price']:.2f}")
-                    st.metric("POC Volume", f"{poc_data['volume']:.1f}")
-            
-            # Additional instruments display
-            if track_multiple and additional_data and any(additional_data.values()):
-                st.subheader("📊 Additional Instruments")
-                cols = st.columns(len(additional_instruments))
+                    st.metric("🎯 POC Price", f"₹{poc_data['price']:.2f}")
+                    st.metric("📊 POC Volume", f"{poc_data['volume']:.1f}")
                 
-                for idx, (instrument_name, inst_data) in enumerate(additional_data.items()):
-                    with cols[idx]:
-                        st.subheader(instrument_name)
-                        if inst_data:
-                            st.metric("Price", f"₹{inst_data['close']:.2f}")
-                            st.metric("Volume", f"{inst_data['volume']:,}")
+                # Volume Footprint Stats
+                st.subheader("🔥 Volume Footprint")
+                prices, volumes = dashboard.volume_footprint_indicator.get_volume_profile_data()
+                if prices and volumes:
+                    st.metric("📍 Price Levels", len(prices))
+                    st.metric("📊 Total Volume", f"{sum(volumes):.1f}")
+                    st.metric("⚙️ Bins", vf_bins)
+                    st.metric("⏰ Timeframe", vf_timeframe)
             
             # Volume footprint chart
-            st.subheader(f"Volume Footprint - {selected_instrument_name}")
+            st.subheader(f"🔥 Volume Footprint Profile [BigBeluga] - {selected_instrument_name}")
             footprint_chart = dashboard.create_volume_footprint_chart()
             if footprint_chart:
                 st.plotly_chart(footprint_chart, use_container_width=True)
             else:
                 st.info("Volume footprint will appear after accumulating more data.")
             
-            # Recent data table
-            st.subheader(f"Recent Data - {selected_instrument_name}")
-            if len(st.session_state.chart_data) > 0:
-                recent_data = st.session_state.chart_data.tail(10).copy()
-                recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%H:%M:%S')
-                recent_data = recent_data.round(2)
-                st.dataframe(recent_data, use_container_width=True)
+            # Data summary and recent data table
+            col3, col4 = st.columns([1, 1])
             
-            # Status info
-            st.sidebar.success(f"✅ Connected to DhanHQ API")
-            st.sidebar.info(f"Instrument: {selected_instrument_name}")
-            st.sidebar.info(f"Security ID: {security_id}")
-            st.sidebar.info(f"Exchange: {exchange_segment}")
+            with col3:
+                st.subheader(f"📈 Recent Data - {selected_instrument_name}")
+                if len(st.session_state.chart_data) > 0:
+                    display_data = st.session_state.chart_data.copy()
+                    
+                    if data_mode == "Present Day Only":
+                        today = current_ist_time.date()
+                        display_data = display_data[display_data['timestamp'].dt.date == today]
+                    
+                    recent_data = display_data.tail(10).copy()
+                    recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%H:%M:%S IST')
+                    recent_data = recent_data.round(2)
+                    st.dataframe(recent_data[['timestamp', 'open', 'high', 'low', 'close', 'volume']], 
+                               use_container_width=True)
+            
+            with col4:
+                st.subheader("📊 Data Statistics")
+                if len(st.session_state.chart_data) > 0:
+                    stats_data = st.session_state.chart_data.copy()
+                    
+                    if data_mode == "Present Day Only":
+                        today = current_ist_time.date()
+                        stats_data = stats_data[stats_data['timestamp'].dt.date == today]
+                    
+                    if len(stats_data) > 0:
+                        st.metric("📊 Total Candles", len(stats_data))
+                        st.metric("💹 Price Range", f"₹{stats_data['close'].max() - stats_data['close'].min():.2f}")
+                        st.metric("🎯 Avg Volume", f"{stats_data['volume'].mean():,.0f}")
+                        
+                        data_start = stats_data['timestamp'].min()
+                        data_end = stats_data['timestamp'].max()
+                        st.metric("📅 Data Period", f"{data_start.strftime('%m/%d')} - {data_end.strftime('%m/%d')}")
+            
+            # Status information
+            st.sidebar.success("✅ Connected to DhanHQ API")
+            st.sidebar.info(f"🎯 Instrument: {selected_instrument_name}")
+            st.sidebar.info(f"🆔 Security ID: {security_id}")
+            st.sidebar.info(f"🏢 Exchange: {exchange_segment}")
+            st.sidebar.info(f"📊 Data Mode: {data_mode}")
             
             if st.session_state.last_update:
-                st.sidebar.info(f"Last Update: {st.session_state.last_update.strftime('%H:%M:%S')}")
+                st.sidebar.info(f"🕐 Last Update: {st.session_state.last_update.strftime('%H:%M:%S IST')}")
             
             # Data status
             if len(st.session_state.chart_data) > 0:
-                st.sidebar.metric("Data Points", len(st.session_state.chart_data))
+                total_points = len(st.session_state.chart_data)
+                
+                if data_mode == "Present Day Only":
+                    today = current_ist_time.date()
+                    today_data = st.session_state.chart_data[st.session_state.chart_data['timestamp'].dt.date == today]
+                    st.sidebar.metric("📈 Today's Data Points", len(today_data))
+                else:
+                    st.sidebar.metric("📈 Total Data Points", total_points)
+                
                 data_start = st.session_state.chart_data['timestamp'].min()
                 data_end = st.session_state.chart_data['timestamp'].max()
-                st.sidebar.info(f"Data: {data_start.strftime('%m/%d %H:%M')} to {data_end.strftime('%m/%d %H:%M')}")
+                st.sidebar.info(f"📅 Data Range: {data_start.strftime('%m/%d %H:%M')} - {data_end.strftime('%m/%d %H:%M')} IST")
             
-            # Price range info
-            if len(st.session_state.chart_data) > 0:
-                price_range = st.session_state.chart_data['close'].max() - st.session_state.chart_data['close'].min()
-                st.sidebar.metric("Price Range", f"₹{price_range:.2f}")
+            # Volume Footprint status
+            prices, volumes = dashboard.volume_footprint_indicator.get_volume_profile_data()
+            if prices and volumes:
+                st.sidebar.metric("🔥 Volume Levels", len(prices))
+                st.sidebar.success("📊 Volume Footprint Active")
             
             # Auto-refresh functionality
-            if auto_refresh:
+            if auto_refresh and data_mode != "Historical Only":
                 time.sleep(update_interval)
                 st.rerun()
         else:
