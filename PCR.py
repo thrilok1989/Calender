@@ -194,7 +194,7 @@ def determine_level(row):
 def is_in_zone(spot, strike, level):
     """Check if strike is in support/resistance zone"""
     if level in ["Support", "Resistance"]: 
-        return strike - 20 <= spot <= strike + 20
+        return strike - 10 <= spot <= strike + 10
     return False
 
 def get_support_resistance_zones(df, spot):
