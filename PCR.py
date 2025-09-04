@@ -34,7 +34,16 @@ if 'oi_volume_history' not in st.session_state:
     st.session_state.oi_volume_history = pd.DataFrame(columns=["Time", "Strike", "OI_CE", "OI_PE", "Volume_CE", "Volume_PE"])
 if 'last_alert_time' not in st.session_state:
     st.session_state.last_alert_time = {}
+if 'pcr_history' not in st.session_state:
+    st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal", "VIX"])
 
+# Initialize PCR settings with VIX-based defaults
+if 'pcr_threshold_bull' not in st.session_state:
+    st.session_state.pcr_threshold_bull = 2.0  # Will be adjusted based on VIX
+if 'pcr_threshold_bear' not in st.session_state:
+    st.session_state.pcr_threshold_bear = 0.4  # Will be adjusted based on VIX
+if 'use_pcr_filter' not in st.session_state:
+    st.session_state.use_pcr_filter = True
 # Initialize Supabase client
 @st.cache_resource
 def init_supabase():
