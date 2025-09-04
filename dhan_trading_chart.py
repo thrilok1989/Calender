@@ -41,233 +41,7 @@ def init_supabase():
         supabase_key = st.secrets.get("SUPABASE_KEY")
         if supabase_url and supabase_key:
             return create_client(supabase_url, supabase_key)
-        return     
-def display_status(self):
-        """Display API status and POC metrics"""
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("API Calls", st.session_state.api_call_count)
-        
-        with col2:
-            last_update = st.session_state.last_update
-            if last_update:
-                time_diff = datetime.now(timezone('Asia/Kolkata')) - last_update
-                st.metric("Last Update", f"{time_diff.seconds}s ago")
-            else:
-                st.metric("Last Update", "Never")
-        
-        with col3:
-            if st.session_state.current_poc:
-                st.metric("Current POC", f"{st.session_state.current_poc:.2f}")
-            else:
-                st.metric("Current POC", "Calculating...")
-        
-        with col4:
-            if st.session_state.spot_price:
-                st.metric("Spot Price", f"{st.session_state.spot_price:.2f}")
-            else:
-                st.metric("Spot Price", "Fetching...")
-    
-    def display_poc_analysis(self):
-        """Display enhanced POC analysis with strength and role detection"""
-        st.markdown("## Point of Control (POC) Analysis")
-        
-        # Get latest POC data from Supabase
-        poc_history_df = get_poc_history()
-        proximity_alerts_df = get_proximity_alerts()
-        
-        # Current POC Info with enhanced metrics
-        if not poc_history_df.empty:
-            latest_poc = poc_history_df.iloc[0]
-            
-            # Enhanced POC display
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.info(f"**POC:** {latest_poc.get('new_poc', 0):.2f}")
-            
-            with col2:
-                strength = latest_poc.get('strength', 'Unknown')
-                strength_score = latest_poc.get('strength_score', 0)
-                color = "success" if strength_score > 60 else "warning" if strength_score > 30 else "error"
-                if color == "success":
-                    st.success(f"**Strength:** {strength} ({strength_score:.1f}/100)")
-                elif color == "warning":
-                    st.warning(f"**Strength:** {strength} ({strength_score:.1f}/100)")
-                else:
-                    st.error(f"**Strength:** {strength} ({strength_score:.1f}/100)")
-            
-            with col3:
-                role = latest_poc.get('role', 'Neutral')
-                role_color = "info" if role == "Support" else "warning" if role == "Resistance" else "secondary"
-                if role_color == "info":
-                    st.info(f"**Role:** {role}")
-                elif role_color == "warning":
-                    st.warning(f"**Role:** {role}")
-                else:
-                    st.write(f"**Role:** {role}")
-            
-            with col4:
-                confidence = latest_poc.get('confidence', 0)
-                if confidence > 70:
-                    st.success(f"**Confidence:** {confidence:.1f}%")
-                elif confidence > 40:
-                    st.warning(f"**Confidence:** {confidence:.1f}%")
-                else:
-                    st.error(f"**Confidence:** {confidence:.1f}%")
-            
-            # Distance from spot price
-            if st.session_state.spot_price and latest_poc.get('new_poc'):
-                distance = abs(st.session_state.spot_price - latest_poc['new_poc'])
-                distance_pct = (distance / latest_poc['new_poc']) * 100
-                
-                st.markdown(f"""
-                **Distance Analysis:**
-                - Absolute Distance: {distance:.2f} points
-                - Percentage Distance: {distance_pct:.2f}%
-                - Status: {'🟢 Near POC' if distance_pct < 0.5 else '🟡 Moderate Distance' if distance_pct < 1.0 else '🔴 Far from POC'}
-                """)
-        
-        # POC History with enhanced data
-        if not poc_history_df.empty:
-            st.markdown("### POC Change History")
-            
-            # Format the dataframe for display
-            display_columns = ['timestamp', 'new_poc', 'strength', 'strength_score', 'role', 'confidence', 'change_pct']
-            available_columns = [col for col in display_columns if col in poc_history_df.columns]
-            
-            if available_columns:
-                recent_changes = poc_history_df[available_columns].head(10)
-                recent_changes.columns = ['Time', 'POC', 'Strength', 'Score', 'Role', 'Confidence%', 'Change%']
-                st.dataframe(recent_changes, use_container_width=True)
-        
-        # Proximity Alerts
-        if not proximity_alerts_df.empty:
-            st.markdown("### POC Proximity Alerts")
-            
-            display_columns = ['timestamp', 'spot_price', 'poc_price', 'distance_pct', 'poc_strength', 'poc_role']
-            available_columns = [col for col in display_columns if col in proximity_alerts_df.columns]
-            
-            if available_columns:
-                recent_alerts = proximity_alerts_df[available_columns].head(5)
-                recent_alerts.columns = ['Time', 'Spot', 'POC', 'Distance%', 'Strength', 'Role']
-                st.dataframe(recent_alerts, use_container_width=True)
-        
-        # Delete History Button
-        st.markdown("---")
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            if st.button("🗑️ Delete All History", type="secondary", help="This will delete all POC history and proximity alerts from database"):
-                if st.session_state.get('confirm_delete', False):
-                    with st.spinner("Deleting all history from database..."):
-                        if delete_all_history():
-                            st.success("All history deleted successfully!")
-                            st.session_state.confirm_delete = False
-                            time.sleep(2)
-                            st.rerun()
-                        else:
-                            st.error("Failed to delete history")
-                else:
-                    st.session_state.confirm_delete = True
-                    st.warning("Click again to confirm deletion of ALL history")
-        
-        with col2:
-            if st.session_state.get('confirm_delete', False):
-                if st.button("Cancel", type="primary"):
-                    st.session_state.confirm_delete = False
-                    st.rerun()
-    
-    def display_enhanced_charts(self, poc_data=None):
-        """Display trading charts with POC overlay"""
-        display_data = st.session_state.historical_data.copy()
-        
-        if not st.session_state.live_data.empty and not display_data.empty:
-            display_data = pd.concat([display_data, st.session_state.live_data], ignore_index=True)
-            display_data = display_data.drop_duplicates(subset=['datetime']).sort_values('datetime')
-        elif st.session_state.live_data.empty and display_data.empty:
-            st.warning("No data available to display")
-            return
-        
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            if not display_data.empty:
-                fig = create_candlestick_with_poc(display_data, poc_data)
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            if not st.session_state.footprint_data.empty:
-                footprint_fig = create_volume_footprint_chart(st.session_state.footprint_data, "Volume Footprint")
-                if footprint_fig:
-                    st.plotly_chart(footprint_fig, use_container_width=True)
-            else:
-                st.info("Volume footprint data will appear after analysis")
-
-def create_candlestick_with_poc(df, poc_data=None):
-    """Create candlestick chart with POC levels"""
-    if df.empty:
-        st.warning("No data to display")
         return None
-    
-    fig = go.Figure()
-    
-    # Candlestick chart
-    fig.add_trace(go.Candlestick(
-        x=df['datetime'],
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name='Price',
-        increasing_line_color='green',
-        decreasing_line_color='red'
-    ))
-    
-    # Add POC level if available
-    if poc_data and st.session_state.current_poc:
-        poc_price = st.session_state.current_poc
-        
-        # POC line
-        fig.add_hline(
-            y=poc_price,
-            line_dash="solid",
-            line_color="blue",
-            line_width=3,
-            annotation_text=f"POC: {poc_price:.2f}",
-            annotation_position="bottom right"
-        )
-        
-        # Support/Resistance zones based on POC strength
-        if poc_data:
-            strength_score = poc_data.get('strength_score', 0)
-            role = poc_data.get('role', 'Neutral')
-            
-            # Create zone around POC based on strength
-            zone_width = poc_price * (0.002 + (strength_score / 100) * 0.003)  # 0.2% to 0.5% based on strength
-            
-            color = "rgba(0,255,0,0.1)" if role == "Support" else "rgba(255,0,0,0.1)" if role == "Resistance" else "rgba(128,128,128,0.1)"
-            
-            fig.add_hrect(
-                y0=poc_price - zone_width,
-                y1=poc_price + zone_width,
-                fillcolor=color,
-                line_width=0,
-                annotation_text=f"{role} Zone",
-                annotation_position="top left"
-            )
-    
-    fig.update_layout(
-        title="Price Chart with POC Analysis",
-        xaxis_title="Time",
-        yaxis_title="Price",
-        template="plotly_white",
-        height=600,
-        showlegend=True
-    )
-    
-    return fig
     except:
         st.error("Supabase credentials not configured. Add SUPABASE_URL and SUPABASE_KEY to secrets.")
         return None
@@ -1238,6 +1012,144 @@ def main():
     # Check credentials
     if not dhan_config["client_id"] or not dhan_config["access_token"]:
         st.error("DhanHQ credentials not configured!")
+        st.markdown("""
+        ### Setup Instructions:
+        1. Add your DhanHQ credentials to Streamlit secrets:
+        ```
+        DHAN_CLIENT_ID = "your_client_id"
+        DHAN_ACCESS_TOKEN = "your_access_token"
+        ```
+        
+        2. Add Supabase credentials for data storage:
+        ```
+        SUPABASE_URL = "your_supabase_url"
+        SUPABASE_KEY = "your_supabase_anon_key"
+        ```
+        
+        3. Optional - Add Telegram notifications:
+        ```
+        TELEGRAM_BOT_TOKEN = "your_bot_token"
+        TELEGRAM_CHAT_ID = "your_chat_id"
+        ```
+        """)
+        return
+    
+    if not supabase:
+        st.error("Supabase connection failed. Check your SUPABASE_URL and SUPABASE_KEY.")
+        return
+    
+    current_time = datetime.now(timezone('Asia/Kolkata'))
+    st.markdown(f"**Current IST Time:** {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    market_open = is_market_hours()
+    
+    dashboard = TradingDashboard()
+    
+    config = dashboard.display_configuration()
+    
+    dashboard.display_status()
+    
+    should_fetch_data = False
+    
+    if market_open and config["data_mode"] in ["Live Only", "Historical + Live"]:
+        if (st.session_state.last_update is None or 
+            (current_time - st.session_state.last_update).seconds >= 25):
+            should_fetch_data = True
+        
+        if st.session_state.last_update:
+            seconds_since_update = (current_time - st.session_state.last_update).seconds
+            seconds_until_next = 25 - (seconds_since_update % 25)
+            st.info(f"Next auto-update in: {seconds_until_next} seconds")
+    
+    manual_fetch = st.sidebar.button("Fetch Data Now")
+    
+    if should_fetch_data or manual_fetch:
+        with st.spinner("Fetching live data and updating enhanced POC analysis..."):
+            dashboard.fetch_and_update_data(config)
+            
+            analysis_data = st.session_state.live_data if not st.session_state.live_data.empty else st.session_state.historical_data
+            
+            if not analysis_data.empty:
+                latest_price = analysis_data['close'].iloc[-1]
+                st.session_state.spot_price = latest_price
+                
+                price_data_list = analysis_data.to_dict('records')
+                poc_result = update_poc_analysis(price_data_list, st.session_state.spot_price)
+                
+                if poc_result:
+                    strength_indicator = ""
+                    if poc_result['strength'] == "Very Strong":
+                        strength_indicator = "🟢"
+                    elif poc_result['strength'] == "Strong":
+                        strength_indicator = "🟡"
+                    elif poc_result['strength'] == "Moderate":
+                        strength_indicator = "🟠"
+                    else:
+                        strength_indicator = "🔴"
+                    
+                    role_indicator = "🛡️" if poc_result['role'] == "Support" else "🚧" if poc_result['role'] == "Resistance" else "⚖️"
+                    
+                    st.success(f"{strength_indicator} POC: {poc_result['poc_price']:.2f} | Strength: {poc_result['strength']} ({poc_result['strength_score']:.1f}/100) | {role_indicator} Role: {poc_result['role']}")
+        
+        if market_open and not manual_fetch:
+            time.sleep(1)
+            st.rerun()
+    
+    dashboard.display_poc_analysis()
+    
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Data Export")
+    
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("Export JSON", help="Export all data including POC analysis"):
+            poc_history_df = get_poc_history()
+            proximity_alerts_df = get_proximity_alerts()
+            
+            export_data = {
+                'export_timestamp': current_time.isoformat(),
+                'current_poc': st.session_state.current_poc,
+                'current_spot': st.session_state.spot_price,
+                'historical_data': st.session_state.historical_data.to_dict('records') if not st.session_state.historical_data.empty else [],
+                'live_data': st.session_state.live_data.to_dict('records') if not st.session_state.live_data.empty else [],
+                'poc_history': poc_history_df.to_dict('records') if not poc_history_df.empty else [],
+                'proximity_alerts': proximity_alerts_df.to_dict('records') if not proximity_alerts_df.empty else []
+            }
+            
+            json_data = json.dumps(export_data, indent=2, default=str)
+            st.sidebar.download_button(
+                label="Download JSON",
+                data=json_data,
+                file_name=f"enhanced_trading_data_{current_time.strftime('%Y%m%d_%H%M')}.json",
+                mime="application/json"
+            )
+    
+    with col2:
+        if st.button("Export CSV", help="Export price data as CSV"):
+            if not st.session_state.live_data.empty:
+                csv_data = st.session_state.live_data.to_csv(index=False)
+                st.sidebar.download_button(
+                    label="Download CSV",
+                    data=csv_data,
+                    file_name=f"live_data_{current_time.strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.sidebar.warning("No live data to export")
+
+# Auto-refresh during market hours
+if is_market_hours():
+    time.sleep(0.5)
+    if 'refresh_counter' not in st.session_state:
+        st.session_state.refresh_counter = 0
+    
+    st.session_state.refresh_counter += 1
+    
+    if st.session_state.refresh_counter % 50 == 0:
+        st.rerun()
+
+if __name__ == "__main__":
+    main()DhanHQ credentials not configured!")
         st.markdown("""
         ### Setup Instructions:
         1. Add your DhanHQ credentials to Streamlit secrets:
