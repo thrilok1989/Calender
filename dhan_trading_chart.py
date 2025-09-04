@@ -628,24 +628,61 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
                         st.metric("POC Price", f"₹{poc_data['price']:.2f}")
                         st.metric("POC Volume", f"{poc_data['volume']:.1f}")
             
+                with col1:
+                    chart_data = st.session_state.get(f'chart_data_{security_id}', pd.DataFrame())
+                    if len(chart_data) > 0:
+                        chart = dashboard.create_candlestick_chart(chart_data, security_id)
+                        if chart:
+                            chart.update_layout(title=f"{selected_instrument} - Real-time Chart")
+                            st.plotly_chart(chart, use_container_width=True)
+                        else:
+                            st.error("Unable to create chart. Please check data.")
+                    else:
+                        st.warning("No chart data available. Loading historical data...")
+                
+                with col2:
+                    st.subheader("Market Info")
+                    st.metric("Current Price", f"₹{market_data['close']:.2f}")
+                    st.metric("Volume", f"{market_data['volume']:,}")
+                    st.metric("Buy Qty", f"{market_data['buy_quantity']:,}")
+                    st.metric("Sell Qty", f"{market_data['sell_quantity']:,}")
+                    
+                    current_high = st.session_state.get(f'current_high_{security_id}')
+                    current_low = st.session_state.get(f'current_low_{security_id}')
+                    
+                    if current_high and current_low:
+                        st.metric("Session High", f"₹{current_high:.2f}")
+                        st.metric("Session Low", f"₹{current_low:.2f}")
+                    
+                    poc_data = dashboard.calculate_poc_for_security(security_id)
+                    if poc_data:
+                        st.metric("POC Price", f"₹{poc_data['price']:.2f}")
+                        st.metric("POC Volume", f"{poc_data['volume']:.1f}")
+            
             # Volume footprint chart (always show for primary instrument)
             st.subheader(f"Volume Footprint - {selected_instrument}")
-            footprint_chart = dashboard.create_volume_footprint_chart()
+            footprint_chart = dashboard.create_volume_footprint_chart(security_id)
             if footprint_chart:
                 footprint_chart.update_layout(title=f"{selected_instrument} Volume Distribution")
                 st.plotly_chart(footprint_chart, use_container_width=True)
+            else:
+                st.info("Volume footprint will appear after accumulating more data.")
             
             # Market summary table
             st.subheader("Market Summary")
             summary_data = []
             
             # Primary instrument
+            current_high = st.session_state.get(f'current_high_{security_id}')
+            current_low = st.session_state.get(f'current_low_{security_id}')
+            poc_data = dashboard.calculate_poc_for_security(security_id)
+            
             summary_data.append({
                 'Instrument': selected_instrument,
                 'Price': f"₹{market_data['close']:.2f}",
                 'Volume': f"{market_data['volume']:,}",
-                'High': f"₹{st.session_state.current_high:.2f}" if st.session_state.current_high else "N/A",
-                'Low': f"₹{st.session_state.current_low:.2f}" if st.session_state.current_low else "N/A",
+                'High': f"₹{current_high:.2f}" if current_high else "N/A",
+                'Low': f"₹{current_low:.2f}" if current_low else "N/A",
                 'POC': f"₹{poc_data['price']:.2f}" if poc_data else "N/A"
             })
             
@@ -667,11 +704,29 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
             
             # Recent data table for primary instrument
             st.subheader(f"Recent Data - {selected_instrument}")
-            if len(st.session_state.chart_data) > 0:
-                recent_data = st.session_state.chart_data.tail(10).copy()
+            chart_data = st.session_state.get(f'chart_data_{security_id}', pd.DataFrame())
+            if len(chart_data) > 0:
+                recent_data = chart_data.tail(10).copy()
                 recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%H:%M:%S')
                 recent_data = recent_data.round(2)
                 st.dataframe(recent_data, use_container_width=True)
+            else:
+                st.info("Historical data loading...")
+            
+            # Historical data info
+            st.subheader("📊 Data Information")
+            if len(chart_data) > 0:
+                total_candles = len(chart_data)
+                data_start = chart_data['timestamp'].min()
+                data_end = chart_data['timestamp'].max()
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Candles", total_candles)
+                with col2:
+                    st.metric("Data Start", data_start.strftime('%d %b %H:%M'))
+                with col3:
+                    st.metric("Data End", data_end.strftime('%d %b %H:%M'))
             
             # Status info
             st.sidebar.success(f"✅ Connected to DhanHQ API")
@@ -681,10 +736,22 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
             if st.session_state.last_update:
                 st.sidebar.info(f"Last Update: {st.session_state.last_update.strftime('%H:%M:%S')}")
             
+            # Data status
+            chart_data = st.session_state.get(f'chart_data_{security_id}', pd.DataFrame())
+            if len(chart_data) > 0:
+                st.sidebar.metric("Data Points", len(chart_data))
+                if len(chart_data) > 1000:  # Indicates historical data loaded
+                    st.sidebar.success("📈 Historical data loaded")
+                else:
+                    st.sidebar.warning("🔄 Loading historical data...")
+            
             # Auto-refresh functionality
             if auto_refresh:
                 time.sleep(update_interval)
                 st.rerun()
+        else:
+            st.error("Failed to fetch market data. Please check your API credentials and try again.")
+            st.info("The app will attempt to load historical data even when real-time data is unavailable.")
 
 if __name__ == "__main__":
     main()
