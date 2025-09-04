@@ -22,18 +22,18 @@ if 'price_data' not in st.session_state:
     st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
 if 'trade_log' not in st.session_state:
     st.session_state.trade_log = []
-if 'pcr_history' not in st.session_state:
-    st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal", "VIX"])
+if 'call_log_book' not in st.session_state:
+    st.session_state.call_log_book = []
+if 'export_data' not in st.session_state:
+    st.session_state.export_data = False
+if 'support_zone' not in st.session_state:
+    st.session_state.support_zone = (None, None)
+if 'resistance_zone' not in st.session_state:
+    st.session_state.resistance_zone = (None, None)
 if 'oi_volume_history' not in st.session_state:
     st.session_state.oi_volume_history = pd.DataFrame(columns=["Time", "Strike", "OI_CE", "OI_PE", "Volume_CE", "Volume_PE"])
 if 'last_alert_time' not in st.session_state:
     st.session_state.last_alert_time = {}
-if 'pcr_threshold_bull' not in st.session_state:
-    st.session_state.pcr_threshold_bull = 1.2
-if 'pcr_threshold_bear' not in st.session_state:
-    st.session_state.pcr_threshold_bear = 0.7
-if 'use_pcr_filter' not in st.session_state:
-    st.session_state.use_pcr_filter = True
 
 # Initialize Supabase client
 @st.cache_resource
@@ -200,6 +200,208 @@ def get_support_resistance_zones(df, spot):
     resistance_zone = (min(nearest_resistances), max(nearest_resistances)) if len(nearest_resistances) >= 2 else (nearest_resistances[0], nearest_resistances[0]) if nearest_resistances else (None, None)
     
     return support_zone, resistance_zone
+
+def display_enhanced_trade_log():
+    """Display formatted trade log with P&L calculations"""
+    if not st.session_state.trade_log:
+        st.info("No trades logged yet")
+        return
+    
+    st.markdown("### 📜 Enhanced Trade Log")
+    df_trades = pd.DataFrame(st.session_state.trade_log)
+    
+    if 'Current_Price' not in df_trades.columns:
+        df_trades['Current_Price'] = df_trades['LTP'] * np.random.uniform(0.8, 1.3, len(df_trades))
+        df_trades['Unrealized_PL'] = (df_trades['Current_Price'] - df_trades['LTP']) * 75
+        df_trades['Status'] = df_trades['Unrealized_PL'].apply(
+            lambda x: '🟢 Profit' if x > 0 else '🔴 Loss' if x < -100 else '🟡 Breakeven'
+        )
+    
+    def color_pnl(row):
+        colors = []
+        for col in row.index:
+            if col == 'Unrealized_PL':
+                if row[col] > 0:
+                    colors.append('background-color: #90EE90; color: black')
+                elif row[col] < -100:
+                    colors.append('background-color: #FFB6C1; color: black')
+                else:
+                    colors.append('background-color: #FFFFE0; color: black')
+            else:
+                colors.append('')
+        return colors
+    
+    styled_trades = df_trades.style.apply(color_pnl, axis=1)
+    st.dataframe(styled_trades, use_container_width=True)
+    
+    total_pl = df_trades['Unrealized_PL'].sum()
+    win_rate = len(df_trades[df_trades['Unrealized_PL'] > 0]) / len(df_trades) * 100
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total P&L", f"₹{total_pl:,.0f}")
+    with col2:
+        st.metric("Win Rate", f"{win_rate:.1f}%")
+    with col3:
+        st.metric("Total Trades", len(df_trades))
+
+def create_export_data(df_summary, trade_log, spot_price):
+    """Create Excel export data"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_summary.to_excel(writer, sheet_name='Option_Chain_Summary', index=False)
+        if trade_log:
+            pd.DataFrame(trade_log).to_excel(writer, sheet_name='Trade_Log', index=False)
+        if not st.session_state.pcr_history.empty:
+            st.session_state.pcr_history.to_excel(writer, sheet_name='PCR_History', index=False)
+        if not st.session_state.oi_volume_history.empty:
+            st.session_state.oi_volume_history.to_excel(writer, sheet_name='OI_Volume_History', index=False)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"nifty_analysis_{timestamp}.xlsx"
+    return output.getvalue(), filename
+
+def handle_export_data(df_summary, spot_price):
+    """Handle data export functionality"""
+    if 'export_data' in st.session_state and st.session_state.export_data:
+        try:
+            excel_data, filename = create_export_data(df_summary, st.session_state.trade_log, spot_price)
+            st.download_button(
+                label="📥 Download Excel Report",
+                data=excel_data,
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            st.success("✅ Export ready! Click the download button above.")
+            st.session_state.export_data = False
+        except Exception as e:
+            st.error(f"❌ Export failed: {e}")
+            st.session_state.export_data = False
+
+def plot_price_with_sr():
+    """Plot price action with support/resistance zones"""
+    price_df = st.session_state['price_data'].copy()
+    if price_df.empty or price_df['Spot'].isnull().all():
+        st.info("Not enough data to show price action chart yet.")
+        return
+    
+    price_df['Time'] = pd.to_datetime(price_df['Time'])
+    support_zone = st.session_state.get('support_zone', (None, None))
+    resistance_zone = st.session_state.get('resistance_zone', (None, None))
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=price_df['Time'], 
+        y=price_df['Spot'], 
+        mode='lines+markers', 
+        name='Spot Price',
+        line=dict(color='blue', width=2)
+    ))
+    
+    if all(support_zone) and None not in support_zone:
+        fig.add_shape(
+            type="rect",
+            xref="paper", yref="y",
+            x0=0, x1=1,
+            y0=support_zone[0], y1=support_zone[1],
+            fillcolor="rgba(0,255,0,0.08)", line=dict(width=0),
+            layer="below"
+        )
+        fig.add_trace(go.Scatter(
+            x=[price_df['Time'].min(), price_df['Time'].max()],
+            y=[support_zone[0], support_zone[0]],
+            mode='lines',
+            name='Support Low',
+            line=dict(color='green', dash='dash')
+        ))
+        fig.add_trace(go.Scatter(
+            x=[price_df['Time'].min(), price_df['Time'].max()],
+            y=[support_zone[1], support_zone[1]],
+            mode='lines',
+            name='Support High',
+            line=dict(color='green', dash='dot')
+        ))
+    
+    if all(resistance_zone) and None not in resistance_zone:
+        fig.add_shape(
+            type="rect",
+            xref="paper", yref="y",
+            x0=0, x1=1,
+            y0=resistance_zone[0], y1=resistance_zone[1],
+            fillcolor="rgba(255,0,0,0.08)", line=dict(width=0),
+            layer="below"
+        )
+        fig.add_trace(go.Scatter(
+            x=[price_df['Time'].min(), price_df['Time'].max()],
+            y=[resistance_zone[0], resistance_zone[0]],
+            mode='lines',
+            name='Resistance Low',
+            line=dict(color='red', dash='dash')
+        ))
+        fig.add_trace(go.Scatter(
+            x=[price_df['Time'].min(), price_df['Time'].max()],
+            y=[resistance_zone[1], resistance_zone[1]],
+            mode='lines',
+            name='Resistance High',
+            line=dict(color='red', dash='dot')
+        ))
+    
+    fig.update_layout(
+        title="Nifty Spot Price Action with Support & Resistance",
+        xaxis_title="Time",
+        yaxis_title="Spot Price",
+        template="plotly_white",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+def auto_update_call_log(current_price):
+    """Automatically update call log status"""
+    for call in st.session_state.call_log_book:
+        if call["Status"] != "Active":
+            continue
+        
+        if call["Type"] == "CE":
+            if current_price >= max(call["Targets"].values()):
+                call["Status"] = "Hit Target"
+                call["Hit_Target"] = True
+                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+                call["Exit_Price"] = current_price
+            elif current_price <= call["Stoploss"]:
+                call["Status"] = "Hit Stoploss"
+                call["Hit_Stoploss"] = True
+                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+                call["Exit_Price"] = current_price
+        elif call["Type"] == "PE":
+            if current_price <= min(call["Targets"].values()):
+                call["Status"] = "Hit Target"
+                call["Hit_Target"] = True
+                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+                call["Exit_Price"] = current_price
+            elif current_price >= call["Stoploss"]:
+                call["Status"] = "Hit Stoploss"
+                call["Hit_Stoploss"] = True
+                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+                call["Exit_Price"] = current_price
+
+def display_call_log_book():
+    """Display the call log book"""
+    st.markdown("### 📚 Call Log Book")
+    if not st.session_state.call_log_book:
+        st.info("No calls have been made yet.")
+        return
+    
+    df_log = pd.DataFrame(st.session_state.call_log_book)
+    st.dataframe(df_log, use_container_width=True)
+    
+    if st.button("Download Call Log Book as CSV"):
+        st.download_button(
+            label="Download CSV",
+            data=df_log.to_csv(index=False).encode(),
+            file_name="call_log_book.csv",
+            mime="text/csv"
+        )
 
 def analyze():
     """Main analysis function"""
@@ -466,6 +668,10 @@ def analyze():
         market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
         support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
 
+        # Store zones in session state
+        st.session_state.support_zone = support_zone
+        st.session_state.resistance_zone = resistance_zone
+
         # Update price history
         new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
         st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
@@ -573,6 +779,9 @@ def analyze():
         st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
         st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
         st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
+        
+        # Plot price action
+        plot_price_with_sr()
 
         if suggested_trade:
             st.info(f"🔹 {atm_signal}\n{suggested_trade}")
@@ -651,6 +860,23 @@ def analyze():
                     st.plotly_chart(fig_oi, use_container_width=True)
             else:
                 st.info("No OI/Volume history recorded yet")
+        
+        # Enhanced Trade Log
+        display_enhanced_trade_log()
+        
+        # Export functionality
+        st.markdown("---")
+        st.markdown("### 📥 Data Export")
+        if st.button("Prepare Excel Export"):
+            st.session_state.export_data = True
+        handle_export_data(df_summary, underlying)
+        
+        # Call Log Book
+        st.markdown("---")
+        display_call_log_book()
+        
+        # Auto update call log with current price
+        auto_update_call_log(underlying)
 
     except json.JSONDecodeError as e:
         st.error("❌ Failed to decode JSON response from NSE API. The market might be closed or the API is unavailable.")
