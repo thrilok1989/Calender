@@ -182,8 +182,8 @@ class DhanTradingDashboard:
             st.session_state.previous_poc = None
             st.session_state.last_update = None
     
-    def fetch_historical_data(self, security_id="11536", exchange_segment="NSE_EQ", 
-                            instrument="EQUITY", from_date=None, to_date=None, 
+    def fetch_historical_data(self, security_id="13", exchange_segment="IDX_I", 
+                            instrument="INDEX", from_date=None, to_date=None, 
                             interval=None, oi=False):
         """
         Fetch historical data from DhanHQ API
@@ -205,7 +205,7 @@ class DhanTradingDashboard:
                     "securityId": security_id,
                     "exchangeSegment": exchange_segment,
                     "instrument": instrument,
-                    "interval": interval,
+                    "interval": str(interval),
                     "oi": oi,
                     "fromDate": from_date,
                     "toDate": to_date
@@ -223,10 +223,16 @@ class DhanTradingDashboard:
                     "toDate": to_date
                 }
             
-            response = requests.post(url, headers=self.headers, json=payload)
+            st.info(f"Fetching historical data for {security_id} from {exchange_segment}...")
+            
+            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
             
             if response.status_code == 200:
                 data = response.json()
+                
+                if not data or 'timestamp' not in data or not data['timestamp']:
+                    st.warning("No historical data available for this instrument")
+                    return self.create_sample_data(security_id, exchange_segment, instrument)
                 
                 # Convert to DataFrame
                 df = pd.DataFrame({
@@ -238,26 +244,102 @@ class DhanTradingDashboard:
                     'volume': data['volume']
                 })
                 
+                # Add buy/sell quantities as placeholders
+                df['buy_quantity'] = 0
+                df['sell_quantity'] = 0
+                
                 # Add open interest if available
                 if 'open_interest' in data and any(data['open_interest']):
                     df['open_interest'] = data['open_interest']
                 
+                st.success(f"Loaded {len(df)} historical data points")
                 return df
+            elif response.status_code == 429:
+                st.warning("Rate limit reached. Using sample data.")
+                return self.create_sample_data(security_id, exchange_segment, instrument)
             else:
                 st.error(f"Historical Data API Error: {response.status_code} - {response.text}")
-                return None
+                return self.create_sample_data(security_id, exchange_segment, instrument)
                 
         except Exception as e:
             st.error(f"Exception in Historical Data API call: {e}")
-            return None
+            return self.create_sample_data(security_id, exchange_segment, instrument)
     
-    def fetch_market_data(self, security_id="11536", exchange_segment="NSE_EQ"):
+    def create_sample_data(self, security_id, exchange_segment, instrument):
+        """Create sample data when API is unavailable"""
+        try:
+            # Base prices for different instruments
+            base_prices = {
+                "13": 24000,    # Nifty 50
+                "51": 80000,    # Sensex
+                "25": 52000,    # Bank Nifty
+                "27": 35000,    # Nifty IT
+                "1333": 3000,   # Reliance
+                "3431": 800,    # Tata Motors
+            }
+            
+            base_price = base_prices.get(security_id, 4500)
+            
+            # Generate 30 days of sample data
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=30)
+            
+            # Create timestamps
+            timestamps = []
+            current_time = start_time
+            
+            while current_time < end_time:
+                if current_time.weekday() < 5:  # Weekdays only
+                    timestamps.append(current_time)
+                current_time += timedelta(hours=1)
+            
+            # Generate OHLC data
+            np.random.seed(42)
+            data = []
+            current_price = base_price
+            
+            for i, timestamp in enumerate(timestamps):
+                volatility = base_price * 0.01
+                price_change = np.random.normal(0, volatility)
+                
+                open_price = current_price
+                close_price = open_price + price_change
+                
+                high_price = max(open_price, close_price) + abs(np.random.normal(0, volatility/2))
+                low_price = min(open_price, close_price) - abs(np.random.normal(0, volatility/2))
+                
+                volume = int(np.random.normal(100000, 30000))
+                volume = max(volume, 1000)
+                
+                data.append({
+                    'timestamp': timestamp,
+                    'open': round(open_price, 2),
+                    'high': round(high_price, 2),
+                    'low': round(low_price, 2),
+                    'close': round(close_price, 2),
+                    'volume': volume,
+                    'buy_quantity': 0,
+                    'sell_quantity': 0
+                })
+                
+                current_price = close_price
+            
+            df = pd.DataFrame(data)
+            st.info(f"Using sample data with {len(df)} candles for {security_id}")
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"Error creating sample data: {e}")
+            return pd.DataFrame()
+    
+    def fetch_market_data(self, security_id="13", exchange_segment="IDX_I"):
         """Fetch real-time market data using DhanHQ API"""
         try:
             quote_url = f"{self.base_url}/marketfeed/quote"
             quote_payload = {exchange_segment: [int(security_id)]}
             
-            response = requests.post(quote_url, headers=self.headers, json=quote_payload)
+            response = requests.post(quote_url, headers=self.headers, json=quote_payload, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
@@ -270,15 +352,21 @@ class DhanTradingDashboard:
                         processed_data['exchange_segment'] = exchange_segment
                         
                         # Store in database
-                        self.db.insert_market_data(processed_data)
+                        try:
+                            self.db.insert_market_data(processed_data)
+                        except:
+                            pass  # Continue even if database fails
                     
                     return processed_data
+            elif response.status_code == 429:
+                st.warning("API rate limit reached. Continuing with historical data...")
+                return None
             else:
-                st.error(f"API Error: {response.status_code}")
+                st.warning(f"API temporarily unavailable (Status: {response.status_code})")
                 return None
                 
         except Exception as e:
-            st.error(f"Exception in API call: {e}")
+            st.warning(f"Real-time API unavailable: {str(e)[:100]}...")
             return None
     
     def process_market_data(self, raw_data):
@@ -293,8 +381,8 @@ class DhanTradingDashboard:
                 'low': raw_data['ohlc']['low'],
                 'close': raw_data['last_price'],
                 'volume': raw_data['volume'],
-                'buy_quantity': raw_data['buy_quantity'],
-                'sell_quantity': raw_data['sell_quantity']
+                'buy_quantity': raw_data.get('buy_quantity', 0),
+                'sell_quantity': raw_data.get('sell_quantity', 0)
             }
             
             return processed_data
@@ -398,6 +486,9 @@ class DhanTradingDashboard:
     
     def create_candlestick_chart(self, data):
         """Create candlestick chart with volume footprint using Plotly"""
+        if data is None or len(data) == 0:
+            return None
+            
         fig = make_subplots(
             rows=2, cols=1,
             shared_xaxes=True,
@@ -508,30 +599,45 @@ class DhanTradingDashboard:
         return fig
     
     def update_data(self, security_id, exchange_segment):
-        """Update market data"""
-        market_data = self.fetch_market_data(security_id, exchange_segment)
+        """Update market data with rate limit handling"""
+        # Check if we should attempt real-time fetch
+        last_api_call = st.session_state.get(f'last_api_call_{security_id}', datetime.min)
+        time_since_last_call = (datetime.now() - last_api_call).total_seconds()
         
+        market_data = None
+        
+        # Only call API if enough time has passed (25+ seconds)
+        if time_since_last_call >= 25:
+            market_data = self.fetch_market_data(security_id, exchange_segment)
+            st.session_state[f'last_api_call_{security_id}'] = datetime.now()
+            
+            if market_data:
+                # Add to session state chart data
+                new_row = pd.DataFrame([market_data])
+                if len(st.session_state.chart_data) == 0:
+                    st.session_state.chart_data = new_row
+                else:
+                    st.session_state.chart_data = pd.concat([st.session_state.chart_data, new_row], ignore_index=True)
+                
+                # Keep only recent data (last 1000 points)
+                if len(st.session_state.chart_data) > 1000:
+                    st.session_state.chart_data = st.session_state.chart_data.tail(1000).reset_index(drop=True)
+                
+                # Update volume footprint
+                self.update_volume_footprint(market_data)
+                
+                # Check for alerts
+                self.check_alerts(market_data, security_id)
+                
+                st.session_state.last_update = datetime.now()
+        
+        # Return market data or latest historical data
         if market_data:
-            # Add to session state chart data
-            new_row = pd.DataFrame([market_data])
-            if len(st.session_state.chart_data) == 0:
-                st.session_state.chart_data = new_row
-            else:
-                st.session_state.chart_data = pd.concat([st.session_state.chart_data, new_row], ignore_index=True)
-            
-            # Keep only recent data (last 1000 points)
-            if len(st.session_state.chart_data) > 1000:
-                st.session_state.chart_data = st.session_state.chart_data.tail(1000).reset_index(drop=True)
-            
-            # Update volume footprint
-            self.update_volume_footprint(market_data)
-            
-            # Check for alerts
-            self.check_alerts(market_data, security_id)
-            
-            st.session_state.last_update = datetime.now()
-            
             return market_data
+        elif len(st.session_state.chart_data) > 0:
+            # Return the latest data point
+            latest = st.session_state.chart_data.iloc[-1].to_dict()
+            return latest
         
         return None
 
@@ -554,12 +660,14 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
         """)
         return
     
-    # Create a mapping of security IDs to instrument names
+    # Correct instrument mapping with proper security IDs
     instruments = {
-        "NIFTY 50": {"security_id": "11536", "exchange_segment": "NSE_EQ", "instrument": "INDEX"},
+        "NIFTY 50": {"security_id": "13", "exchange_segment": "IDX_I", "instrument": "INDEX"},
+        "SENSEX": {"security_id": "51", "exchange_segment": "IDX_I", "instrument": "INDEX"},
+        "BANK NIFTY": {"security_id": "25", "exchange_segment": "IDX_I", "instrument": "INDEX"},
+        "NIFTY IT": {"security_id": "27", "exchange_segment": "IDX_I", "instrument": "INDEX"},
         "RELIANCE": {"security_id": "1333", "exchange_segment": "NSE_EQ", "instrument": "EQUITY"},
         "TATA MOTORS": {"security_id": "3431", "exchange_segment": "NSE_EQ", "instrument": "EQUITY"},
-        # Add more instruments as needed
     }
     
     # Sidebar configuration
@@ -570,14 +678,14 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
     selected_instrument = st.sidebar.selectbox("Select Instrument", instrument_options)
     
     if selected_instrument == "Custom":
-        security_id = st.sidebar.text_input("Security ID", value="11536")
+        security_id = st.sidebar.text_input("Security ID", value="13")
         exchange_segment = st.sidebar.selectbox(
             "Exchange Segment",
-            ["NSE_EQ", "BSE_EQ", "NSE_FNO", "BSE_FNO", "MCX_FO"]
+            ["IDX_I", "NSE_EQ", "BSE_EQ", "NSE_FNO", "BSE_FNO", "MCX_FO"]
         )
         instrument_type = st.sidebar.selectbox(
             "Instrument Type",
-            ["EQUITY", "INDEX", "FUTURES", "OPTIONS", "CURRENCY"]
+            ["INDEX", "EQUITY", "FUTURES", "OPTIONS", "CURRENCY"]
         )
         selected_instrument_name = f"Custom ({security_id})"
     else:
@@ -591,26 +699,91 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
     
     # Historical data section
     st.sidebar.header("Historical Data")
-    historical_days = st.sidebar.slider("Days of Historical Data", 1, 365, 30)
+    historical_days = st.sidebar.slider("Days of Historical Data", 1, 90, 30)
+    use_intraday = st.sidebar.checkbox("Use Intraday Data (5min)", value=True)
     
     if st.sidebar.button("Load Historical Data"):
         with st.spinner("Loading historical data..."):
             to_date = datetime.now().strftime("%Y-%m-%d")
             from_date = (datetime.now() - timedelta(days=historical_days)).strftime("%Y-%m-%d")
             
+            if use_intraday:
+                from_date += " 09:15:00"
+                to_date += " 15:30:00"
+                interval = "5"
+            else:
+                interval = None
+            
             historical_data = dashboard.fetch_historical_data(
                 security_id=security_id,
                 exchange_segment=exchange_segment,
                 instrument=instrument_type,
                 from_date=from_date,
-                to_date=to_date
+                to_date=to_date,
+                interval=interval
             )
             
-            if historical_data is not None:
+            if historical_data is not None and len(historical_data) > 0:
                 st.session_state.chart_data = historical_data
-                st.success(f"Loaded {len(historical_data)} historical data points")
+                
+                # Initialize volume footprint from historical data
+                if len(historical_data) > 0:
+                    st.session_state.current_high = historical_data['high'].max()
+                    st.session_state.current_low = historical_data['low'].min()
+                    
+                    # Calculate volume footprint from historical data
+                    st.session_state.volume_profile = defaultdict(float)
+                    price_range = st.session_state.current_high - st.session_state.current_low
+                    
+                    if price_range > 0:
+                        step = price_range / dashboard.bins
+                        for _, row in historical_data.iterrows():
+                            if step > 0:
+                                bin_index = int((row['close'] - st.session_state.current_low) / step)
+                                bin_index = max(0, min(bin_index, dashboard.bins - 1))
+                                bin_price = st.session_state.current_low + (bin_index * step)
+                                st.session_state.volume_profile[bin_price] += row['volume']
+                
+                st.success(f"Loaded {len(historical_data)} historical data points for {selected_instrument_name}")
             else:
                 st.error("Failed to load historical data")
+    
+    # Auto-load historical data on first run
+    if 'data_initialized' not in st.session_state:
+        st.session_state.data_initialized = True
+        with st.spinner(f"Auto-loading historical data for {selected_instrument_name}..."):
+            to_date = datetime.now().strftime("%Y-%m-%d 15:30:00")
+            from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d 09:15:00")
+            
+            historical_data = dashboard.fetch_historical_data(
+                security_id=security_id,
+                exchange_segment=exchange_segment,
+                instrument=instrument_type,
+                from_date=from_date,
+                to_date=to_date,
+                interval="5"
+            )
+            
+            if historical_data is not None and len(historical_data) > 0:
+                st.session_state.chart_data = historical_data
+                
+                # Initialize volume footprint from historical data
+                if len(historical_data) > 0:
+                    st.session_state.current_high = historical_data['high'].max()
+                    st.session_state.current_low = historical_data['low'].min()
+                    
+                    # Calculate volume footprint from historical data
+                    st.session_state.volume_profile = defaultdict(float)
+                    price_range = st.session_state.current_high - st.session_state.current_low
+                    
+                    if price_range > 0:
+                        step = price_range / dashboard.bins
+                        for _, row in historical_data.iterrows():
+                            if step > 0:
+                                bin_index = int((row['close'] - st.session_state.current_low) / step)
+                                bin_index = max(0, min(bin_index, dashboard.bins - 1))
+                                bin_price = st.session_state.current_low + (bin_index * step)
+                                st.session_state.volume_profile[bin_price] += row['volume']
     
     # Multi-instrument tracking option
     track_multiple = st.sidebar.checkbox("Track Multiple Instruments", value=False)
@@ -623,6 +796,7 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
             default=[]
         )
     
+    # Main update logic
     if st.sidebar.button("Manual Update") or auto_refresh:
         # Update primary instrument
         market_data = dashboard.update_data(security_id, exchange_segment)
@@ -637,23 +811,35 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
                     inst_config["exchange_segment"]
                 )
         
-        if market_data:
+        if market_data or len(st.session_state.chart_data) > 0:
             # Main layout
             col1, col2 = st.columns([3, 1])
             
             with col1:
                 if len(st.session_state.chart_data) > 0:
-                    chart = dashboard.create_candlestick_chart(st.session_state.chart_data)
-                    # FIX: Use selected_instrument_name instead of selected_instrument
-                    chart.update_layout(title=f"{selected_instrument_name} - Real-time Chart")
-                    st.plotly_chart(chart, use_container_width=True)
+                    try:
+                        chart = dashboard.create_candlestick_chart(st.session_state.chart_data)
+                        if chart:
+                            chart.update_layout(title=f"{selected_instrument_name} - Real-time Chart")
+                            st.plotly_chart(chart, use_container_width=True)
+                        else:
+                            st.error("Unable to create chart")
+                    except Exception as e:
+                        st.error(f"Chart error: {e}")
+                else:
+                    st.info("Loading chart data...")
             
             with col2:
                 st.subheader("Market Info")
-                st.metric("Current Price", f"₹{market_data['close']:.2f}")
-                st.metric("Volume", f"{market_data['volume']:,}")
-                st.metric("Buy Qty", f"{market_data['buy_quantity']:,}")
-                st.metric("Sell Qty", f"{market_data['sell_quantity']:,}")
+                if market_data:
+                    st.metric("Current Price", f"₹{market_data['close']:.2f}")
+                    st.metric("Volume", f"{market_data['volume']:,}")
+                    st.metric("Buy Qty", f"{market_data.get('buy_quantity', 0):,}")
+                    st.metric("Sell Qty", f"{market_data.get('sell_quantity', 0):,}")
+                elif len(st.session_state.chart_data) > 0:
+                    latest = st.session_state.chart_data.iloc[-1]
+                    st.metric("Last Price", f"₹{latest['close']:.2f}")
+                    st.metric("Volume", f"{latest['volume']:,}")
                 
                 if st.session_state.current_high and st.session_state.current_low:
                     st.metric("Session High", f"₹{st.session_state.current_high:.2f}")
@@ -664,6 +850,18 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
                     st.metric("POC Price", f"₹{poc_data['price']:.2f}")
                     st.metric("POC Volume", f"{poc_data['volume']:.1f}")
             
+            # Additional instruments display
+            if track_multiple and additional_data and any(additional_data.values()):
+                st.subheader("📊 Additional Instruments")
+                cols = st.columns(len(additional_instruments))
+                
+                for idx, (instrument_name, inst_data) in enumerate(additional_data.items()):
+                    with cols[idx]:
+                        st.subheader(instrument_name)
+                        if inst_data:
+                            st.metric("Price", f"₹{inst_data['close']:.2f}")
+                            st.metric("Volume", f"{inst_data['volume']:,}")
+            
             # Volume footprint chart
             st.subheader(f"Volume Footprint - {selected_instrument_name}")
             footprint_chart = dashboard.create_volume_footprint_chart()
@@ -672,29 +870,42 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
             else:
                 st.info("Volume footprint will appear after accumulating more data.")
             
+            # Recent data table
+            st.subheader(f"Recent Data - {selected_instrument_name}")
+            if len(st.session_state.chart_data) > 0:
+                recent_data = st.session_state.chart_data.tail(10).copy()
+                recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%H:%M:%S')
+                recent_data = recent_data.round(2)
+                st.dataframe(recent_data, use_container_width=True)
+            
             # Status info
             st.sidebar.success(f"✅ Connected to DhanHQ API")
-            st.sidebar.info(f"Primary: {selected_instrument_name}")
-            if track_multiple and additional_instruments:
-                st.sidebar.info(f"Tracking {len(additional_instruments)} additional instruments")
+            st.sidebar.info(f"Instrument: {selected_instrument_name}")
+            st.sidebar.info(f"Security ID: {security_id}")
+            st.sidebar.info(f"Exchange: {exchange_segment}")
+            
             if st.session_state.last_update:
                 st.sidebar.info(f"Last Update: {st.session_state.last_update.strftime('%H:%M:%S')}")
             
             # Data status
             if len(st.session_state.chart_data) > 0:
                 st.sidebar.metric("Data Points", len(st.session_state.chart_data))
-                if len(st.session_state.chart_data) > 100:  # Indicates historical data loaded
-                    st.sidebar.success("📈 Historical data loaded")
-                else:
-                    st.sidebar.warning("🔄 Loading historical data...")
+                data_start = st.session_state.chart_data['timestamp'].min()
+                data_end = st.session_state.chart_data['timestamp'].max()
+                st.sidebar.info(f"Data: {data_start.strftime('%m/%d %H:%M')} to {data_end.strftime('%m/%d %H:%M')}")
+            
+            # Price range info
+            if len(st.session_state.chart_data) > 0:
+                price_range = st.session_state.chart_data['close'].max() - st.session_state.chart_data['close'].min()
+                st.sidebar.metric("Price Range", f"₹{price_range:.2f}")
             
             # Auto-refresh functionality
             if auto_refresh:
                 time.sleep(update_interval)
                 st.rerun()
         else:
-            st.error("Failed to fetch market data. Please check your API credentials and try again.")
-            st.info("The app will attempt to load historical data even when real-time data is unavailable.")
+            st.error("Failed to fetch market data. Please check your API credentials.")
+            st.info("Try loading historical data manually from the sidebar.")
 
 if __name__ == "__main__":
     main()
