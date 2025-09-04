@@ -1,4 +1,4 @@
-import streamlit as st
+import str eamlit as st
 import requests
 import json
 import pandas as pd
