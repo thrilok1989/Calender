@@ -91,8 +91,8 @@ def verdict(score):
     return "Neutral"
 
 def pcr_levels(df_summary):
-    s=df_summary[df_summary.PCR>1.8]["Strike"].tolist()
-    r=df_summary[df_summary.PCR<0.6]["Strike"].tolist()
+    s=df_summary[df_summary.PCR>1.4]["Strike"].tolist()
+    r=df_summary[df_summary.PCR<0.7]["Strike"].tolist()
     return s,r
 
 def analyze():
