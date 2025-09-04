@@ -182,6 +182,75 @@ class DhanTradingDashboard:
             st.session_state.previous_poc = None
             st.session_state.last_update = None
     
+    def fetch_historical_data(self, security_id="11536", exchange_segment="NSE_EQ", 
+                            instrument="EQUITY", from_date=None, to_date=None, 
+                            interval=None, oi=False):
+        """
+        Fetch historical data from DhanHQ API
+        
+        Parameters:
+        - security_id: Exchange standard ID for each scrip
+        - exchange_segment: Exchange & segment for which data is to be fetched
+        - instrument: Instrument type of the scrip
+        - from_date: Start date of the desired range (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)
+        - to_date: End date of the desired range (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)
+        - interval: For intraday data - 1, 5, 15, 25, 60 minutes
+        - oi: Boolean to include Open Interest data for Futures & Options
+        """
+        try:
+            if interval:
+                # Intraday historical data
+                url = f"{self.base_url}/charts/intraday"
+                payload = {
+                    "securityId": security_id,
+                    "exchangeSegment": exchange_segment,
+                    "instrument": instrument,
+                    "interval": interval,
+                    "oi": oi,
+                    "fromDate": from_date,
+                    "toDate": to_date
+                }
+            else:
+                # Daily historical data
+                url = f"{self.base_url}/charts/historical"
+                payload = {
+                    "securityId": security_id,
+                    "exchangeSegment": exchange_segment,
+                    "instrument": instrument,
+                    "expiryCode": 0,
+                    "oi": oi,
+                    "fromDate": from_date,
+                    "toDate": to_date
+                }
+            
+            response = requests.post(url, headers=self.headers, json=payload)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Convert to DataFrame
+                df = pd.DataFrame({
+                    'timestamp': pd.to_datetime(data['timestamp'], unit='s'),
+                    'open': data['open'],
+                    'high': data['high'],
+                    'low': data['low'],
+                    'close': data['close'],
+                    'volume': data['volume']
+                })
+                
+                # Add open interest if available
+                if 'open_interest' in data and any(data['open_interest']):
+                    df['open_interest'] = data['open_interest']
+                
+                return df
+            else:
+                st.error(f"Historical Data API Error: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            st.error(f"Exception in Historical Data API call: {e}")
+            return None
+    
     def fetch_market_data(self, security_id="11536", exchange_segment="NSE_EQ"):
         """Fetch real-time market data using DhanHQ API"""
         try:
@@ -485,18 +554,63 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
         """)
         return
     
+    # Create a mapping of security IDs to instrument names
+    instruments = {
+        "NIFTY 50": {"security_id": "11536", "exchange_segment": "NSE_EQ", "instrument": "INDEX"},
+        "RELIANCE": {"security_id": "1333", "exchange_segment": "NSE_EQ", "instrument": "EQUITY"},
+        "TATA MOTORS": {"security_id": "3431", "exchange_segment": "NSE_EQ", "instrument": "EQUITY"},
+        # Add more instruments as needed
+    }
+    
     # Sidebar configuration
     st.sidebar.header("Configuration")
     
-    security_id = st.sidebar.text_input("Security ID", value="11536")
-    exchange_segment = st.sidebar.selectbox(
-        "Exchange Segment",
-        ["NSE_EQ", "BSE_EQ", "NSE_FNO", "BSE_FNO", "MCX_FO"]
-    )
+    # Let user select from available instruments or enter custom ID
+    instrument_options = list(instruments.keys()) + ["Custom"]
+    selected_instrument = st.sidebar.selectbox("Select Instrument", instrument_options)
+    
+    if selected_instrument == "Custom":
+        security_id = st.sidebar.text_input("Security ID", value="11536")
+        exchange_segment = st.sidebar.selectbox(
+            "Exchange Segment",
+            ["NSE_EQ", "BSE_EQ", "NSE_FNO", "BSE_FNO", "MCX_FO"]
+        )
+        instrument_type = st.sidebar.selectbox(
+            "Instrument Type",
+            ["EQUITY", "INDEX", "FUTURES", "OPTIONS", "CURRENCY"]
+        )
+        selected_instrument_name = f"Custom ({security_id})"
+    else:
+        security_id = instruments[selected_instrument]["security_id"]
+        exchange_segment = instruments[selected_instrument]["exchange_segment"]
+        instrument_type = instruments[selected_instrument]["instrument"]
+        selected_instrument_name = selected_instrument
     
     update_interval = st.sidebar.slider("Update Interval (seconds)", 20, 60, 23)
-    
     auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
+    
+    # Historical data section
+    st.sidebar.header("Historical Data")
+    historical_days = st.sidebar.slider("Days of Historical Data", 1, 365, 30)
+    
+    if st.sidebar.button("Load Historical Data"):
+        with st.spinner("Loading historical data..."):
+            to_date = datetime.now().strftime("%Y-%m-%d")
+            from_date = (datetime.now() - timedelta(days=historical_days)).strftime("%Y-%m-%d")
+            
+            historical_data = dashboard.fetch_historical_data(
+                security_id=security_id,
+                exchange_segment=exchange_segment,
+                instrument=instrument_type,
+                from_date=from_date,
+                to_date=to_date
+            )
+            
+            if historical_data is not None:
+                st.session_state.chart_data = historical_data
+                st.success(f"Loaded {len(historical_data)} historical data points")
+            else:
+                st.error("Failed to load historical data")
     
     # Multi-instrument tracking option
     track_multiple = st.sidebar.checkbox("Track Multiple Instruments", value=False)
@@ -525,222 +639,51 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
         
         if market_data:
             # Main layout
-            if track_multiple and additional_instruments:
-                # Multi-instrument layout
-                st.subheader(f"📈 Primary: {selected_instrument}")
-                
-                # Primary instrument chart and info
-                col1, col2 = st.columns([3, 1])
-                
-                with col1:
-                    if len(st.session_state.chart_data) > 0:
-                        chart = dashboard.create_candlestick_chart(st.session_state.chart_data)
-                        chart.update_layout(title=f"{selected_instrument} - Real-time Chart")
-                        st.plotly_chart(chart, use_container_width=True)
-                
-                with col2:
-                    st.subheader("Market Info")
-                    st.metric("Current Price", f"₹{market_data['close']:.2f}")
-                    st.metric("Volume", f"{market_data['volume']:,}")
-                    st.metric("Buy Qty", f"{market_data['buy_quantity']:,}")
-                    st.metric("Sell Qty", f"{market_data['sell_quantity']:,}")
-                    
-                    if st.session_state.current_high and st.session_state.current_low:
-                        st.metric("Session High", f"₹{st.session_state.current_high:.2f}")
-                        st.metric("Session Low", f"₹{st.session_state.current_low:.2f}")
-                    
-                    poc_data = dashboard.calculate_poc()
-                    if poc_data:
-                        st.metric("POC Price", f"₹{poc_data['price']:.2f}")
-                        st.metric("POC Volume", f"{poc_data['volume']:.1f}")
-                
-                # Additional instruments comparison
-                st.subheader("📊 Additional Instruments Comparison")
-                
-                comparison_cols = st.columns(len(additional_instruments))
-                for idx, (instrument_name, inst_data) in enumerate(additional_data.items()):
-                    with comparison_cols[idx]:
-                        st.subheader(instrument_name)
-                        if inst_data:
-                            st.metric("Price", f"₹{inst_data['close']:.2f}")
-                            st.metric("Volume", f"{inst_data['volume']:,}")
-                            
-                            # Calculate price change if we have historical data
-                            recent_data = dashboard.db.get_recent_market_data(
-                                instruments[instrument_name]["security_id"], 2
-                            )
-                            if len(recent_data) >= 2:
-                                prev_price = recent_data[1]['close']
-                                change_pct = ((inst_data['close'] - prev_price) / prev_price) * 100
-                                change_color = "normal" if change_pct == 0 else ("inverse" if change_pct < 0 else "normal")
-                                st.metric("Change %", f"{change_pct:.2f}%", delta=f"{change_pct:.2f}%")
-                
-                # Comparative chart for multiple instruments
-                st.subheader("Comparative Performance")
-                if all(additional_data.values()):
-                    comparison_fig = go.Figure()
-                    
-                    # Add primary instrument
-                    if len(st.session_state.chart_data) > 0:
-                        normalized_primary = (st.session_state.chart_data['close'] / st.session_state.chart_data['close'].iloc[0] - 1) * 100
-                        comparison_fig.add_trace(go.Scatter(
-                            x=st.session_state.chart_data['timestamp'],
-                            y=normalized_primary,
-                            mode='lines',
-                            name=selected_instrument,
-                            line=dict(width=3)
-                        ))
-                    
-                    # Add additional instruments (you'd need to implement data storage for these)
-                    comparison_fig.update_layout(
-                        title="Normalized Performance Comparison (%)",
-                        xaxis_title="Time",
-                        yaxis_title="Performance (%)",
-                        template="plotly_dark",
-                        height=400
-                    )
-                    
-                    st.plotly_chart(comparison_fig, use_container_width=True)
-                
-            else:
-                # Single instrument layout (original)
-                col1, col2 = st.columns([3, 1])
-                
-                with col1:
-                    if len(st.session_state.chart_data) > 0:
-                        chart = dashboard.create_candlestick_chart(st.session_state.chart_data)
-                        chart.update_layout(title=f"{selected_instrument} - Real-time Chart")
-                        st.plotly_chart(chart, use_container_width=True)
-                
-                with col2:
-                    st.subheader("Market Info")
-                    st.metric("Current Price", f"₹{market_data['close']:.2f}")
-                    st.metric("Volume", f"{market_data['volume']:,}")
-                    st.metric("Buy Qty", f"{market_data['buy_quantity']:,}")
-                    st.metric("Sell Qty", f"{market_data['sell_quantity']:,}")
-                    
-                    if st.session_state.current_high and st.session_state.current_low:
-                        st.metric("Session High", f"₹{st.session_state.current_high:.2f}")
-                        st.metric("Session Low", f"₹{st.session_state.current_low:.2f}")
-                    
-                    poc_data = dashboard.calculate_poc()
-                    if poc_data:
-                        st.metric("POC Price", f"₹{poc_data['price']:.2f}")
-                        st.metric("POC Volume", f"{poc_data['volume']:.1f}")
+            col1, col2 = st.columns([3, 1])
             
-                with col1:
-                    chart_data = st.session_state.get(f'chart_data_{security_id}', pd.DataFrame())
-                    if len(chart_data) > 0:
-                        chart = dashboard.create_candlestick_chart(chart_data, security_id)
-                        if chart:
-                            chart.update_layout(title=f"{selected_instrument} - Real-time Chart")
-                            st.plotly_chart(chart, use_container_width=True)
-                        else:
-                            st.error("Unable to create chart. Please check data.")
-                    else:
-                        st.warning("No chart data available. Loading historical data...")
-                
-                with col2:
-                    st.subheader("Market Info")
-                    st.metric("Current Price", f"₹{market_data['close']:.2f}")
-                    st.metric("Volume", f"{market_data['volume']:,}")
-                    st.metric("Buy Qty", f"{market_data['buy_quantity']:,}")
-                    st.metric("Sell Qty", f"{market_data['sell_quantity']:,}")
-                    
-                    current_high = st.session_state.get(f'current_high_{security_id}')
-                    current_low = st.session_state.get(f'current_low_{security_id}')
-                    
-                    if current_high and current_low:
-                        st.metric("Session High", f"₹{current_high:.2f}")
-                        st.metric("Session Low", f"₹{current_low:.2f}")
-                    
-                    poc_data = dashboard.calculate_poc_for_security(security_id)
-                    if poc_data:
-                        st.metric("POC Price", f"₹{poc_data['price']:.2f}")
-                        st.metric("POC Volume", f"{poc_data['volume']:.1f}")
+            with col1:
+                if len(st.session_state.chart_data) > 0:
+                    chart = dashboard.create_candlestick_chart(st.session_state.chart_data)
+                    # FIX: Use selected_instrument_name instead of selected_instrument
+                    chart.update_layout(title=f"{selected_instrument_name} - Real-time Chart")
+                    st.plotly_chart(chart, use_container_width=True)
             
-            # Volume footprint chart (always show for primary instrument)
-            st.subheader(f"Volume Footprint - {selected_instrument}")
-            footprint_chart = dashboard.create_volume_footprint_chart(security_id)
+            with col2:
+                st.subheader("Market Info")
+                st.metric("Current Price", f"₹{market_data['close']:.2f}")
+                st.metric("Volume", f"{market_data['volume']:,}")
+                st.metric("Buy Qty", f"{market_data['buy_quantity']:,}")
+                st.metric("Sell Qty", f"{market_data['sell_quantity']:,}")
+                
+                if st.session_state.current_high and st.session_state.current_low:
+                    st.metric("Session High", f"₹{st.session_state.current_high:.2f}")
+                    st.metric("Session Low", f"₹{st.session_state.current_low:.2f}")
+                
+                poc_data = dashboard.calculate_poc()
+                if poc_data:
+                    st.metric("POC Price", f"₹{poc_data['price']:.2f}")
+                    st.metric("POC Volume", f"{poc_data['volume']:.1f}")
+            
+            # Volume footprint chart
+            st.subheader(f"Volume Footprint - {selected_instrument_name}")
+            footprint_chart = dashboard.create_volume_footprint_chart()
             if footprint_chart:
-                footprint_chart.update_layout(title=f"{selected_instrument} Volume Distribution")
                 st.plotly_chart(footprint_chart, use_container_width=True)
             else:
                 st.info("Volume footprint will appear after accumulating more data.")
             
-            # Market summary table
-            st.subheader("Market Summary")
-            summary_data = []
-            
-            # Primary instrument
-            current_high = st.session_state.get(f'current_high_{security_id}')
-            current_low = st.session_state.get(f'current_low_{security_id}')
-            poc_data = dashboard.calculate_poc_for_security(security_id)
-            
-            summary_data.append({
-                'Instrument': selected_instrument,
-                'Price': f"₹{market_data['close']:.2f}",
-                'Volume': f"{market_data['volume']:,}",
-                'High': f"₹{current_high:.2f}" if current_high else "N/A",
-                'Low': f"₹{current_low:.2f}" if current_low else "N/A",
-                'POC': f"₹{poc_data['price']:.2f}" if poc_data else "N/A"
-            })
-            
-            # Additional instruments
-            if track_multiple and additional_data:
-                for instrument_name, inst_data in additional_data.items():
-                    if inst_data:
-                        summary_data.append({
-                            'Instrument': instrument_name,
-                            'Price': f"₹{inst_data['close']:.2f}",
-                            'Volume': f"{inst_data['volume']:,}",
-                            'High': "N/A",  # Would need separate session state for each
-                            'Low': "N/A",
-                            'POC': "N/A"
-                        })
-            
-            summary_df = pd.DataFrame(summary_data)
-            st.dataframe(summary_df, use_container_width=True)
-            
-            # Recent data table for primary instrument
-            st.subheader(f"Recent Data - {selected_instrument}")
-            chart_data = st.session_state.get(f'chart_data_{security_id}', pd.DataFrame())
-            if len(chart_data) > 0:
-                recent_data = chart_data.tail(10).copy()
-                recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%H:%M:%S')
-                recent_data = recent_data.round(2)
-                st.dataframe(recent_data, use_container_width=True)
-            else:
-                st.info("Historical data loading...")
-            
-            # Historical data info
-            st.subheader("📊 Data Information")
-            if len(chart_data) > 0:
-                total_candles = len(chart_data)
-                data_start = chart_data['timestamp'].min()
-                data_end = chart_data['timestamp'].max()
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Candles", total_candles)
-                with col2:
-                    st.metric("Data Start", data_start.strftime('%d %b %H:%M'))
-                with col3:
-                    st.metric("Data End", data_end.strftime('%d %b %H:%M'))
-            
             # Status info
             st.sidebar.success(f"✅ Connected to DhanHQ API")
-            st.sidebar.info(f"Primary: {selected_instrument}")
+            st.sidebar.info(f"Primary: {selected_instrument_name}")
             if track_multiple and additional_instruments:
                 st.sidebar.info(f"Tracking {len(additional_instruments)} additional instruments")
             if st.session_state.last_update:
                 st.sidebar.info(f"Last Update: {st.session_state.last_update.strftime('%H:%M:%S')}")
             
             # Data status
-            chart_data = st.session_state.get(f'chart_data_{security_id}', pd.DataFrame())
-            if len(chart_data) > 0:
-                st.sidebar.metric("Data Points", len(chart_data))
-                if len(chart_data) > 1000:  # Indicates historical data loaded
+            if len(st.session_state.chart_data) > 0:
+                st.sidebar.metric("Data Points", len(st.session_state.chart_data))
+                if len(st.session_state.chart_data) > 100:  # Indicates historical data loaded
                     st.sidebar.success("📈 Historical data loaded")
                 else:
                     st.sidebar.warning("🔄 Loading historical data...")
