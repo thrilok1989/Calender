@@ -7,9 +7,6 @@ from datetime import datetime
 import math
 from scipy.stats import norm
 from pytz import timezone
-import io
-import os
-import json
 
 # === Dhan API Configuration ===
 try:
@@ -33,60 +30,28 @@ if SUPABASE_URL and SUPABASE_KEY:
     try:
         from supabase import create_client
         supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        st.success("✅ Connected to Supabase")
+        st.success("Connected to Supabase")
     except Exception as e:
-        st.warning(f"⚠️ Supabase connection failed: {e}")
+        st.warning(f"Supabase connection failed: {e}")
         supabase_client = None
-else:
-    st.info("ℹ️ Supabase not configured. Add SUPABASE_URL and SUPABASE_KEY to secrets.toml or environment variables to enable data storage.")
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
 st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 min
 
-# Initialize session state for price data
-if 'price_data' not in st.session_state:
-    st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
-
-# Initialize session state for enhanced features
+# Initialize minimal session state
 if 'trade_log' not in st.session_state:
     st.session_state.trade_log = []
-
-if 'call_log_book' not in st.session_state:
-    st.session_state.call_log_book = []
-
-if 'export_data' not in st.session_state:
-    st.session_state.export_data = False
-
-if 'support_zone' not in st.session_state:
-    st.session_state.support_zone = (None, None)
-
-if 'resistance_zone' not in st.session_state:
-    st.session_state.resistance_zone = (None, None)
-
-# Initialize PCR-related session state
-if 'pcr_threshold_bull' not in st.session_state:
-    st.session_state.pcr_threshold_bull = 1.2
-if 'pcr_threshold_bear' not in st.session_state:
-    st.session_state.pcr_threshold_bear = 0.7
-if 'use_pcr_filter' not in st.session_state:
-    st.session_state.use_pcr_filter = True
-if 'pcr_history' not in st.session_state:
-    st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
 
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
 TELEGRAM_CHAT_ID = "5704496584"
 
 # === Instrument Mapping ===
-# NIFTY 50 underlying instrument ID for Dhan API
-NIFTY_UNDERLYING_SCRIP = 13  # This needs to be verified with Dhan's instrument list
-NIFTY_UNDERLYING_SEG = "IDX_I"  # Index segment
+NIFTY_UNDERLYING_SCRIP = 13
+NIFTY_UNDERLYING_SEG = "IDX_I"
 # === Dhan API Functions ===
 def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: str):
-    """
-    Get option chain data from Dhan API
-    """
     if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
         st.error("Dhan API credentials not configured")
         return None
@@ -113,9 +78,6 @@ def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: st
         return None
 
 def get_dhan_expiry_list(underlying_scrip: int, underlying_seg: str):
-    """
-    Get expiry list from Dhan API
-    """
     if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
         st.error("Dhan API credentials not configured")
         return None
@@ -139,114 +101,16 @@ def get_dhan_expiry_list(underlying_scrip: int, underlying_seg: str):
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching Dhan expiry list: {e}")
         return None
-
-def get_dhan_market_quote(security_ids: list, segment: str):
-    """
-    Get market quote data from Dhan API
-    """
-    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
-        st.error("Dhan API credentials not configured")
-        return None
-    
-    url = "https://api.dhan.co/v2/marketfeed/quote"
-    headers = {
-        'access-token': DHAN_ACCESS_TOKEN,
-        'client-id': DHAN_CLIENT_ID,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-    }
-    
-    payload = {segment: security_ids}
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching Dhan market quote: {e}")
-        return None
-
-def get_dhan_ltp(security_ids: list, segment: str):
-    """
-    Get LTP data from Dhan API
-    """
-    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
-        st.error("Dhan API credentials not configured")
-        return None
-    
-    url = "https://api.dhan.co/v2/marketfeed/ltp"
-    headers = {
-        'access-token': DHAN_ACCESS_TOKEN,
-        'client-id': DHAN_CLIENT_ID,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-    }
-    
-    payload = {segment: security_ids}
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching Dhan LTP: {e}")
-        return None
-        # === Supabase Data Management Functions ===
-def store_price_data(price):
-    """Store price data in Supabase"""
-    if not supabase_client:
-        return
-        
-    try:
-        data = {
-            "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
-            "price": price,
-            "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
-        }
-        supabase_client.table("price_history").insert(data).execute()
-    except Exception as e:
-        st.error(f"Error storing price data: {e}")
-
-def get_price_history(minutes=60):
-    """Get historical price data from Supabase"""
-    if not supabase_client:
-        return pd.DataFrame(columns=["Time", "Spot"])
-        
-    try:
-        # Calculate time threshold
-        from datetime import timedelta
-        time_threshold = (datetime.now(timezone("Asia/Kolkata")) - timedelta(minutes=minutes)).isoformat()
-        
-        # Query Supabase for recent price data
-        response = supabase_client.table("price_history") \
-            .select("*") \
-            .gte("timestamp", time_threshold) \
-            .order("timestamp", desc=True) \
-            .execute()
-        
-        # Convert to DataFrame
-        if response.data:
-            df = pd.DataFrame(response.data)
-            df['Time'] = pd.to_datetime(df['timestamp']).dt.strftime("%H:%M:%S")
-            df['Spot'] = df['price']
-            return df[['Time', 'Spot']]
-        else:
-            return pd.DataFrame(columns=["Time", "Spot"])
-    except Exception as e:
-        st.error(f"Error retrieving price history: {e}")
-        return pd.DataFrame(columns=["Time", "Spot"])
-
+    # === Basic Supabase Functions ===
 def store_trade_log(trade_data):
     """Store trade log entry in Supabase"""
     if not supabase_client:
         return
         
     try:
-        # Add timestamp if not present
         if 'Time' not in trade_data:
             trade_data['Time'] = datetime.now(timezone("Asia/Kolkata")).strftime("%H:%M:%S")
         
-        # Prepare data for Supabase
         supabase_trade_data = {
             "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
             "strike": trade_data.get("Strike", 0),
@@ -254,12 +118,8 @@ def store_trade_log(trade_data):
             "entry_price": trade_data.get("LTP", 0),
             "target_price": trade_data.get("Target", 0),
             "stop_loss": trade_data.get("SL", 0),
-            "pcr": trade_data.get("PCR", 0),
-            "pcr_signal": trade_data.get("PCR_Signal", ""),
             "target_hit": trade_data.get("TargetHit", False),
             "sl_hit": trade_data.get("SLHit", False),
-            "exit_price": trade_data.get("Exit_Price", None),
-            "exit_time": trade_data.get("Exit_Time", None),
             "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
         }
         
@@ -276,12 +136,10 @@ def get_trade_log():
         response = supabase_client.table("trade_log") \
             .select("*") \
             .order("timestamp", desc=True) \
+            .limit(10) \
             .execute()
         
-        if response.data:
-            return response.data
-        else:
-            return []
+        return response.data if response.data else []
     except Exception as e:
         st.error(f"Error retrieving trade log: {e}")
         return []
@@ -292,7 +150,6 @@ def check_target_sl_hits(current_price):
         return
         
     try:
-        # Get active trades (where target_hit and sl_hit are false)
         response = supabase_client.table("trade_log") \
             .select("*") \
             .eq("target_hit", False) \
@@ -307,7 +164,6 @@ def check_target_sl_hits(current_price):
                 target_price = trade['target_price']
                 stop_loss = trade['stop_loss']
                 
-                # Check if target or SL hit
                 target_hit = False
                 sl_hit = False
                 
@@ -322,7 +178,6 @@ def check_target_sl_hits(current_price):
                     elif current_price >= stop_loss:
                         sl_hit = True
                 
-                # Update trade if target or SL hit
                 if target_hit or sl_hit:
                     update_data = {
                         "target_hit": target_hit,
@@ -336,12 +191,11 @@ def check_target_sl_hits(current_price):
                         .eq("id", trade['id']) \
                         .execute()
                     
-                    # Send Telegram notification
-                    message = f"🎯 {'Target' if target_hit else 'Stop Loss'} Hit!\n"
+                    message = f"{'Target' if target_hit else 'Stop Loss'} Hit!\n"
                     message += f"Strike: {strike} {option_type}\n"
-                    message += f"Entry: ₹{entry_price}\n"
-                    message += f"Exit: ₹{current_price}\n"
-                    message += f"P&L: ₹{(current_price - entry_price) * 75}"
+                    message += f"Entry: {entry_price}\n"
+                    message += f"Exit: {current_price}\n"
+                    message += f"P&L: {(current_price - entry_price) * 75}"
                     
                     send_telegram_message(message)
     except Exception as e:
@@ -353,10 +207,10 @@ def send_telegram_message(message):
     try:
         response = requests.post(url, data=data)
         if response.status_code != 200:
-            st.warning("⚠️ Telegram message failed.")
+            st.warning("Telegram message failed.")
     except Exception as e:
-        st.error(f"❌ Telegram error: {e}")
-        # === Calculation and Analysis Functions ===
+        st.error(f"Telegram error: {e}")    
+# === Core Calculation Functions ===
 def calculate_greeks(option_type, S, K, T, r, sigma):
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -395,13 +249,8 @@ def delta_volume_bias(price, volume, chg_oi):
         return "Neutral"
 
 def calculate_bid_ask_pressure(call_bid_qty, call_ask_qty, put_bid_qty, put_ask_qty):
-    """
-    Calculate bid/ask pressure based on the formula:
-    (CallBid qty - CallAsk qty) + (PutAsk qty - PutBid qty)
-    """
     pressure = (call_bid_qty - call_ask_qty) + (put_ask_qty - put_bid_qty)
     
-    # Determine bias based on pressure value
     if pressure > 500:
         bias = "Bullish"
     elif pressure < -500:
@@ -426,8 +275,6 @@ weights = {
 def determine_level(row):
     ce_oi = row.get('openInterest_CE', 0)
     pe_oi = row.get('openInterest_PE', 0)
-    ce_chg = row.get('changeinOpenInterest_CE', 0)
-    pe_chg = row.get('changeinOpenInterest_PE', 0)
 
     if pe_oi > 1.12 * ce_oi:
         return "Support"
@@ -454,159 +301,7 @@ def get_support_resistance_zones(df, spot):
     resistance_zone = (min(nearest_resistances), max(nearest_resistances)) if len(nearest_resistances) >= 2 else (nearest_resistances[0], nearest_resistances[0]) if nearest_resistances else (None, None)
 
     return support_zone, resistance_zone
-    # === Display and Helper Functions ===
-def display_enhanced_trade_log():
-    # Get trade log from Supabase
-    trade_data = get_trade_log()
-    if not trade_data:
-        st.info("No trades logged yet")
-        return
-    
-    st.markdown("### Enhanced Trade Log")
-    df_trades = pd.DataFrame(trade_data)
-    
-    # Rename columns for display
-    df_trades.rename(columns={
-        'option_type': 'Type',
-        'strike': 'Strike',
-        'entry_price': 'LTP',
-        'target_price': 'Target',
-        'stop_loss': 'SL',
-        'pcr': 'PCR',
-        'pcr_signal': 'PCR_Signal',
-        'target_hit': 'TargetHit',
-        'sl_hit': 'SLHit',
-        'exit_price': 'Exit_Price',
-        'exit_time': 'Exit_Time'
-    }, inplace=True)
-    
-    # Calculate current price and P&L if needed
-    if 'Current_Price' not in df_trades.columns:
-        df_trades['Current_Price'] = df_trades['LTP'] * np.random.uniform(0.8, 1.3, len(df_trades))
-        df_trades['Unrealized_PL'] = (df_trades['Current_Price'] - df_trades['LTP']) * 75
-        df_trades['Status'] = df_trades['Unrealized_PL'].apply(
-            lambda x: '🟢 Profit' if x > 0 else '🔴 Loss' if x < -100 else '🟡 Breakeven'
-        )
-    
-    def color_pnl(row):
-        colors = []
-        for col in row.index:
-            if col == 'Unrealized_PL':
-                if row[col] > 0:
-                    colors.append('background-color: #90EE90; color: black')
-                elif row[col] < -100:
-                    colors.append('background-color: #FFB6C1; color: black')
-                else:
-                    colors.append('background-color: #FFFFE0; color: black')
-            else:
-                colors.append('')
-        return colors
-    
-    styled_trades = df_trades.style.apply(color_pnl, axis=1)
-    st.dataframe(styled_trades, use_container_width=True)
-    
-    total_pl = df_trades['Unrealized_PL'].sum()
-    win_rate = len(df_trades[df_trades['Unrealized_PL'] > 0]) / len(df_trades) * 100
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total P&L", f"₹{total_pl:,.0f}")
-    with col2:
-        st.metric("Win Rate", f"{win_rate:.1f}%")
-    with col3:
-        st.metric("Total Trades", len(df_trades))
-
-def create_export_data(df_summary, trade_log, spot_price):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_summary.to_excel(writer, sheet_name='Option_Chain_Summary', index=False)
-        if trade_log:
-            pd.DataFrame(trade_log).to_excel(writer, sheet_name='Trade_Log', index=False)
-        if not st.session_state.pcr_history.empty:
-            st.session_state.pcr_history.to_excel(writer, sheet_name='PCR_History', index=False)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"nifty_analysis_{timestamp}.xlsx"
-    
-    return output.getvalue(), filename
-
-def handle_export_data(df_summary, spot_price):
-    if 'export_data' in st.session_state and st.session_state.export_data:
-        try:
-            # Get trade log from Supabase
-            trade_data = get_trade_log()
-            excel_data, filename = create_export_data(df_summary, trade_data, spot_price)
-            st.download_button(
-                label="Download Excel Report",
-                data=excel_data,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-            st.success("Export ready! Click the download button above.")
-            st.session_state.export_data = False
-        except Exception as e:
-            st.error(f"Export failed: {e}")
-            st.session_state.export_data = False
-
-def auto_update_call_log(current_price):
-    for call in st.session_state.call_log_book:
-        if call["Status"] != "Active":
-            continue
-        if call["Type"] == "CE":
-            if current_price >= max(call["Targets"].values()):
-                call["Status"] = "Hit Target"
-                call["Hit_Target"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-            elif current_price <= call["Stoploss"]:
-                call["Status"] = "Hit Stoploss"
-                call["Hit_Stoploss"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-        elif call["Type"] == "PE":
-            if current_price <= min(call["Targets"].values()):
-                call["Status"] = "Hit Target"
-                call["Hit_Target"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-            elif current_price >= call["Stoploss"]:
-                call["Status"] = "Hit Stoploss"
-                call["Hit_Stoploss"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-
-def display_call_log_book():
-    st.markdown("### Call Log Book")
-    if not st.session_state.call_log_book:
-        st.info("No calls have been made yet.")
-        return
-    df_log = pd.DataFrame(st.session_state.call_log_book)
-    st.dataframe(df_log, use_container_width=True)
-    if st.button("Download Call Log Book as CSV"):
-        st.download_button(
-            label="Download CSV",
-            data=df_log.to_csv(index=False).encode(),
-            file_name="call_log_book.csv",
-            mime="text/csv"
-        )
-
-def color_pressure(val):
-    if val > 500:
-        return 'background-color: #90EE90; color: black'  # Light green for bullish
-    elif val < -500:
-        return 'background-color: #FFB6C1; color: black'  # Light red for bearish
-    else:
-        return 'background-color: #FFFFE0; color: black'   # Light yellow for neutral
-
-def color_pcr(val):
-    if val > st.session_state.pcr_threshold_bull:
-        return 'background-color: #90EE90; color: black'
-    elif val < st.session_state.pcr_threshold_bear:
-        return 'background-color: #FFB6C1; color: black'
-    else:
-        return 'background-color: #FFFFE0; color: black'
-        # === Main Analysis Function (Part A) ===
+    # === Main Analysis Function Part A ===
 def analyze():
     if 'trade_log' not in st.session_state:
         st.session_state.trade_log = []
@@ -644,16 +339,13 @@ def analyze():
         data = option_chain_data['data']
         underlying = data['last_price']
         
-        # Store price data in Supabase
-        store_price_data(underlying)
-        
         # Check for target/SL hits
         check_target_sl_hits(underlying)
 
         # Process option chain data
         oc_data = data['oc']
         
-        # Convert to DataFrame format similar to NSE
+        # Convert to DataFrame format
         calls, puts = [], []
         for strike, strike_data in oc_data.items():
             if 'ce' in strike_data:
@@ -708,32 +400,41 @@ def analyze():
         T = max((expiry_date - now).days, 1) / 365
         r = 0.06
 
-        # Calculate Greeks for calls and puts with error handling
+        # Calculate Greeks with error handling
         for idx, row in df.iterrows():
             strike = row['strikePrice']
             
-            # Calculate Greeks for CE with default values
+            # Calculate Greeks for CE
             try:
                 if 'impliedVolatility_CE' in row and row['impliedVolatility_CE'] > 0:
                     greeks = calculate_greeks('CE', underlying, strike, T, r, row['impliedVolatility_CE'] / 100)
                 else:
-                    greeks = calculate_greeks('CE', underlying, strike, T, r, 0.15)  # 15% default IV
+                    greeks = calculate_greeks('CE', underlying, strike, T, r, 0.15)
             except:
-                greeks = (0, 0, 0, 0, 0)  # Default values if calculation fails
+                greeks = (0, 0, 0, 0, 0)
             
             df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks
             
-            # Calculate Greeks for PE with default values
+            # Calculate Greeks for PE
             try:
                 if 'impliedVolatility_PE' in row and row['impliedVolatility_PE'] > 0:
                     greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
                 else:
-                    greeks = calculate_greeks('PE', underlying, strike, T, r, 0.15)  # 15% default IV
+                    greeks = calculate_greeks('PE', underlying, strike, T, r, 0.15)
             except:
-                greeks = (0, 0, 0, 0, 0)  # Default values if calculation fails
+                greeks = (0, 0, 0, 0, 0)
             
             df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
-            # === Main Analysis Function (Part B) - Continuing from Part A ===
+
+        return df, underlying, now
+        
+    except Exception as e:
+        st.error(f"Error: {e}")
+        send_telegram_message(f"Error: {str(e)}")
+        return None, None, None
+        # === Main Analysis Function Part B ===
+def process_analysis(df, underlying, now):
+    try:
         # Continue with analysis logic
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
         df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
@@ -810,73 +511,26 @@ def analyze():
 
         df_summary = pd.DataFrame(bias_results)
         
-        # PCR CALCULATION AND MERGE
-        df_summary = pd.merge(
-            df_summary,
-            df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
-                'changeinOpenInterest_CE', 'changeinOpenInterest_PE']],
-            left_on='Strike',
-            right_on='strikePrice',
-            how='left'
-        )
-
-        # Calculate PCR
-        df_summary['PCR'] = (
-            df_summary['openInterest_PE'] / df_summary['openInterest_CE']
-        )
-
-        df_summary['PCR'] = np.where(
-            df_summary['openInterest_CE'] == 0,
-            0,
-            df_summary['PCR']
-        )
-
-        df_summary['PCR'] = df_summary['PCR'].round(2)
-        df_summary['PCR_Signal'] = np.where(
-            df_summary['PCR'] > st.session_state.pcr_threshold_bull,
-            "Bullish",
-            np.where(
-                df_summary['PCR'] < st.session_state.pcr_threshold_bear,
-                "Bearish",
-                "Neutral"
-            )
-        )
-
-        # Style the dataframe
-        styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(color_pressure, subset=['BidAskPressure'])
-        df_summary = df_summary.drop(columns=['strikePrice'])
-        
-        # Record PCR history
-        for _, row in df_summary.iterrows():
-            new_pcr_data = pd.DataFrame({
-                "Time": [now.strftime("%H:%M:%S")],
-                "Strike": [row['Strike']],
-                "PCR": [row['PCR']],
-                "Signal": [row['PCR_Signal']]
-            })
-            st.session_state.pcr_history = pd.concat([st.session_state.pcr_history, new_pcr_data])
-
         # Calculate market view and zones
         atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
         market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
         support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
 
-        st.session_state.support_zone = support_zone
-        st.session_state.resistance_zone = resistance_zone
-
-        # Update price data
-        current_time_str = now.strftime("%H:%M:%S")
-        new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-        st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
-
         support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
         resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
-        # === Signal Logic and Final Display (Part C) - Continuing from Part B ===
+
+        return df_summary, bias_results, atm_row, market_view, support_zone, resistance_zone, support_str, resistance_str, total_score, df
+        
+    except Exception as e:
+        st.error(f"Error in analysis processing: {e}")
+        return None, None, None, None, None, None, None, None, None, None
+        # === Signal Generation and Display ===
+def generate_signals_and_display(df_summary, bias_results, atm_row, market_view, support_zone, resistance_zone, support_str, resistance_str, total_score, df, underlying, now):
+    try:
         # Signal generation logic
         atm_signal, suggested_trade = "No Signal", ""
-        signal_sent = False
-
-        # Get the latest trade from Supabase to check if we have an active position
+        
+        # Get the latest trade to check if we have an active position
         trade_data = get_trade_log()
         last_trade = trade_data[0] if trade_data else None
         
@@ -889,56 +543,33 @@ def analyze():
 
                 atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
                 atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
-                pcr_signal = df_summary[df_summary['Strike'] == row['Strike']]['PCR_Signal'].values[0]
 
-                # Signal logic
-                if st.session_state.use_pcr_filter:
-                    # Support + Bullish conditions with PCR confirmation
-                    if (row['Level'] == "Support" and total_score >= 4 
-                        and "Bullish" in market_view
-                        and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
-                        and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
-                        and pcr_signal == "Bullish"):
-                        option_type = 'CE'
-                    # Resistance + Bearish conditions with PCR confirmation
-                    elif (row['Level'] == "Resistance" and total_score <= -4 
-                          and "Bearish" in market_view
-                          and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
-                          and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
-                          and pcr_signal == "Bearish"):
-                        option_type = 'PE'
-                    else:
-                        continue
+                # Simplified signal logic without PCR filtering
+                if (row['Level'] == "Support" and total_score >= 4 
+                    and "Bullish" in market_view
+                    and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
+                    and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)):
+                    option_type = 'CE'
+                elif (row['Level'] == "Resistance" and total_score <= -4 
+                      and "Bearish" in market_view
+                      and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
+                      and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)):
+                    option_type = 'PE'
                 else:
-                    # Original signal logic without PCR confirmation
-                    if (row['Level'] == "Support" and total_score >= 4 
-                        and "Bullish" in market_view
-                        and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
-                        and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)):
-                        option_type = 'CE'
-                    elif (row['Level'] == "Resistance" and total_score <= -4 
-                          and "Bearish" in market_view
-                          and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
-                          and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)):
-                        option_type = 'PE'
-                    else:
-                        continue
+                    continue
 
                 ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
                 iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
-                target = round(ltp * (1 + iv / 100), 2)
-                stop_loss = round(ltp * 0.8, 2)
+                target = round(ltp * 1.25, 2)  # Simple 25% target
+                stop_loss = round(ltp * 0.8, 2)  # 20% stop loss
 
                 atm_signal = f"{'CALL' if option_type == 'CE' else 'PUT'} Entry (Bias Based at {row['Level']})"
                 suggested_trade = f"Strike: {row['Strike']} {option_type} @ {ltp} | Target: {target} | SL: {stop_loss}"
 
                 send_telegram_message(
-                    f"PCR Config: Bull>{st.session_state.pcr_threshold_bull} Bear<{st.session_state.pcr_threshold_bear} "
-                    f"(Filter {'ON' if st.session_state.use_pcr_filter else 'OFF'})\n"
                     f"Spot: {underlying}\n"
                     f"{atm_signal}\n"
                     f"{suggested_trade}\n"
-                    f"PCR: {df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0]} ({pcr_signal})\n"
                     f"Bias Score: {total_score} ({market_view})\n"
                     f"Level: {row['Level']}\n"
                     f"Support Zone: {support_str}\n"
@@ -953,20 +584,16 @@ def analyze():
                     "Target": target,
                     "SL": stop_loss,
                     "TargetHit": False,
-                    "SLHit": False,
-                    "PCR": df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0],
-                    "PCR_Signal": pcr_signal
+                    "SLHit": False
                 }
 
                 # Store trade in Supabase
                 store_trade_log(trade_data)
-
-                signal_sent = True
                 break
-                # === Final Display and Configuration (Part D) - Continuing from Part C ===
+
         # Main Display
         st.markdown(f"### Spot Price: {underlying}")
-        st.success(f"Market View: **{market_view}** Bias Score: {total_score}")
+        st.success(f"Market View: **{market_view}** | Bias Score: {total_score}")
         
         st.markdown(f"### Support Zone: `{support_str}`")
         st.markdown(f"### Resistance Zone: `{resistance_str}`")
@@ -974,99 +601,44 @@ def analyze():
         if suggested_trade:
             st.info(f"{atm_signal}\n{suggested_trade}")
         
+        # Display option chain summary
         with st.expander("Option Chain Summary"):
-            st.info(f"""
-            PCR Interpretation:
-            - >{st.session_state.pcr_threshold_bull} = Strong Put Activity (Bullish)
-            - <{st.session_state.pcr_threshold_bear} = Strong Call Activity (Bearish)
-            - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
-            """)
-            
-            st.dataframe(styled_df)
+            st.dataframe(df_summary)
         
-        # Display trade log from Supabase
+        # Display recent trade log
         trade_data = get_trade_log()
         if trade_data:
-            st.markdown("### Trade Log")
+            st.markdown("### Recent Trades")
             df_trades = pd.DataFrame(trade_data)
-            # Rename columns for display
             df_trades.rename(columns={
                 'option_type': 'Type',
                 'strike': 'Strike',
-                'entry_price': 'LTP',
+                'entry_price': 'Entry',
                 'target_price': 'Target',
                 'stop_loss': 'SL',
-                'pcr': 'PCR',
-                'pcr_signal': 'PCR_Signal',
-                'target_hit': 'TargetHit',
-                'sl_hit': 'SLHit',
-                'exit_price': 'Exit_Price',
-                'exit_time': 'Exit_Time'
+                'target_hit': 'Target Hit',
+                'sl_hit': 'SL Hit'
             }, inplace=True)
-            st.dataframe(df_trades)
-
-        # Enhanced Features Display
-        st.markdown("---")
-        st.markdown("## Enhanced Features")
-        
-        # PCR Configuration
-        st.markdown("### PCR Configuration")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.session_state.pcr_threshold_bull = st.number_input(
-                "Bullish PCR Threshold (>)", 
-                min_value=1.0, max_value=5.0, 
-                value=st.session_state.pcr_threshold_bull, 
-                step=0.1
-            )
-        with col2:
-            st.session_state.pcr_threshold_bear = st.number_input(
-                "Bearish PCR Threshold (<)", 
-                min_value=0.1, max_value=1.0, 
-                value=st.session_state.pcr_threshold_bear, 
-                step=0.1
-            )
-        with col3:
-            st.session_state.use_pcr_filter = st.checkbox(
-                "Enable PCR Filtering", 
-                value=st.session_state.use_pcr_filter
-            )
-            
-        # PCR History
-        with st.expander("PCR History"):
-            if not st.session_state.pcr_history.empty:
-                pcr_pivot = st.session_state.pcr_history.pivot_table(
-                    index='Time', 
-                    columns='Strike', 
-                    values='PCR',
-                    aggfunc='last'
-                )
-                st.line_chart(pcr_pivot)
-                st.dataframe(st.session_state.pcr_history)
-            else:
-                st.info("No PCR history recorded yet")
-        
-        # Enhanced Trade Log
-        display_enhanced_trade_log()
-        
-        # Export functionality
-        st.markdown("---")
-        st.markdown("### Data Export")
-        if st.button("Prepare Excel Export"):
-            st.session_state.export_data = True
-        handle_export_data(df_summary, underlying)
-        
-        # Call Log Book
-        st.markdown("---")
-        display_call_log_book()
-        
-        # Auto update call log with current price
-        auto_update_call_log(underlying)
+            st.dataframe(df_trades[['Type', 'Strike', 'Entry', 'Target', 'SL', 'Target Hit', 'SL Hit']])
 
     except Exception as e:
-        st.error(f"Error: {e}")
-        send_telegram_message(f"Error: {str(e)}")
+        st.error(f"Error in signal generation: {e}")
 
-# Main Function Call
+# Complete analyze function
+def analyze_complete():
+    result = analyze()
+    if result[0] is None:
+        return
+    
+    df, underlying, now = result
+    
+    analysis_result = process_analysis(df, underlying, now)
+    if analysis_result[0] is None:
+        return
+    
+    df_summary, bias_results, atm_row, market_view, support_zone, resistance_zone, support_str, resistance_str, total_score, df = analysis_result
+    
+    generate_signals_and_display(df_summary, bias_results, atm_row, market_view, support_zone, resistance_zone, support_str, resistance_str, total_score, df, underlying, now)
+    # === Main Function Call ===
 if __name__ == "__main__":
-    analyze()
+    analyze_complete()
