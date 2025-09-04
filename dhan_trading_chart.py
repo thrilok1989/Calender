@@ -41,7 +41,8 @@ def init_supabase():
         supabase_key = st.secrets.get("SUPABASE_KEY")
         if supabase_url and supabase_key:
             return create_client(supabase_url, supabase_key)
-        return     def display_status(self):
+        return     
+def display_status(self):
         """Display API status and POC metrics"""
         col1, col2, col3, col4 = st.columns(4)
         
