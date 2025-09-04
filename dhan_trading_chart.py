@@ -498,49 +498,186 @@ TELEGRAM_CHAT_ID = "your_telegram_chat_id"
     
     auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
     
+    # Multi-instrument tracking option
+    track_multiple = st.sidebar.checkbox("Track Multiple Instruments", value=False)
+    
+    if track_multiple:
+        st.sidebar.subheader("Additional Instruments")
+        additional_instruments = st.sidebar.multiselect(
+            "Select additional instruments to track",
+            [key for key in instruments.keys() if key != selected_instrument],
+            default=[]
+        )
+    
     if st.sidebar.button("Manual Update") or auto_refresh:
+        # Update primary instrument
         market_data = dashboard.update_data(security_id, exchange_segment)
         
+        # Store additional instruments data
+        additional_data = {}
+        if track_multiple and additional_instruments:
+            for instrument_name in additional_instruments:
+                inst_config = instruments[instrument_name]
+                additional_data[instrument_name] = dashboard.update_data(
+                    inst_config["security_id"], 
+                    inst_config["exchange_segment"]
+                )
+        
         if market_data:
-            # Main chart area
-            col1, col2 = st.columns([3, 1])
-            
-            with col1:
-                if len(st.session_state.chart_data) > 0:
-                    chart = dashboard.create_candlestick_chart(st.session_state.chart_data)
-                    st.plotly_chart(chart, use_container_width=True)
-            
-            with col2:
-                st.subheader("Market Info")
-                st.metric("Current Price", f"₹{market_data['close']:.2f}")
-                st.metric("Volume", f"{market_data['volume']:,}")
-                st.metric("Buy Qty", f"{market_data['buy_quantity']:,}")
-                st.metric("Sell Qty", f"{market_data['sell_quantity']:,}")
+            # Main layout
+            if track_multiple and additional_instruments:
+                # Multi-instrument layout
+                st.subheader(f"📈 Primary: {selected_instrument}")
                 
-                if st.session_state.current_high and st.session_state.current_low:
-                    st.metric("Session High", f"₹{st.session_state.current_high:.2f}")
-                    st.metric("Session Low", f"₹{st.session_state.current_low:.2f}")
+                # Primary instrument chart and info
+                col1, col2 = st.columns([3, 1])
                 
-                poc_data = dashboard.calculate_poc()
-                if poc_data:
-                    st.metric("POC Price", f"₹{poc_data['price']:.2f}")
-                    st.metric("POC Volume", f"{poc_data['volume']:.1f}")
+                with col1:
+                    if len(st.session_state.chart_data) > 0:
+                        chart = dashboard.create_candlestick_chart(st.session_state.chart_data)
+                        chart.update_layout(title=f"{selected_instrument} - Real-time Chart")
+                        st.plotly_chart(chart, use_container_width=True)
+                
+                with col2:
+                    st.subheader("Market Info")
+                    st.metric("Current Price", f"₹{market_data['close']:.2f}")
+                    st.metric("Volume", f"{market_data['volume']:,}")
+                    st.metric("Buy Qty", f"{market_data['buy_quantity']:,}")
+                    st.metric("Sell Qty", f"{market_data['sell_quantity']:,}")
+                    
+                    if st.session_state.current_high and st.session_state.current_low:
+                        st.metric("Session High", f"₹{st.session_state.current_high:.2f}")
+                        st.metric("Session Low", f"₹{st.session_state.current_low:.2f}")
+                    
+                    poc_data = dashboard.calculate_poc()
+                    if poc_data:
+                        st.metric("POC Price", f"₹{poc_data['price']:.2f}")
+                        st.metric("POC Volume", f"{poc_data['volume']:.1f}")
+                
+                # Additional instruments comparison
+                st.subheader("📊 Additional Instruments Comparison")
+                
+                comparison_cols = st.columns(len(additional_instruments))
+                for idx, (instrument_name, inst_data) in enumerate(additional_data.items()):
+                    with comparison_cols[idx]:
+                        st.subheader(instrument_name)
+                        if inst_data:
+                            st.metric("Price", f"₹{inst_data['close']:.2f}")
+                            st.metric("Volume", f"{inst_data['volume']:,}")
+                            
+                            # Calculate price change if we have historical data
+                            recent_data = dashboard.db.get_recent_market_data(
+                                instruments[instrument_name]["security_id"], 2
+                            )
+                            if len(recent_data) >= 2:
+                                prev_price = recent_data[1]['close']
+                                change_pct = ((inst_data['close'] - prev_price) / prev_price) * 100
+                                change_color = "normal" if change_pct == 0 else ("inverse" if change_pct < 0 else "normal")
+                                st.metric("Change %", f"{change_pct:.2f}%", delta=f"{change_pct:.2f}%")
+                
+                # Comparative chart for multiple instruments
+                st.subheader("Comparative Performance")
+                if all(additional_data.values()):
+                    comparison_fig = go.Figure()
+                    
+                    # Add primary instrument
+                    if len(st.session_state.chart_data) > 0:
+                        normalized_primary = (st.session_state.chart_data['close'] / st.session_state.chart_data['close'].iloc[0] - 1) * 100
+                        comparison_fig.add_trace(go.Scatter(
+                            x=st.session_state.chart_data['timestamp'],
+                            y=normalized_primary,
+                            mode='lines',
+                            name=selected_instrument,
+                            line=dict(width=3)
+                        ))
+                    
+                    # Add additional instruments (you'd need to implement data storage for these)
+                    comparison_fig.update_layout(
+                        title="Normalized Performance Comparison (%)",
+                        xaxis_title="Time",
+                        yaxis_title="Performance (%)",
+                        template="plotly_dark",
+                        height=400
+                    )
+                    
+                    st.plotly_chart(comparison_fig, use_container_width=True)
+                
+            else:
+                # Single instrument layout (original)
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    if len(st.session_state.chart_data) > 0:
+                        chart = dashboard.create_candlestick_chart(st.session_state.chart_data)
+                        chart.update_layout(title=f"{selected_instrument} - Real-time Chart")
+                        st.plotly_chart(chart, use_container_width=True)
+                
+                with col2:
+                    st.subheader("Market Info")
+                    st.metric("Current Price", f"₹{market_data['close']:.2f}")
+                    st.metric("Volume", f"{market_data['volume']:,}")
+                    st.metric("Buy Qty", f"{market_data['buy_quantity']:,}")
+                    st.metric("Sell Qty", f"{market_data['sell_quantity']:,}")
+                    
+                    if st.session_state.current_high and st.session_state.current_low:
+                        st.metric("Session High", f"₹{st.session_state.current_high:.2f}")
+                        st.metric("Session Low", f"₹{st.session_state.current_low:.2f}")
+                    
+                    poc_data = dashboard.calculate_poc()
+                    if poc_data:
+                        st.metric("POC Price", f"₹{poc_data['price']:.2f}")
+                        st.metric("POC Volume", f"{poc_data['volume']:.1f}")
             
-            # Volume footprint chart
-            st.subheader("Volume Footprint")
+            # Volume footprint chart (always show for primary instrument)
+            st.subheader(f"Volume Footprint - {selected_instrument}")
             footprint_chart = dashboard.create_volume_footprint_chart()
             if footprint_chart:
+                footprint_chart.update_layout(title=f"{selected_instrument} Volume Distribution")
                 st.plotly_chart(footprint_chart, use_container_width=True)
             
-            # Recent data table
-            st.subheader("Recent Market Data")
+            # Market summary table
+            st.subheader("Market Summary")
+            summary_data = []
+            
+            # Primary instrument
+            summary_data.append({
+                'Instrument': selected_instrument,
+                'Price': f"₹{market_data['close']:.2f}",
+                'Volume': f"{market_data['volume']:,}",
+                'High': f"₹{st.session_state.current_high:.2f}" if st.session_state.current_high else "N/A",
+                'Low': f"₹{st.session_state.current_low:.2f}" if st.session_state.current_low else "N/A",
+                'POC': f"₹{poc_data['price']:.2f}" if poc_data else "N/A"
+            })
+            
+            # Additional instruments
+            if track_multiple and additional_data:
+                for instrument_name, inst_data in additional_data.items():
+                    if inst_data:
+                        summary_data.append({
+                            'Instrument': instrument_name,
+                            'Price': f"₹{inst_data['close']:.2f}",
+                            'Volume': f"{inst_data['volume']:,}",
+                            'High': "N/A",  # Would need separate session state for each
+                            'Low': "N/A",
+                            'POC': "N/A"
+                        })
+            
+            summary_df = pd.DataFrame(summary_data)
+            st.dataframe(summary_df, use_container_width=True)
+            
+            # Recent data table for primary instrument
+            st.subheader(f"Recent Data - {selected_instrument}")
             if len(st.session_state.chart_data) > 0:
                 recent_data = st.session_state.chart_data.tail(10).copy()
                 recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%H:%M:%S')
-                st.dataframe(recent_data)
+                recent_data = recent_data.round(2)
+                st.dataframe(recent_data, use_container_width=True)
             
             # Status info
             st.sidebar.success(f"✅ Connected to DhanHQ API")
+            st.sidebar.info(f"Primary: {selected_instrument}")
+            if track_multiple and additional_instruments:
+                st.sidebar.info(f"Tracking {len(additional_instruments)} additional instruments")
             if st.session_state.last_update:
                 st.sidebar.info(f"Last Update: {st.session_state.last_update.strftime('%H:%M:%S')}")
             
