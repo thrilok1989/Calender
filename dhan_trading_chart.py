@@ -253,23 +253,41 @@ def analyze_poc_strength(df, poc_price):
         # Determine if POC is acting as support or resistance
         recent_candles = df.tail(10)
         recent_closes = recent_candles['close']
+        recent_lows = recent_candles['low']
+        recent_highs = recent_candles['high']
         
-        touches_above = len(recent_candles[recent_candles['low'] <= poc_price * 1.002])
-        touches_below = len(recent_candles[recent_candles['high'] >= poc_price * 0.998])
+        # Count bounces from POC level (corrected logic)
+        support_bounces = len(recent_candles[
+            (recent_lows <= poc_price * 1.002) & (recent_closes > poc_price)
+        ])  # Price touched POC from above and bounced up
         
-        # Determine role
-        if touches_above > touches_below and recent_closes.mean() > poc_price:
+        resistance_rejections = len(recent_candles[
+            (recent_highs >= poc_price * 0.998) & (recent_closes < poc_price)
+        ])  # Price touched POC from below and got rejected down
+        
+        # Determine role based on corrected logic
+        avg_recent_close = recent_closes.mean()
+        
+        if support_bounces > resistance_rejections and avg_recent_close >= poc_price:
             role = "Support"
-        elif touches_below > touches_above and recent_closes.mean() < poc_price:
+        elif resistance_rejections > support_bounces and avg_recent_close <= poc_price:
             role = "Resistance"
         else:
-            role = "Neutral"
+            # Additional check based on price position relative to POC
+            if avg_recent_close > poc_price * 1.001:  # Price consistently above POC
+                role = "Support"
+            elif avg_recent_close < poc_price * 0.999:  # Price consistently below POC
+                role = "Resistance"
+            else:
+                role = "Neutral"
         
         # Calculate strength score (0-100)
+        total_touches = support_bounces + resistance_rejections
+        
         strength_factors = {
-            'volume_concentration': volume_concentration * 40,
-            'price_rejection': min(touches_above + touches_below, 5) * 8,
-            'volume_balance': (1 - abs(volume_above - volume_below) / total_volume) * 20
+            'volume_concentration': volume_concentration * 40,  # 40% weight
+            'price_touches': min(total_touches, 5) * 8,  # 40% weight (max 5 touches)
+            'volume_balance': (1 - abs(volume_above - volume_below) / total_volume) * 20  # 20% weight
         }
         
         strength_score = sum(strength_factors.values())
@@ -284,14 +302,17 @@ def analyze_poc_strength(df, poc_price):
         else:
             strength = "Weak"
         
-        # Confidence level
-        confidence = min(100, volume_concentration * 100 + (touches_above + touches_below) * 10)
+        # Confidence level based on clear role identification and volume
+        confidence = min(100, volume_concentration * 100 + total_touches * 10)
         
         return {
             'strength': strength,
             'strength_score': round(strength_score, 2),
             'role': role,
-            'confidence': round(confidence, 2)
+            'confidence': round(confidence, 2),
+            'support_bounces': support_bounces,
+            'resistance_rejections': resistance_rejections,
+            'volume_concentration': round(volume_concentration * 100, 2)
         }
         
     except Exception as e:
@@ -300,7 +321,10 @@ def analyze_poc_strength(df, poc_price):
             'strength': 'Unknown',
             'strength_score': 0,
             'role': 'Neutral',
-            'confidence': 0
+            'confidence': 0,
+            'support_bounces': 0,
+            'resistance_rejections': 0,
+            'volume_concentration': 0
         }
 
 def check_poc_change(new_poc_data, current_poc, threshold=0.1):
