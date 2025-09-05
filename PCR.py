@@ -1,15 +1,259 @@
-import streamlit as st
+# Advanced AI Models Section
+        st.markdown("---")
+        st.markdown("## 🚀 Advanced AI Models")
+        
+        tab1, tab2, tab3, tab4 = st.tabs(["🧠 Neural Networks", "🔍 Anomaly Detection", "🎯 Pattern Recognition", "📊 Volatility AI"])
+        
+        with tab1:
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🚀 Train Deep Neural Network", type="primary"):
+                    if len(st.session_state.ml_features_history) >= 100:
+                        with st.spinner("Training deep neural network..."):
+                            try:
+                                X, y = prepare_ml_dataset()
+                                if X is not None and len(X) >= 100:
+                                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+                                    
+                                    # Scale features
+                                    scaler = StandardScaler()
+                                    X_train_scaled = scaler.fit_transform(X_train)
+                                    X_test_scaled = scaler.transform(X_test)
+                                    
+                                    # Create and train neural network
+                                    nn_model = create_neural_network(X_train_scaled.shape[1])
+                                    history = nn_model.fit(
+                                        X_train_scaled, y_train,
+                                        epochs=100,
+                                        batch_size=32,
+                                        validation_split=0.2,
+                                        verbose=0
+                                    )
+                                    
+                                    # Evaluate
+                                    test_loss, test_acc = nn_model.evaluate(X_test_scaled, y_test, verbose=0)
+                                    
+                                    st.session_state.neural_network = {
+                                        'model': nn_model,
+                                        'scaler': scaler,
+                                        'accuracy': test_acc,
+                                        'history': history.history
+                                    }
+                                    
+                                    st.success(f"✅ Neural Network trained! Accuracy: {test_acc:.3f}")
+                                    send_telegram_message(f"🧠 Nifty AI: Neural Network trained with {test_acc:.3f} accuracy")
+                                else:
+                                    st.warning("Need more training data")
+                            except Exception as e:
+                                st.error(f"Neural network training failed: {e}")
+                    else:
+                        st.info("Need 100+ data points for neural network training")
+                
+                if st.session_state.neural_network:
+                    nn_acc = st.session_state.neural_network['accuracy']
+                    st.metric("🧠 Neural Network Status", f"✅ Active", f"Accuracy: {nn_acc:.1%}")
+                    
+                    # Neural network prediction
+                    try:
+                        nn_data = st.session_state.neural_network
+                        features_df = pd.DataFrame([all_features])
+                        features_scaled = nn_data['scaler'].transform(features_df.fillna(0))
+                        nn_pred_proba = nn_data['model'].predict(features_scaled, verbose=0)[0]
+                        nn_prediction = np.argmax(nn_pred_proba)
+                        
+                        signal_map = {0: "🔴 Bearish", 1: "🟡 Neutral", 2: "🟢 Bullish"}
+                        confidence = nn_pred_proba[nn_prediction]
+                        
+                        st.metric("🎯 Neural Prediction", signal_map[nn_prediction], f"{confidence:.1%} confidence")
+                    except Exception as e:
+                        st.error(f"Neural prediction error: {e}")
+            
+            with col2:
+                if st.button("🧠 Train LSTM Price Model"):
+                    if len(st.session_state.price_data) >= 60:
+                        with st.spinner("Training LSTM for price prediction..."):
+                            try:
+                                prices = st.session_state.price_data['Spot'].values
+                                
+                                # Create sequences for LSTM
+                                def create_sequences(data, seq_length=10):
+                                    X, y = [], []
+                                    for i in range(seq_length, len(data)):
+                                        X.append(data[i-seq_length:i])
+                                        y.append(data[i])
+                                    return np.array(X), np.array(y)
+                                
+                                X, y = create_sequences(prices)
+                                if len(X) >= 20:
+                                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+                                    
+                                    # Reshape for LSTM
+                                    X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+                                    X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
+                                    
+                                    # Scale data
+                                    scaler = MinMaxScaler()
+                                    X_train_scaled = scaler.fit_transform(X_train.reshape(-1, 1)).reshape(X_train.shape)
+                                    X_test_scaled = scaler.transform(X_test.reshape(-1, 1)).reshape(X_test.shape)
+                                    y_train_scaled = scaler.fit_transform(y_train.reshape(-1, 1)).flatten()
+                                    y_test_scaled = scaler.transform(y_test.reshape(-1, 1)).flatten()
+                                    
+                                    # Create LSTM model
+                                    lstm_model = create_lstm_model(X_train.shape[1], 1)
+                                    lstm_model.fit(X_train_scaled, y_train_scaled, epochs=50, batch_size=5, verbose=0)
+                                    
+                                    # Evaluate
+                                    lstm_loss = lstm_model.evaluate(X_test_scaled, y_test_scaled, verbose=0)
+                                    
+                                    st.session_state.price_lstm = {
+                                        'model': lstm_model,
+                                        'scaler': scaler,
+                                        'loss': lstm_loss
+                                    }
+                                    
+                                    st.success(f"✅ LSTM trained! Loss: {lstm_loss:.4f}")
+                                    
+                                    # Make next price prediction
+                                    recent_prices = prices[-10:].reshape(1, 10, 1)
+                                    recent_scaled = scaler.transform(recent_prices.reshape(-1, 1)).reshape(recent_prices.shape)
+                                    next_price_scaled = lstm_model.predict(recent_scaled, verbose=0)
+                                    next_price = scaler.inverse_transform(next_price_scaled.reshape(-1, 1))[0][0]
+                                    
+                                    price_change = (next_price - underlying) / underlying * 100
+                                    st.metric("📈 Next Price Forecast", f"{next_price:.2f}", f"{price_change:+.2f}%")
+                                    
+                            except Exception as e:
+                                st.error(f"LSTM training failed: {e}")
+                    else:
+                        st.info("Need 60+ price points for LSTM training")
+        
+        with tab2:
+            st.markdown("### 🕵️ Market Anomaly Detection")
+            
+            if anomaly_info:
+                col1, col2 = st.columns(2)
+                with col1:
+                    anomaly_status = "🚨 ANOMALY DETECTED!" if anomaly_info.get('is_anomaly') else "✅ Normal Market"
+                    st.metric("Market State", anomaly_status)
+                
+                with col2:
+                    anomaly_score = anomaly_info.get('anomaly_score', 0)
+                    st.metric("Anomaly Score", f"{anomaly_score:.3f}", "Lower = More Unusual")
+                
+                if anomaly_info.get('is_anomaly'):
+                    st.warning(f"⚠️ {anomaly_info.get('interpretation', 'Unusual market conditions detected')}")
+                    st.info("🔍 **Possible Causes**: Major news, earnings, policy changes, or technical breakouts")
+            else:
+                st.info("🔄 Anomaly detection initializing... Need more data points")
+            
+            if st.button("🔄 Retrain Anomaly Detector"):
+                st.session_state.anomaly_detector = None
+                st.success("Anomaly detector reset for retraining")
+        
+        with tab3:
+            st.markdown("### 🎯 Advanced Pattern Recognition")
+            
+            if patterns:
+                # Support/Resistance Analysis
+                if 'support_analysis' in patterns:
+                    support_info = patterns['support_analysis']
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("🛡️ Nearest Support", f"{support_info['nearest_support']:.2f}")
+                    with col2:
+                        st.metric("📏 Distance", f"{support_info['distance_pct']:.2f}%", f"{support_info['strength']} Level")
+                
+                if 'resistance_analysis' in patterns:
+                    resistance_info = patterns['resistance_analysis']
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("🚧 Nearest Resistance", f"{resistance_info['nearest_resistance']:.2f}")
+                    with col2:
+                        st.metric("📏 Distance", f"{resistance_info['distance_pct']:.2f}%", f"{resistance_info['strength']} Level")
+                
+                # Chart Patterns
+                if 'head_shoulders' in patterns and patterns['head_shoulders'].get('detected'):
+                    st.error("📉 **Head & Shoulders Pattern Detected** - Bearish Reversal Signal")
+                
+                # Options Flow Patterns
+                unusual_activities = []
+                if 'unusual_call_activity' in patterns:
+                    call_info = patterns['unusual_call_activity']
+                    unusual_activities.append(f"🚀 Heavy Call Activity at {call_info['strike']} strike")
+                
+                if 'unusual_put_activity' in patterns:
+                    put_info = patterns['unusual_put_activity']
+                    unusual_activities.append(f"🔻 Heavy Put Activity at {put_info['strike']} strike")
+                
+                if unusual_activities:
+                    st.markdown("**🔥 Unusual Options Activity:**")
+                    for activity in unusual_activities:
+                        st.warning(activity)
+                
+                # Momentum Divergence
+                if 'momentum_divergence' in patterns:
+                    div_info = patterns['momentum_divergence']
+                    st.info(f"⚡ **{div_info['type']}**: {div_info['description']} → {div_info['signal']}")
+            
+            else:
+                st.info("🔍 No significant patterns detected in current market conditions")
+        
+        with tab4:
+            st.markdown("### 📊 AI Volatility Prediction")
+            
+            if vol_prediction:
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    current_vol = vol_prediction['current_volatility'] * 100
+                    st.metric("📊 Current Volatility", f"{current_vol:.2f}%")
+                
+                with col2:
+                    predicted_vol = vol_prediction['predicted_volatility'] * 100
+                    st.metric("🔮 Predicted Volatility", f"{predicted_vol:.2f}%")
+                
+                with col3:
+                    vol_change = vol_prediction['volatility_change_pct']
+                    vol_signal = vol_prediction['volatility_signal']
+                    st.metric("📈 Volatility Trend", vol_signal, f"{vol_change:+.1f}%")
+                
+                # Volatility interpretation
+                if vol_signal == "Increasing":
+                    st.warning("⚠️ **Rising Volatility Expected** - Consider protective strategies")
+                elif vol_signal == "Decreasing":
+                    st.success("✅ **Calming Markets Expected** - Trend strategies may work better")
+                else:
+                    st.info("📊 **Stable Volatility Expected** - Current strategies should continue")
+            
+            else:
+                st.info("🔄 Volatility AI training... Need more historical data")
+            
+            if st.button("🎯 Train Volatility Predictor"):
+                st.session_state.volatility_predictor = None
+                st.success("Volatility predictor reset for retraining")import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 from scipy.stats import norm
 from pytz import timezone
 import io
 import os
 import json
+import joblib
+import warnings
+warnings.filterwarnings('ignore')
+
+# Machine Learning imports
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.linear_model import LogisticRegression
+import xgboost as xgb
+from scipy import stats
 
 # === Dhan API Configuration ===
 try:
@@ -27,28 +271,27 @@ except Exception:
     SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
     SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
-# Initialize Supabase client only if credentials are provided
+# Initialize Supabase client
 supabase_client = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
         from supabase import create_client
         supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        st.success("✅ Connected to Supabase")
+        st.success("Connected to Supabase")
     except Exception as e:
-        st.warning(f"⚠️ Supabase connection failed: {e}")
+        st.warning(f"Supabase connection failed: {e}")
         supabase_client = None
 else:
-    st.info("ℹ️ Supabase not configured. Add SUPABASE_URL and SUPABASE_KEY to secrets.toml or environment variables to enable data storage.")
+    st.info("Supabase not configured. Add SUPABASE_URL and SUPABASE_KEY to secrets.toml or environment variables to enable data storage.")
 
 # === Streamlit Config ===
-st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
-st_autorefresh(interval=80000, key="datarefresh")  # Refresh every 2 min
+st.set_page_config(page_title="AI-Enhanced Nifty Options Analyzer", layout="wide")
+st_autorefresh(interval=22000, key="datarefresh")
 
-# Initialize session state for price data
+# Initialize session state
 if 'price_data' not in st.session_state:
     st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
 
-# Initialize session state for enhanced features
 if 'trade_log' not in st.session_state:
     st.session_state.trade_log = []
 
@@ -64,7 +307,6 @@ if 'support_zone' not in st.session_state:
 if 'resistance_zone' not in st.session_state:
     st.session_state.resistance_zone = (None, None)
 
-# Initialize PCR-related session state
 if 'pcr_threshold_bull' not in st.session_state:
     st.session_state.pcr_threshold_bull = 1.2
 if 'pcr_threshold_bear' not in st.session_state:
@@ -74,19 +316,308 @@ if 'use_pcr_filter' not in st.session_state:
 if 'pcr_history' not in st.session_state:
     st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
 
+# ML-specific session state
+if 'ml_models' not in st.session_state:
+    st.session_state.ml_models = {}
+if 'feature_scaler' not in st.session_state:
+    st.session_state.feature_scaler = StandardScaler()
+if 'ml_features_history' not in st.session_state:
+    st.session_state.ml_features_history = pd.DataFrame()
+if 'ml_predictions' not in st.session_state:
+    st.session_state.ml_predictions = []
+
 # === Telegram Config ===
-TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
-TELEGRAM_CHAT_ID = "5704496584"
+try:
+    TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+except Exception:
+    TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # === Instrument Mapping ===
-# NIFTY 50 underlying instrument ID for Dhan API
-NIFTY_UNDERLYING_SCRIP = 13  # This needs to be verified with Dhan's instrument list
-NIFTY_UNDERLYING_SEG = "IDX_I"  # Index segment
-# === Dhan API Functions ===
+NIFTY_UNDERLYING_SCRIP = 13
+NIFTY_UNDERLYING_SEG = "IDX_I"
+
+# === ML Feature Engineering Functions ===
+def calculate_technical_indicators(price_data):
+    """Calculate technical indicators for ML features"""
+    if len(price_data) < 20:
+        return {}
+    
+    prices = price_data['Spot'].values
+    
+    # Moving Averages
+    sma_5 = np.mean(prices[-5:]) if len(prices) >= 5 else prices[-1]
+    sma_10 = np.mean(prices[-10:]) if len(prices) >= 10 else prices[-1]
+    sma_20 = np.mean(prices[-20:]) if len(prices) >= 20 else prices[-1]
+    
+    # RSI
+    def calculate_rsi(prices, period=14):
+        if len(prices) < period + 1:
+            return 50
+        deltas = np.diff(prices)
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+        
+        avg_gain = np.mean(gains[-period:])
+        avg_loss = np.mean(losses[-period:])
+        
+        if avg_loss == 0:
+            return 100
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    rsi = calculate_rsi(prices)
+    
+    # Bollinger Bands
+    bb_middle = sma_20
+    bb_std = np.std(prices[-20:]) if len(prices) >= 20 else 0
+    bb_upper = bb_middle + (2 * bb_std)
+    bb_lower = bb_middle - (2 * bb_std)
+    bb_position = (prices[-1] - bb_lower) / (bb_upper - bb_lower) if bb_upper != bb_lower else 0.5
+    
+    # Volatility
+    volatility = np.std(prices[-10:]) / np.mean(prices[-10:]) if len(prices) >= 10 else 0
+    
+    # Price momentum
+    momentum_5 = (prices[-1] - prices[-5]) / prices[-5] if len(prices) >= 5 else 0
+    momentum_10 = (prices[-1] - prices[-10]) / prices[-10] if len(prices) >= 10 else 0
+    
+    return {
+        'sma_5': sma_5,
+        'sma_10': sma_10,
+        'sma_20': sma_20,
+        'rsi': rsi,
+        'bb_position': bb_position,
+        'volatility': volatility,
+        'momentum_5': momentum_5,
+        'momentum_10': momentum_10,
+        'price_above_sma5': 1 if prices[-1] > sma_5 else 0,
+        'price_above_sma10': 1 if prices[-1] > sma_10 else 0,
+        'price_above_sma20': 1 if prices[-1] > sma_20 else 0
+    }
+
+def extract_options_features(df_summary, underlying):
+    """Extract ML features from options data"""
+    features = {}
+    
+    # ATM features
+    atm_data = df_summary[df_summary['Zone'] == 'ATM']
+    if not atm_data.empty:
+        atm_row = atm_data.iloc[0]
+        features.update({
+            'atm_pcr': atm_row.get('PCR', 1),
+            'atm_bias_score': atm_row.get('BiasScore', 0),
+            'atm_oi_ce': atm_row.get('openInterest_CE', 0),
+            'atm_oi_pe': atm_row.get('openInterest_PE', 0),
+            'atm_chg_oi_ce': atm_row.get('changeinOpenInterest_CE', 0),
+            'atm_chg_oi_pe': atm_row.get('changeinOpenInterest_PE', 0),
+            'atm_pressure': atm_row.get('BidAskPressure', 0)
+        })
+    
+    # Aggregate features
+    features.update({
+        'total_ce_oi': df_summary.get('openInterest_CE', pd.Series()).sum(),
+        'total_pe_oi': df_summary.get('openInterest_PE', pd.Series()).sum(),
+        'total_ce_chg_oi': df_summary.get('changeinOpenInterest_CE', pd.Series()).sum(),
+        'total_pe_chg_oi': df_summary.get('changeinOpenInterest_PE', pd.Series()).sum(),
+        'avg_pcr': df_summary.get('PCR', pd.Series()).mean(),
+        'total_bias_score': df_summary.get('BiasScore', pd.Series()).sum(),
+        'bullish_strikes': len(df_summary[df_summary.get('Verdict', '') == 'Bullish']),
+        'bearish_strikes': len(df_summary[df_summary.get('Verdict', '') == 'Bearish']),
+        'max_oi_strike_distance': 0  # Distance of max OI strike from spot
+    })
+    
+    # Max OI analysis
+    if 'openInterest_CE' in df_summary.columns and 'openInterest_PE' in df_summary.columns:
+        df_summary['total_oi'] = df_summary['openInterest_CE'] + df_summary['openInterest_PE']
+        max_oi_idx = df_summary['total_oi'].idxmax()
+        if not pd.isna(max_oi_idx):
+            max_oi_strike = df_summary.loc[max_oi_idx, 'Strike']
+            features['max_oi_strike_distance'] = abs(max_oi_strike - underlying) / underlying
+    
+    # Time-based features
+    now = datetime.now(timezone("Asia/Kolkata"))
+    features.update({
+        'hour_of_day': now.hour,
+        'minute_of_hour': now.minute,
+        'is_opening_hour': 1 if 9 <= now.hour <= 10 else 0,
+        'is_closing_hour': 1 if 14 <= now.hour <= 15 else 0,
+        'time_to_close': (15.5 - (now.hour + now.minute/60)) / 6.5  # Normalized time to market close
+    })
+    
+    return features
+
+def create_target_variable(price_history, future_minutes=30):
+    """Create target variable for ML training"""
+    if len(price_history) < future_minutes + 1:
+        return 0  # Neutral
+    
+    current_price = price_history.iloc[-future_minutes-1]['Spot']
+    future_price = price_history.iloc[-1]['Spot']
+    
+    price_change_pct = (future_price - current_price) / current_price * 100
+    
+    # Classification: 0=Bearish, 1=Neutral, 2=Bullish
+    if price_change_pct > 0.3:  # More than 0.3% up
+        return 2  # Bullish
+    elif price_change_pct < -0.3:  # More than 0.3% down
+        return 0  # Bearish
+    else:
+        return 1  # Neutral
+
+def prepare_ml_dataset():
+    """Prepare dataset for ML training from historical data"""
+    if 'ml_features_history' not in st.session_state or st.session_state.ml_features_history.empty:
+        return None, None
+    
+    df = st.session_state.ml_features_history.copy()
+    
+    if len(df) < 50:  # Need minimum data for training
+        return None, None
+    
+    # Prepare features and targets
+    feature_columns = [col for col in df.columns if col not in ['timestamp', 'target', 'spot_price']]
+    X = df[feature_columns].fillna(0)
+    y = df['target'].fillna(1)  # Default to neutral if target is missing
+    
+    return X, y
+
+def train_ml_models():
+    """Train multiple ML models for market direction prediction"""
+    X, y = prepare_ml_dataset()
+    
+    if X is None or len(X) < 50:
+        return None
+    
+    try:
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        models = {}
+        model_performance = {}
+        
+        # Random Forest
+        rf_model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=10)
+        rf_model.fit(X_train_scaled, y_train)
+        rf_pred = rf_model.predict(X_test_scaled)
+        models['RandomForest'] = rf_model
+        model_performance['RandomForest'] = accuracy_score(y_test, rf_pred)
+        
+        # Gradient Boosting
+        gb_model = GradientBoostingClassifier(n_estimators=100, random_state=42, max_depth=6)
+        gb_model.fit(X_train_scaled, y_train)
+        gb_pred = gb_model.predict(X_test_scaled)
+        models['GradientBoosting'] = gb_model
+        model_performance['GradientBoosting'] = accuracy_score(y_test, gb_pred)
+        
+        # XGBoost
+        xgb_model = xgb.XGBClassifier(n_estimators=100, random_state=42, max_depth=6)
+        xgb_model.fit(X_train_scaled, y_train)
+        xgb_pred = xgb_model.predict(X_test_scaled)
+        models['XGBoost'] = xgb_model
+        model_performance['XGBoost'] = accuracy_score(y_test, xgb_pred)
+        
+        # Logistic Regression
+        lr_model = LogisticRegression(random_state=42, max_iter=1000)
+        lr_model.fit(X_train_scaled, y_train)
+        lr_pred = lr_model.predict(X_test_scaled)
+        models['LogisticRegression'] = lr_model
+        model_performance['LogisticRegression'] = accuracy_score(y_test, lr_pred)
+        
+        # Store models and scaler
+        st.session_state.ml_models = models
+        st.session_state.feature_scaler = scaler
+        
+        return model_performance
+        
+    except Exception as e:
+        st.error(f"Error training ML models: {e}")
+        return None
+
+def get_ml_predictions(features_dict):
+    """Get predictions from trained ML models"""
+    if not st.session_state.ml_models or not features_dict:
+        return {}
+    
+    try:
+        # Convert features to DataFrame
+        features_df = pd.DataFrame([features_dict])
+        
+        # Get feature columns used in training
+        if hasattr(st.session_state.feature_scaler, 'feature_names_in_'):
+            feature_cols = st.session_state.feature_scaler.feature_names_in_
+            missing_cols = set(feature_cols) - set(features_df.columns)
+            for col in missing_cols:
+                features_df[col] = 0
+            features_df = features_df[feature_cols]
+        
+        # Scale features
+        features_scaled = st.session_state.feature_scaler.transform(features_df)
+        
+        predictions = {}
+        probabilities = {}
+        
+        for model_name, model in st.session_state.ml_models.items():
+            try:
+                pred = model.predict(features_scaled)[0]
+                pred_proba = model.predict_proba(features_scaled)[0]
+                
+                predictions[model_name] = pred
+                probabilities[model_name] = {
+                    'Bearish': pred_proba[0],
+                    'Neutral': pred_proba[1],
+                    'Bullish': pred_proba[2]
+                }
+            except Exception as e:
+                st.warning(f"Error with {model_name}: {e}")
+                continue
+        
+        return predictions, probabilities
+        
+    except Exception as e:
+        st.error(f"Error getting ML predictions: {e}")
+        return {}, {}
+
+def ensemble_prediction(predictions, probabilities):
+    """Create ensemble prediction from multiple models"""
+    if not predictions:
+        return 1, "Neutral", {}  # Default to neutral
+    
+    # Voting ensemble
+    pred_counts = {0: 0, 1: 0, 2: 0}  # Bearish, Neutral, Bullish
+    for pred in predictions.values():
+        pred_counts[pred] += 1
+    
+    ensemble_pred = max(pred_counts, key=pred_counts.get)
+    
+    # Average probabilities
+    ensemble_proba = {'Bearish': 0, 'Neutral': 0, 'Bullish': 0}
+    if probabilities:
+        for model_proba in probabilities.values():
+            for signal, prob in model_proba.items():
+                ensemble_proba[signal] += prob
+        
+        # Average
+        num_models = len(probabilities)
+        for signal in ensemble_proba:
+            ensemble_proba[signal] /= num_models
+    
+    # Convert prediction to signal
+    signal_map = {0: "Bearish", 1: "Neutral", 2: "Bullish"}
+    ensemble_signal = signal_map[ensemble_pred]
+    
+    return ensemble_pred, ensemble_signal, ensemble_proba
+
+# === Original Functions (keeping all existing functions) ===
 def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: str):
-    """
-    Get option chain data from Dhan API
-    """
+    """Get option chain data from Dhan API"""
     if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
         st.error("Dhan API credentials not configured")
         return None
@@ -113,9 +644,7 @@ def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: st
         return None
 
 def get_dhan_expiry_list(underlying_scrip: int, underlying_seg: str):
-    """
-    Get expiry list from Dhan API
-    """
+    """Get expiry list from Dhan API"""
     if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
         st.error("Dhan API credentials not configured")
         return None
@@ -140,58 +669,6 @@ def get_dhan_expiry_list(underlying_scrip: int, underlying_seg: str):
         st.error(f"Error fetching Dhan expiry list: {e}")
         return None
 
-def get_dhan_market_quote(security_ids: list, segment: str):
-    """
-    Get market quote data from Dhan API
-    """
-    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
-        st.error("Dhan API credentials not configured")
-        return None
-    
-    url = "https://api.dhan.co/v2/marketfeed/quote"
-    headers = {
-        'access-token': DHAN_ACCESS_TOKEN,
-        'client-id': DHAN_CLIENT_ID,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-    }
-    
-    payload = {segment: security_ids}
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching Dhan market quote: {e}")
-        return None
-
-def get_dhan_ltp(security_ids: list, segment: str):
-    """
-    Get LTP data from Dhan API
-    """
-    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
-        st.error("Dhan API credentials not configured")
-        return None
-    
-    url = "https://api.dhan.co/v2/marketfeed/ltp"
-    headers = {
-        'access-token': DHAN_ACCESS_TOKEN,
-        'client-id': DHAN_CLIENT_ID,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-    }
-    
-    payload = {segment: security_ids}
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching Dhan LTP: {e}")
-        return None
-        # === Supabase Data Management Functions ===
 def store_price_data(price):
     """Store price data in Supabase"""
     if not supabase_client:
@@ -203,160 +680,60 @@ def store_price_data(price):
             "price": price,
             "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
         }
-        supabase_client.table("price_history").insert(data).execute()
+        supabase_client.table("nifty_price_history").insert(data).execute()
     except Exception as e:
         st.error(f"Error storing price data: {e}")
 
-def get_price_history(minutes=60):
-    """Get historical price data from Supabase"""
+def store_ml_features(features_dict, spot_price, target=None):
+    """Store ML features for future training"""
     if not supabase_client:
-        return pd.DataFrame(columns=["Time", "Spot"])
+        # Store in session state if Supabase not available
+        new_row = features_dict.copy()
+        new_row.update({
+            'timestamp': datetime.now(timezone("Asia/Kolkata")).isoformat(),
+            'spot_price': spot_price,
+            'target': target
+        })
         
-    try:
-        # Calculate time threshold
-        from datetime import timedelta
-        time_threshold = (datetime.now(timezone("Asia/Kolkata")) - timedelta(minutes=minutes)).isoformat()
-        
-        # Query Supabase for recent price data
-        response = supabase_client.table("price_history") \
-            .select("*") \
-            .gte("timestamp", time_threshold) \
-            .order("timestamp", desc=True) \
-            .execute()
-        
-        # Convert to DataFrame
-        if response.data:
-            df = pd.DataFrame(response.data)
-            df['Time'] = pd.to_datetime(df['timestamp']).dt.strftime("%H:%M:%S")
-            df['Spot'] = df['price']
-            return df[['Time', 'Spot']]
+        if st.session_state.ml_features_history.empty:
+            st.session_state.ml_features_history = pd.DataFrame([new_row])
         else:
-            return pd.DataFrame(columns=["Time", "Spot"])
-    except Exception as e:
-        st.error(f"Error retrieving price history: {e}")
-        return pd.DataFrame(columns=["Time", "Spot"])
-
-def store_trade_log(trade_data):
-    """Store trade log entry in Supabase"""
-    if not supabase_client:
+            st.session_state.ml_features_history = pd.concat([
+                st.session_state.ml_features_history, 
+                pd.DataFrame([new_row])
+            ], ignore_index=True)
+        
+        # Keep only last 1000 records
+        if len(st.session_state.ml_features_history) > 1000:
+            st.session_state.ml_features_history = st.session_state.ml_features_history.tail(1000)
         return
         
     try:
-        # Add timestamp if not present
-        if 'Time' not in trade_data:
-            trade_data['Time'] = datetime.now(timezone("Asia/Kolkata")).strftime("%H:%M:%S")
-        
-        # Prepare data for Supabase
-        supabase_trade_data = {
+        data = features_dict.copy()
+        data.update({
             "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
-            "strike": trade_data.get("Strike", 0),
-            "option_type": trade_data.get("Type", ""),
-            "entry_price": trade_data.get("LTP", 0),
-            "target_price": trade_data.get("Target", 0),
-            "stop_loss": trade_data.get("SL", 0),
-            "pcr": trade_data.get("PCR", 0),
-            "pcr_signal": trade_data.get("PCR_Signal", ""),
-            "target_hit": trade_data.get("TargetHit", False),
-            "sl_hit": trade_data.get("SLHit", False),
-            "exit_price": trade_data.get("Exit_Price", None),
-            "exit_time": trade_data.get("Exit_Time", None),
+            "spot_price": spot_price,
+            "target": target,
             "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
-        }
-        
-        supabase_client.table("trade_log").insert(supabase_trade_data).execute()
+        })
+        supabase_client.table("nifty_ml_features").insert(data).execute()
     except Exception as e:
-        st.error(f"Error storing trade log: {e}")
-
-def get_trade_log():
-    """Get trade log from Supabase"""
-    if not supabase_client:
-        return []
-        
-    try:
-        response = supabase_client.table("trade_log") \
-            .select("*") \
-            .order("timestamp", desc=True) \
-            .execute()
-        
-        if response.data:
-            return response.data
-        else:
-            return []
-    except Exception as e:
-        st.error(f"Error retrieving trade log: {e}")
-        return []
-
-def check_target_sl_hits(current_price):
-    """Check if any active trades have hit target or stop loss"""
-    if not supabase_client:
-        return
-        
-    try:
-        # Get active trades (where target_hit and sl_hit are false)
-        response = supabase_client.table("trade_log") \
-            .select("*") \
-            .eq("target_hit", False) \
-            .eq("sl_hit", False) \
-            .execute()
-        
-        if response.data:
-            for trade in response.data:
-                strike = trade['strike']
-                option_type = trade['option_type']
-                entry_price = trade['entry_price']
-                target_price = trade['target_price']
-                stop_loss = trade['stop_loss']
-                
-                # Check if target or SL hit
-                target_hit = False
-                sl_hit = False
-                
-                if option_type == 'CE':
-                    if current_price >= target_price:
-                        target_hit = True
-                    elif current_price <= stop_loss:
-                        sl_hit = True
-                elif option_type == 'PE':
-                    if current_price <= target_price:
-                        target_hit = True
-                    elif current_price >= stop_loss:
-                        sl_hit = True
-                
-                # Update trade if target or SL hit
-                if target_hit or sl_hit:
-                    update_data = {
-                        "target_hit": target_hit,
-                        "sl_hit": sl_hit,
-                        "exit_price": current_price,
-                        "exit_time": datetime.now(timezone("Asia/Kolkata")).isoformat()
-                    }
-                    
-                    supabase_client.table("trade_log") \
-                        .update(update_data) \
-                        .eq("id", trade['id']) \
-                        .execute()
-                    
-                    # Send Telegram notification
-                    message = f"🎯 {'Target' if target_hit else 'Stop Loss'} Hit!\n"
-                    message += f"Strike: {strike} {option_type}\n"
-                    message += f"Entry: ₹{entry_price}\n"
-                    message += f"Exit: ₹{current_price}\n"
-                    message += f"P&L: ₹{(current_price - entry_price) * 75}"
-                    
-                    send_telegram_message(message)
-    except Exception as e:
-        st.error(f"Error checking target/SL hits: {e}")
+        st.error(f"Error storing ML features: {e}")
 
 def send_telegram_message(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        st.warning("Telegram credentials not configured")
+        return
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
         response = requests.post(url, data=data)
         if response.status_code != 200:
-            st.warning("⚠️ Telegram message failed.")
+            st.warning("Telegram message failed.")
     except Exception as e:
-        st.error(f"❌ Telegram error: {e}")
-        # === Calculation and Analysis Functions ===
+        st.error(f"Telegram error: {e}")
+
 def calculate_greeks(option_type, S, K, T, r, sigma):
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -395,13 +772,9 @@ def delta_volume_bias(price, volume, chg_oi):
         return "Neutral"
 
 def calculate_bid_ask_pressure(call_bid_qty, call_ask_qty, put_bid_qty, put_ask_qty):
-    """
-    Calculate bid/ask pressure based on the formula:
-    (CallBid qty - CallAsk qty) + (PutAsk qty - PutBid qty)
-    """
+    """Calculate bid/ask pressure"""
     pressure = (call_bid_qty - call_ask_qty) + (put_ask_qty - put_bid_qty)
     
-    # Determine bias based on pressure value
     if pressure > 500:
         bias = "Bullish"
     elif pressure < -500:
@@ -411,23 +784,9 @@ def calculate_bid_ask_pressure(call_bid_qty, call_ask_qty, put_bid_qty, put_ask_
     
     return pressure, bias
 
-# Weights for bias scoring
-weights = {
-    "ChgOI_Bias": 2,
-    "Volume_Bias": 1,
-    "Gamma_Bias": 1,
-    "AskQty_Bias": 1,
-    "BidQty_Bias": 1,
-    "IV_Bias": 1,
-    "DVP_Bias": 1,
-    "PressureBias": 1,
-}
-
 def determine_level(row):
     ce_oi = row.get('openInterest_CE', 0)
     pe_oi = row.get('openInterest_PE', 0)
-    ce_chg = row.get('changeinOpenInterest_CE', 0)
-    pe_chg = row.get('changeinOpenInterest_PE', 0)
 
     if pe_oi > 1.12 * ce_oi:
         return "Support"
@@ -436,168 +795,13 @@ def determine_level(row):
     else:
         return "Neutral"
 
-def is_in_zone(spot, strike, level):
-    if level == "Support":
-        return strike - 8 <= spot <= strike + 8
-    elif level == "Resistance":
-        return strike - 8 <= spot <= strike + 8
-    return False
-
-def get_support_resistance_zones(df, spot):
-    support_strikes = df[df['Level'] == "Support"]['strikePrice'].tolist()
-    resistance_strikes = df[df['Level'] == "Resistance"]['strikePrice'].tolist()
-
-    nearest_supports = sorted([s for s in support_strikes if s <= spot], reverse=True)[:2]
-    nearest_resistances = sorted([r for r in resistance_strikes if r >= spot])[:2]
-
-    support_zone = (min(nearest_supports), max(nearest_supports)) if len(nearest_supports) >= 2 else (nearest_supports[0], nearest_supports[0]) if nearest_supports else (None, None)
-    resistance_zone = (min(nearest_resistances), max(nearest_resistances)) if len(nearest_resistances) >= 2 else (nearest_resistances[0], nearest_resistances[0]) if nearest_resistances else (None, None)
-
-    return support_zone, resistance_zone
-    # === Display and Helper Functions ===
-def display_enhanced_trade_log():
-    # Get trade log from Supabase
-    trade_data = get_trade_log()
-    if not trade_data:
-        st.info("No trades logged yet")
-        return
-    
-    st.markdown("### Enhanced Trade Log")
-    df_trades = pd.DataFrame(trade_data)
-    
-    # Rename columns for display
-    df_trades.rename(columns={
-        'option_type': 'Type',
-        'strike': 'Strike',
-        'entry_price': 'LTP',
-        'target_price': 'Target',
-        'stop_loss': 'SL',
-        'pcr': 'PCR',
-        'pcr_signal': 'PCR_Signal',
-        'target_hit': 'TargetHit',
-        'sl_hit': 'SLHit',
-        'exit_price': 'Exit_Price',
-        'exit_time': 'Exit_Time'
-    }, inplace=True)
-    
-    # Calculate current price and P&L if needed
-    if 'Current_Price' not in df_trades.columns:
-        df_trades['Current_Price'] = df_trades['LTP'] * np.random.uniform(0.8, 1.3, len(df_trades))
-        df_trades['Unrealized_PL'] = (df_trades['Current_Price'] - df_trades['LTP']) * 75
-        df_trades['Status'] = df_trades['Unrealized_PL'].apply(
-            lambda x: '🟢 Profit' if x > 0 else '🔴 Loss' if x < -100 else '🟡 Breakeven'
-        )
-    
-    def color_pnl(row):
-        colors = []
-        for col in row.index:
-            if col == 'Unrealized_PL':
-                if row[col] > 0:
-                    colors.append('background-color: #90EE90; color: black')
-                elif row[col] < -100:
-                    colors.append('background-color: #FFB6C1; color: black')
-                else:
-                    colors.append('background-color: #FFFFE0; color: black')
-            else:
-                colors.append('')
-        return colors
-    
-    styled_trades = df_trades.style.apply(color_pnl, axis=1)
-    st.dataframe(styled_trades, use_container_width=True)
-    
-    total_pl = df_trades['Unrealized_PL'].sum()
-    win_rate = len(df_trades[df_trades['Unrealized_PL'] > 0]) / len(df_trades) * 100
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total P&L", f"₹{total_pl:,.0f}")
-    with col2:
-        st.metric("Win Rate", f"{win_rate:.1f}%")
-    with col3:
-        st.metric("Total Trades", len(df_trades))
-
-def create_export_data(df_summary, trade_log, spot_price):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_summary.to_excel(writer, sheet_name='Option_Chain_Summary', index=False)
-        if trade_log:
-            pd.DataFrame(trade_log).to_excel(writer, sheet_name='Trade_Log', index=False)
-        if not st.session_state.pcr_history.empty:
-            st.session_state.pcr_history.to_excel(writer, sheet_name='PCR_History', index=False)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"nifty_analysis_{timestamp}.xlsx"
-    
-    return output.getvalue(), filename
-
-def handle_export_data(df_summary, spot_price):
-    if 'export_data' in st.session_state and st.session_state.export_data:
-        try:
-            # Get trade log from Supabase
-            trade_data = get_trade_log()
-            excel_data, filename = create_export_data(df_summary, trade_data, spot_price)
-            st.download_button(
-                label="Download Excel Report",
-                data=excel_data,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-            st.success("Export ready! Click the download button above.")
-            st.session_state.export_data = False
-        except Exception as e:
-            st.error(f"Export failed: {e}")
-            st.session_state.export_data = False
-
-def auto_update_call_log(current_price):
-    for call in st.session_state.call_log_book:
-        if call["Status"] != "Active":
-            continue
-        if call["Type"] == "CE":
-            if current_price >= max(call["Targets"].values()):
-                call["Status"] = "Hit Target"
-                call["Hit_Target"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-            elif current_price <= call["Stoploss"]:
-                call["Status"] = "Hit Stoploss"
-                call["Hit_Stoploss"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-        elif call["Type"] == "PE":
-            if current_price <= min(call["Targets"].values()):
-                call["Status"] = "Hit Target"
-                call["Hit_Target"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-            elif current_price >= call["Stoploss"]:
-                call["Status"] = "Hit Stoploss"
-                call["Hit_Stoploss"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-
-def display_call_log_book():
-    st.markdown("### Call Log Book")
-    if not st.session_state.call_log_book:
-        st.info("No calls have been made yet.")
-        return
-    df_log = pd.DataFrame(st.session_state.call_log_book)
-    st.dataframe(df_log, use_container_width=True)
-    if st.button("Download Call Log Book as CSV"):
-        st.download_button(
-            label="Download CSV",
-            data=df_log.to_csv(index=False).encode(),
-            file_name="call_log_book.csv",
-            mime="text/csv"
-        )
-
 def color_pressure(val):
     if val > 500:
-        return 'background-color: #90EE90; color: black'  # Light green for bullish
+        return 'background-color: #90EE90; color: black'
     elif val < -500:
-        return 'background-color: #FFB6C1; color: black'  # Light red for bearish
+        return 'background-color: #FFB6C1; color: black'
     else:
-        return 'background-color: #FFFFE0; color: black'   # Light yellow for neutral
+        return 'background-color: #FFFFE0; color: black'
 
 def color_pcr(val):
     if val > st.session_state.pcr_threshold_bull:
@@ -606,11 +810,9 @@ def color_pcr(val):
         return 'background-color: #FFB6C1; color: black'
     else:
         return 'background-color: #FFFFE0; color: black'
-        # === Main Analysis Function (Part A) ===
+
+# === Main Enhanced Analysis Function ===
 def analyze():
-    if 'trade_log' not in st.session_state:
-        st.session_state.trade_log = []
-    
     try:
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
@@ -633,7 +835,7 @@ def analyze():
             st.error("No expiry dates available")
             return
         
-        expiry = expiry_dates[0]  # Use nearest expiry
+        expiry = expiry_dates[0]
         
         # Get option chain from Dhan API
         option_chain_data = get_dhan_option_chain(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG, expiry)
@@ -644,16 +846,27 @@ def analyze():
         data = option_chain_data['data']
         underlying = data['last_price']
         
-        # Store price data in Supabase
+        # Store price data
         store_price_data(underlying)
         
-        # Check for target/SL hits
-        check_target_sl_hits(underlying)
+        # Update price history in session state
+        new_price_row = pd.DataFrame({
+            "Time": [now.strftime("%H:%M:%S")],
+            "Spot": [underlying]
+        })
+        
+        if st.session_state.price_data.empty:
+            st.session_state.price_data = new_price_row
+        else:
+            st.session_state.price_data = pd.concat([st.session_state.price_data, new_price_row], ignore_index=True)
+        
+        # Keep only last 100 price points
+        if len(st.session_state.price_data) > 100:
+            st.session_state.price_data = st.session_state.price_data.tail(100)
 
-        # Process option chain data
+        # Process option chain data (keeping original logic)
         oc_data = data['oc']
         
-        # Convert to DataFrame format similar to NSE
         calls, puts = [], []
         for strike, strike_data in oc_data.items():
             if 'ce' in strike_data:
@@ -674,7 +887,7 @@ def analyze():
         # Merge call and put data
         df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
         
-        # Rename columns to match NSE format
+        # Rename columns to match standard format
         column_mapping = {
             'last_price': 'lastPrice',
             'oi': 'openInterest',
@@ -708,33 +921,33 @@ def analyze():
         T = max((expiry_date - now).days, 1) / 365
         r = 0.06
 
-        # Calculate Greeks for calls and puts with error handling
+        # Calculate Greeks for calls and puts
         for idx, row in df.iterrows():
             strike = row['strikePrice']
             
-            # Calculate Greeks for CE with default values
+            # Calculate Greeks for CE
             try:
                 if 'impliedVolatility_CE' in row and row['impliedVolatility_CE'] > 0:
                     greeks = calculate_greeks('CE', underlying, strike, T, r, row['impliedVolatility_CE'] / 100)
                 else:
-                    greeks = calculate_greeks('CE', underlying, strike, T, r, 0.15)  # 15% default IV
+                    greeks = calculate_greeks('CE', underlying, strike, T, r, 0.15)
             except:
-                greeks = (0, 0, 0, 0, 0)  # Default values if calculation fails
+                greeks = (0, 0, 0, 0, 0)
             
             df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks
             
-            # Calculate Greeks for PE with default values
+            # Calculate Greeks for PE
             try:
                 if 'impliedVolatility_PE' in row and row['impliedVolatility_PE'] > 0:
                     greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
                 else:
-                    greeks = calculate_greeks('PE', underlying, strike, T, r, 0.15)  # 15% default IV
+                    greeks = calculate_greeks('PE', underlying, strike, T, r, 0.15)
             except:
-                greeks = (0, 0, 0, 0, 0)  # Default values if calculation fails
+                greeks = (0, 0, 0, 0, 0)
             
             df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
-            # === Main Analysis Function (Part B) - Continuing from Part A ===
-        # Continue with analysis logic
+
+        # Analysis logic
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
         df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
@@ -743,25 +956,18 @@ def analyze():
         # Open Interest Change Comparison
         total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000
         total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
-        
-        st.markdown("## Open Interest Change (in Lakhs)")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("CALL ΔOI", 
-                     f"{total_ce_change:+.1f}L",
-                     delta_color="inverse")
-            
-        with col2:
-            st.metric("PUT ΔOI", 
-                     f"{total_pe_change:+.1f}L",
-                     delta_color="normal")
-        
-        if total_ce_change > total_pe_change:
-            st.error(f"Call OI Dominance (Difference: {abs(total_ce_change - total_pe_change):.1f}L)")
-        elif total_pe_change > total_ce_change:
-            st.success(f"Put OI Dominance (Difference: {abs(total_pe_change - total_ce_change):.1f}L)")
-        else:
-            st.info("OI Changes Balanced")
+
+        # Weights for bias scoring
+        weights = {
+            "ChgOI_Bias": 2,
+            "Volume_Bias": 1,
+            "Gamma_Bias": 1,
+            "AskQty_Bias": 1,
+            "BidQty_Bias": 1,
+            "IV_Bias": 1,
+            "DVP_Bias": 1,
+            "PressureBias": 1,
+        }
 
         # Bias calculation and scoring
         bias_results, total_score = [], 0
@@ -810,7 +1016,7 @@ def analyze():
 
         df_summary = pd.DataFrame(bias_results)
         
-        # PCR CALCULATION AND MERGE
+        # PCR CALCULATION
         df_summary = pd.merge(
             df_summary,
             df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
@@ -821,14 +1027,10 @@ def analyze():
         )
 
         # Calculate PCR
-        df_summary['PCR'] = (
-            df_summary['openInterest_PE'] / df_summary['openInterest_CE']
-        )
-
         df_summary['PCR'] = np.where(
             df_summary['openInterest_CE'] == 0,
             0,
-            df_summary['PCR']
+            df_summary['openInterest_PE'] / df_summary['openInterest_CE']
         )
 
         df_summary['PCR'] = df_summary['PCR'].round(2)
@@ -842,175 +1044,227 @@ def analyze():
             )
         )
 
+        # ===== MACHINE LEARNING SECTION =====
+        
+        # Calculate technical indicators
+        tech_indicators = calculate_technical_indicators(st.session_state.price_data)
+        
+        # Extract options features
+        options_features = extract_options_features(df_summary, underlying)
+        
+        # Combine all features
+        all_features = {**tech_indicators, **options_features}
+        
+        # Store features for future training
+        target = None
+        if len(st.session_state.price_data) >= 30:
+            # Create target based on future price movement (for training data)
+            target = create_target_variable(st.session_state.price_data)
+        
+        store_ml_features(all_features, underlying, target)
+        
+        # Get ML predictions
+        ml_predictions = {}
+        ml_probabilities = {}
+        ensemble_pred = 1
+        ensemble_signal = "Neutral"
+        ensemble_proba = {}
+        
+        if st.session_state.ml_models:
+            ml_predictions, ml_probabilities = get_ml_predictions(all_features)
+            if ml_predictions:
+                ensemble_pred, ensemble_signal, ensemble_proba = ensemble_prediction(ml_predictions, ml_probabilities)
+
         # Style the dataframe
         styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(color_pressure, subset=['BidAskPressure'])
-        df_summary = df_summary.drop(columns=['strikePrice'])
-        
-        # Record PCR history
-        for _, row in df_summary.iterrows():
-            new_pcr_data = pd.DataFrame({
-                "Time": [now.strftime("%H:%M:%S")],
-                "Strike": [row['Strike']],
-                "PCR": [row['PCR']],
-                "Signal": [row['PCR_Signal']]
-            })
-            st.session_state.pcr_history = pd.concat([st.session_state.pcr_history, new_pcr_data])
+        df_summary_display = df_summary.drop(columns=['strikePrice'], errors='ignore')
 
-        # Calculate market view and zones
+        # Calculate market view
         atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
-        market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
-        support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
+        traditional_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
 
-        st.session_state.support_zone = support_zone
-        st.session_state.resistance_zone = resistance_zone
-
-        # Update price data
-        current_time_str = now.strftime("%H:%M:%S")
-        new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-        st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
-
-        support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
-        resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
-        # === Signal Logic and Final Display (Part C) - Continuing from Part B ===
-        # Signal generation logic
-        atm_signal, suggested_trade = "No Signal", ""
-        signal_sent = False
-
-        # Get the latest trade from Supabase to check if we have an active position
-        trade_data = get_trade_log()
-        last_trade = trade_data[0] if trade_data else None
+        # ===== DISPLAY SECTION =====
         
-        if last_trade and not (last_trade.get("target_hit", False) or last_trade.get("sl_hit", False)):
-            pass
-        else:
-            for row in bias_results:
-                if not is_in_zone(underlying, row['Strike'], row['Level']):
-                    continue
+        st.markdown("# 🤖 AI-Enhanced Nifty Options Analyzer")
+        
+        # Main metrics row
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Nifty Spot", f"{underlying:,.2f}")
+        
+        with col2:
+            st.metric("Traditional View", traditional_view, f"Score: {total_score}")
+            
+        with col3:
+            confidence_color = "🟢" if max(ensemble_proba.values()) > 0.6 else "🟡" if max(ensemble_proba.values()) > 0.4 else "🔴"
+            st.metric("🤖 AI Prediction", f"{confidence_color} {ensemble_signal}", 
+                     f"Confidence: {max(ensemble_proba.values()):.1%}" if ensemble_proba else "Training...")
+        
+        with col4:
+            signal_agreement = "✅ Aligned" if traditional_view.replace("Strong ", "") == ensemble_signal else "⚠️ Divergent"
+            st.metric("Signal Agreement", signal_agreement)
 
-                atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
-                atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
-                pcr_signal = df_summary[df_summary['Strike'] == row['Strike']]['PCR_Signal'].values[0]
-
-                # Signal logic
-                if st.session_state.use_pcr_filter:
-                    # Support + Bullish conditions with PCR confirmation
-                    if (row['Level'] == "Support" and total_score >= 4 
-                        and "Bullish" in market_view
-                        and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
-                        and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
-                        and pcr_signal == "Bullish"):
-                        option_type = 'CE'
-                    # Resistance + Bearish conditions with PCR confirmation
-                    elif (row['Level'] == "Resistance" and total_score <= -4 
-                          and "Bearish" in market_view
-                          and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
-                          and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
-                          and pcr_signal == "Bearish"):
-                        option_type = 'PE'
+        # ML Dashboard
+        st.markdown("---")
+        st.markdown("## 🧠 Machine Learning Dashboard")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            if ml_probabilities:
+                st.markdown("### Model Predictions")
+                
+                # Create prediction summary
+                pred_df = pd.DataFrame({
+                    'Model': list(ml_probabilities.keys()),
+                    'Prediction': [list(ml_predictions.values())[i] for i in range(len(ml_predictions))],
+                    'Signal': [['Bearish', 'Neutral', 'Bullish'][pred] for pred in ml_predictions.values()],
+                    'Bearish_Prob': [proba['Bearish'] for proba in ml_probabilities.values()],
+                    'Neutral_Prob': [proba['Neutral'] for proba in ml_probabilities.values()],
+                    'Bullish_Prob': [proba['Bullish'] for proba in ml_probabilities.values()]
+                })
+                
+                # Add ensemble prediction
+                ensemble_row = pd.DataFrame({
+                    'Model': ['🎯 ENSEMBLE'],
+                    'Prediction': [ensemble_pred],
+                    'Signal': [ensemble_signal],
+                    'Bearish_Prob': [ensemble_proba.get('Bearish', 0)],
+                    'Neutral_Prob': [ensemble_proba.get('Neutral', 0)],
+                    'Bullish_Prob': [ensemble_proba.get('Bullish', 0)]
+                })
+                
+                pred_df = pd.concat([pred_df, ensemble_row], ignore_index=True)
+                
+                # Style prediction dataframe
+                def color_prediction(val):
+                    if val == 'Bullish':
+                        return 'background-color: #90EE90; color: black'
+                    elif val == 'Bearish':
+                        return 'background-color: #FFB6C1; color: black'
                     else:
-                        continue
-                else:
-                    # Original signal logic without PCR confirmation
-                    if (row['Level'] == "Support" and total_score >= 4 
-                        and "Bullish" in market_view
-                        and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
-                        and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)):
-                        option_type = 'CE'
-                    elif (row['Level'] == "Resistance" and total_score <= -4 
-                          and "Bearish" in market_view
-                          and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
-                          and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)):
-                        option_type = 'PE'
-                    else:
-                        continue
-
-                ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
-                iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
-                target = round(ltp * (1 + iv / 100), 2)
-                stop_loss = round(ltp * 0.8, 2)
-
-                atm_signal = f"{'CALL' if option_type == 'CE' else 'PUT'} Entry (Bias Based at {row['Level']})"
-                suggested_trade = f"Strike: {row['Strike']} {option_type} @ {ltp} | Target: {target} | SL: {stop_loss}"
-
-                send_telegram_message(
-                    f"PCR Config: Bull>{st.session_state.pcr_threshold_bull} Bear<{st.session_state.pcr_threshold_bear} "
-                    f"(Filter {'ON' if st.session_state.use_pcr_filter else 'OFF'})\n"
-                    f"Spot: {underlying}\n"
-                    f"{atm_signal}\n"
-                    f"{suggested_trade}\n"
-                    f"PCR: {df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0]} ({pcr_signal})\n"
-                    f"Bias Score: {total_score} ({market_view})\n"
-                    f"Level: {row['Level']}\n"
-                    f"Support Zone: {support_str}\n"
-                    f"Resistance Zone: {resistance_str}"
-                )
-
-                trade_data = {
-                    "Time": now.strftime("%H:%M:%S"),
-                    "Strike": row['Strike'],
-                    "Type": option_type,
-                    "LTP": ltp,
-                    "Target": target,
-                    "SL": stop_loss,
-                    "TargetHit": False,
-                    "SLHit": False,
-                    "PCR": df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0],
-                    "PCR_Signal": pcr_signal
+                        return 'background-color: #FFFFE0; color: black'
+                
+                styled_pred_df = pred_df.style.applymap(color_prediction, subset=['Signal'])
+                st.dataframe(styled_pred_df, use_container_width=True)
+            else:
+                st.info("🔄 Training ML models... Need more data points for predictions.")
+        
+        with col2:
+            st.markdown("### Feature Importance")
+            if all_features:
+                # Show top 5 most important features
+                feature_importance = {
+                    'RSI': tech_indicators.get('rsi', 50),
+                    'ATM PCR': options_features.get('atm_pcr', 1),
+                    'Volatility': tech_indicators.get('volatility', 0) * 100,
+                    'Momentum': tech_indicators.get('momentum_5', 0) * 100,
+                    'Bias Score': options_features.get('total_bias_score', 0)
                 }
+                
+                for feature, value in feature_importance.items():
+                    if feature == 'RSI':
+                        color = "🟢" if 30 <= value <= 70 else "🔴"
+                    elif feature == 'ATM PCR':
+                        color = "🟢" if value > 1.2 else "🔴" if value < 0.7 else "🟡"
+                    else:
+                        color = "🟡"
+                    
+                    st.metric(f"{color} {feature}", f"{value:.2f}")
 
-                # Store trade in Supabase
-                store_trade_log(trade_data)
-
-                signal_sent = True
-                break
-                # === Final Display and Configuration (Part D) - Continuing from Part C ===
-        # Main Display
-        st.markdown(f"### Spot Price: {underlying}")
-        st.success(f"Market View: **{market_view}** Bias Score: {total_score}")
+        # Model Training Section
+        st.markdown("### 🎯 Model Training & Performance")
         
-        st.markdown(f"### Support Zone: `{support_str}`")
-        st.markdown(f"### Resistance Zone: `{resistance_str}`")
-
-        if suggested_trade:
-            st.info(f"{atm_signal}\n{suggested_trade}")
+        col1, col2, col3 = st.columns(3)
         
-        with st.expander("Option Chain Summary"):
+        with col1:
+            data_points = len(st.session_state.ml_features_history) if not st.session_state.ml_features_history.empty else 0
+            st.metric("Training Data Points", data_points, "Need 50+ for training")
+        
+        with col2:
+            if st.button("🚀 Train ML Models", type="primary"):
+                with st.spinner("Training ML models..."):
+                    performance = train_ml_models()
+                    if performance:
+                        st.success("Models trained successfully!")
+                        for model, acc in performance.items():
+                            st.text(f"{model}: {acc:.3f} accuracy")
+                        send_telegram_message(f"Nifty ML: Models retrained. Best accuracy: {max(performance.values()):.3f}")
+                    else:
+                        st.warning("Need more training data or training failed.")
+        
+        with col3:
+            if st.session_state.ml_models:
+                st.success(f"✅ {len(st.session_state.ml_models)} models loaded")
+            else:
+                st.warning("⚠️ No trained models")
+
+        # Open Interest Change Display
+        st.markdown("---")
+        st.markdown("## 📊 Open Interest Analysis")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("CALL ΔOI", 
+                     f"{total_ce_change:+.1f}L",
+                     delta_color="inverse")
+            
+        with col2:
+            st.metric("PUT ΔOI", 
+                     f"{total_pe_change:+.1f}L",
+                     delta_color="normal")
+
+        # Options Chain Summary
+        with st.expander("📈 Nifty Option Chain Summary"):
             st.info(f"""
-            PCR Interpretation:
-            - >{st.session_state.pcr_threshold_bull} = Strong Put Activity (Bullish)
-            - <{st.session_state.pcr_threshold_bear} = Strong Call Activity (Bearish)
-            - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
+            **Traditional Analysis:**
+            - ATM Strike: {atm_strike}
+            - Market View: {traditional_view}
+            - Total Bias Score: {total_score}
+            
+            **AI Enhancement:**
+            - ML Prediction: {ensemble_signal}
+            - Confidence: {max(ensemble_proba.values()):.1%} if ensemble_proba else 'Training...'}
+            - Features Used: {len(all_features)} indicators
+            
+            **PCR Thresholds:**
+            - Bullish: >{st.session_state.pcr_threshold_bull}
+            - Bearish: <{st.session_state.pcr_threshold_bear}
+            - Filter: {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
             """)
             
-            st.dataframe(styled_df)
-        
-        # Display trade log from Supabase
-        trade_data = get_trade_log()
-        if trade_data:
-            st.markdown("### Trade Log")
-            df_trades = pd.DataFrame(trade_data)
-            # Rename columns for display
-            df_trades.rename(columns={
-                'option_type': 'Type',
-                'strike': 'Strike',
-                'entry_price': 'LTP',
-                'target_price': 'Target',
-                'stop_loss': 'SL',
-                'pcr': 'PCR',
-                'pcr_signal': 'PCR_Signal',
-                'target_hit': 'TargetHit',
-                'sl_hit': 'SLHit',
-                'exit_price': 'Exit_Price',
-                'exit_time': 'Exit_Time'
-            }, inplace=True)
-            st.dataframe(df_trades)
+            st.dataframe(styled_df, use_container_width=True)
 
-        # Enhanced Features Display
+        # Technical Indicators Display
+        if tech_indicators:
+            st.markdown("---")
+            st.markdown("## 📈 Technical Indicators")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                rsi = tech_indicators.get('rsi', 50)
+                rsi_signal = "Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Neutral"
+                st.metric("RSI", f"{rsi:.1f}", rsi_signal)
+            
+            with col2:
+                volatility = tech_indicators.get('volatility', 0) * 100
+                st.metric("Volatility", f"{volatility:.2f}%")
+            
+            with col3:
+                momentum = tech_indicators.get('momentum_5', 0) * 100
+                st.metric("5-Min Momentum", f"{momentum:+.2f}%")
+            
+            with col4:
+                bb_pos = tech_indicators.get('bb_position', 0.5) * 100
+                bb_signal = "Upper Band" if bb_pos > 80 else "Lower Band" if bb_pos < 20 else "Middle"
+                st.metric("Bollinger Position", f"{bb_pos:.1f}%", bb_signal)
+
+        # Enhanced Features
         st.markdown("---")
-        st.markdown("## Enhanced Features")
+        st.markdown("## ⚙️ Configuration")
         
         # PCR Configuration
-        st.markdown("### PCR Configuration")
         col1, col2, col3 = st.columns(3)
         with col1:
             st.session_state.pcr_threshold_bull = st.number_input(
@@ -1031,41 +1285,57 @@ def analyze():
                 "Enable PCR Filtering", 
                 value=st.session_state.use_pcr_filter
             )
-            
-        # PCR History
-        with st.expander("PCR History"):
-            if not st.session_state.pcr_history.empty:
-                pcr_pivot = st.session_state.pcr_history.pivot_table(
-                    index='Time', 
-                    columns='Strike', 
-                    values='PCR',
-                    aggfunc='last'
-                )
-                st.line_chart(pcr_pivot)
-                st.dataframe(st.session_state.pcr_history)
-            else:
-                st.info("No PCR history recorded yet")
+
+        # Data Management Section
+        st.markdown("### 🗄️ Data Management")
         
-        # Enhanced Trade Log
-        display_enhanced_trade_log()
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("💾 Export ML Data", use_container_width=True):
+                if not st.session_state.ml_features_history.empty:
+                    csv = st.session_state.ml_features_history.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download CSV",
+                        data=csv,
+                        file_name=f"nifty_ml_features_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.warning("No ML data available for export")
         
-        # Export functionality
-        st.markdown("---")
-        st.markdown("### Data Export")
-        if st.button("Prepare Excel Export"):
-            st.session_state.export_data = True
-        handle_export_data(df_summary, underlying)
+        with col2:
+            if st.button("🧹 Clear ML Data", use_container_width=True):
+                st.session_state.ml_features_history = pd.DataFrame()
+                st.session_state.ml_models = {}
+                st.success("ML data cleared!")
         
-        # Call Log Book
-        st.markdown("---")
-        display_call_log_book()
-        
-        # Auto update call log with current price
-        auto_update_call_log(underlying)
+        with col3:
+            if st.button("🗑️ Delete All History", type="secondary", use_container_width=True):
+                if st.session_state.get('confirm_delete', False):
+                    # Clear all data
+                    st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
+                    st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
+                    st.session_state.trade_log = []
+                    st.session_state.call_log_book = []
+                    st.session_state.ml_features_history = pd.DataFrame()
+                    st.session_state.ml_models = {}
+                    st.session_state.confirm_delete = False
+                    st.success("All history deleted successfully!")
+                    send_telegram_message("Nifty AI: All historical data deleted")
+                    st.rerun()
+                else:
+                    st.session_state.confirm_delete = True
+                    st.warning("Click again to confirm deletion")
+
+        # Send ML prediction to Telegram if significant
+        if ensemble_signal != "Neutral" and ensemble_proba and max(ensemble_proba.values()) > 0.7:
+            confidence = max(ensemble_proba.values())
+            message = f"🤖 Nifty AI Alert: {ensemble_signal} signal with {confidence:.1%} confidence at {underlying:,.2f}"
+            send_telegram_message(message)
 
     except Exception as e:
-        st.error(f"Error: {e}")
-        send_telegram_message(f"Error: {str(e)}")
+        st.error(f"Error in analysis: {e}")
+        send_telegram_message(f"Nifty AI Error: {str(e)}")
 
 # Main Function Call
 if __name__ == "__main__":
