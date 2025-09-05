@@ -42,7 +42,7 @@ else:
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Bank Nifty Options Analyzer", layout="wide")
-st_autorefresh(interval=270000, key="datarefresh")  # Refresh every 22 seconds
+st_autorefresh(interval=37000, key="datarefresh")  # Refresh every 22 seconds
 
 # Initialize session state for price data
 if 'price_data' not in st.session_state:
