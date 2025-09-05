@@ -306,7 +306,7 @@ class DhanTradingDashboard:
                 
                 # Convert to DataFrame with IST timezone
                 df = pd.DataFrame({
-                    'timestamp': pd.to_datetime(data['timestamp'], unit='s', utc=True).dt.tz_convert(IST),
+                    'timestamp': pd.to_datetime(data['timestamp'], unit='s').tz_localize('UTC').tz_convert(IST),
                     'open': data['open'],
                     'high': data['high'],
                     'low': data['low'],
