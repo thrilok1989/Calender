@@ -653,10 +653,10 @@ def calculate_technical_indicators(price_data):
     
     return features
     def safe_extract_options_features(df_summary, underlying):
-    """Safe wrapper for extract_options_features with error handling"""
-    try:
+        """Safe wrapper for extract_options_features with error handling"""
+        try:
         return extract_options_features(df_summary, underlying)
-    except Exception as e:
+        except Exception as e:
         st.warning(f"Error extracting options features: {e}")
         # Return default features
         now = datetime.now(timezone("Asia/Kolkata"))
