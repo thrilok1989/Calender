@@ -586,11 +586,11 @@ def calculate_technical_indicators(price_data):
         'price_above_sma20': 1 if prices[-1] > sma_20 else 0
     }
     def extract_options_features(df_summary, underlying):
-        """Extract ML features from options data"""
+    """Extract ML features from options data"""
     features = {}
     
     # ATM features
-    atm_data = df_summary[df_summary['Zone'] == 'ATM']
+    atm_data = df_summary[df_summary['Zone'] == 'ATM'] if 'Zone' in df_summary.columns else pd.DataFrame()
     if not atm_data.empty:
         atm_row = atm_data.iloc[0]
         features.update({
@@ -602,27 +602,44 @@ def calculate_technical_indicators(price_data):
             'atm_chg_oi_pe': atm_row.get('changeinOpenInterest_PE', 0),
             'atm_pressure': atm_row.get('BidAskPressure', 0)
         })
+    else:
+        # Default values if no ATM data
+        features.update({
+            'atm_pcr': 1.0,
+            'atm_bias_score': 0,
+            'atm_oi_ce': 0,
+            'atm_oi_pe': 0,
+            'atm_chg_oi_ce': 0,
+            'atm_chg_oi_pe': 0,
+            'atm_pressure': 0
+        })
     
     # Aggregate features
     features.update({
-        'total_ce_oi': df_summary.get('openInterest_CE', pd.Series()).sum(),
-        'total_pe_oi': df_summary.get('openInterest_PE', pd.Series()).sum(),
-        'total_ce_chg_oi': df_summary.get('changeinOpenInterest_CE', pd.Series()).sum(),
-        'total_pe_chg_oi': df_summary.get('changeinOpenInterest_PE', pd.Series()).sum(),
-        'avg_pcr': df_summary.get('PCR', pd.Series()).mean(),
-        'total_bias_score': df_summary.get('BiasScore', pd.Series()).sum(),
-        'bullish_strikes': len(df_summary[df_summary.get('Verdict', '') == 'Bullish']),
-        'bearish_strikes': len(df_summary[df_summary.get('Verdict', '') == 'Bearish']),
+        'total_ce_oi': df_summary.get('openInterest_CE', pd.Series()).sum() if 'openInterest_CE' in df_summary.columns else 0,
+        'total_pe_oi': df_summary.get('openInterest_PE', pd.Series()).sum() if 'openInterest_PE' in df_summary.columns else 0,
+        'total_ce_chg_oi': df_summary.get('changeinOpenInterest_CE', pd.Series()).sum() if 'changeinOpenInterest_CE' in df_summary.columns else 0,
+        'total_pe_chg_oi': df_summary.get('changeinOpenInterest_PE', pd.Series()).sum() if 'changeinOpenInterest_PE' in df_summary.columns else 0,
+        'avg_pcr': df_summary.get('PCR', pd.Series()).mean() if 'PCR' in df_summary.columns else 1.0,
+        'total_bias_score': df_summary.get('BiasScore', pd.Series()).sum() if 'BiasScore' in df_summary.columns else 0,
+        'bullish_strikes': len(df_summary[df_summary.get('Verdict', '') == 'Bullish']) if 'Verdict' in df_summary.columns else 0,
+        'bearish_strikes': len(df_summary[df_summary.get('Verdict', '') == 'Bearish']) if 'Verdict' in df_summary.columns else 0,
         'max_oi_strike_distance': 0
     })
     
     # Max OI analysis
-    if 'openInterest_CE' in df_summary.columns and 'openInterest_PE' in df_summary.columns:
-        df_summary['total_oi'] = df_summary['openInterest_CE'] + df_summary['openInterest_PE']
-        max_oi_idx = df_summary['total_oi'].idxmax()
-        if not pd.isna(max_oi_idx):
-            max_oi_strike = df_summary.loc[max_oi_idx, 'Strike']
-            features['max_oi_strike_distance'] = abs(max_oi_strike - underlying) / underlying
+    try:
+        if 'openInterest_CE' in df_summary.columns and 'openInterest_PE' in df_summary.columns:
+            df_summary_copy = df_summary.copy()
+            df_summary_copy['total_oi'] = df_summary_copy['openInterest_CE'] + df_summary_copy['openInterest_PE']
+            if not df_summary_copy['total_oi'].empty:
+                max_oi_idx = df_summary_copy['total_oi'].idxmax()
+                if not pd.isna(max_oi_idx) and 'Strike' in df_summary_copy.columns:
+                    max_oi_strike = df_summary_copy.loc[max_oi_idx, 'Strike']
+                    features['max_oi_strike_distance'] = abs(max_oi_strike - underlying) / underlying
+    except Exception as e:
+        # If any error in max OI calculation, set to 0
+        features['max_oi_strike_distance'] = 0
     
     # Time-based features
     now = datetime.now(timezone("Asia/Kolkata"))
@@ -631,10 +648,41 @@ def calculate_technical_indicators(price_data):
         'minute_of_hour': now.minute,
         'is_opening_hour': 1 if 9 <= now.hour <= 10 else 0,
         'is_closing_hour': 1 if 14 <= now.hour <= 15 else 0,
-        'time_to_close': (15.5 - (now.hour + now.minute/60)) / 6.5
+        'time_to_close': max(0, (15.5 - (now.hour + now.minute/60)) / 6.5)  # Normalized time to market close
     })
     
     return features
+    def safe_extract_options_features(df_summary, underlying):
+    """Safe wrapper for extract_options_features with error handling"""
+    try:
+        return extract_options_features(df_summary, underlying)
+    except Exception as e:
+        st.warning(f"Error extracting options features: {e}")
+        # Return default features
+        now = datetime.now(timezone("Asia/Kolkata"))
+        return {
+            'atm_pcr': 1.0,
+            'atm_bias_score': 0,
+            'atm_oi_ce': 0,
+            'atm_oi_pe': 0,
+            'atm_chg_oi_ce': 0,
+            'atm_chg_oi_pe': 0,
+            'atm_pressure': 0,
+            'total_ce_oi': 0,
+            'total_pe_oi': 0,
+            'total_ce_chg_oi': 0,
+            'total_pe_chg_oi': 0,
+            'avg_pcr': 1.0,
+            'total_bias_score': 0,
+            'bullish_strikes': 0,
+            'bearish_strikes': 0,
+            'max_oi_strike_distance': 0,
+            'hour_of_day': now.hour,
+            'minute_of_hour': now.minute,
+            'is_opening_hour': 1 if 9 <= now.hour <= 10 else 0,
+            'is_closing_hour': 1 if 14 <= now.hour <= 15 else 0,
+            'time_to_close': max(0, (15.5 - (now.hour + now.minute/60)) / 6.5)
+        }
 
 def create_target_variable(price_history, future_minutes=30):
     """Create target variable for ML training"""
