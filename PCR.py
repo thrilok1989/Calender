@@ -591,9 +591,9 @@ def calculate_technical_indicators(price_data):
     
         # ATM features
         atm_data = df_summary[df_summary['Zone'] == 'ATM'] if 'Zone' in df_summary.columns else pd.DataFrame()
-        if not atm_data.empty:
-        atm_row = atm_data.iloc[0]
-        features.update({
+            if not atm_data.empty:
+            atm_row = atm_data.iloc[0]
+            features.update({
             'atm_pcr': atm_row.get('PCR', 1),
             'atm_bias_score': atm_row.get('BiasScore', 0),
             'atm_oi_ce': atm_row.get('openInterest_CE', 0),
