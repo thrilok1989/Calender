@@ -661,8 +661,23 @@ class DhanTradingDashboard:
     
     def update_data(self, security_id, exchange_segment):
         """Update market data with rate limit handling and IST timezone"""
-        last_api_call = st.session_state.get(f'last_api_call_{security_id}', datetime.min)
-        time_since_last_call = (self.get_ist_time() - last_api_call).total_seconds()
+        last_api_call = st.session_state.get(f'last_api_call_{security_id}', None)
+        
+        # Handle timezone-aware comparison
+        if last_api_call is None:
+            time_since_last_call = 999  # Force API call on first run
+        else:
+            try:
+                # Ensure both times are timezone-aware
+                current_time = self.get_ist_time()
+                if last_api_call.tzinfo is None:
+                    last_api_call = IST.localize(last_api_call)
+                elif last_api_call.tzinfo != IST:
+                    last_api_call = last_api_call.astimezone(IST)
+                
+                time_since_last_call = (current_time - last_api_call).total_seconds()
+            except Exception as e:
+                time_since_last_call = 999  # Force API call if comparison fails
         
         market_data = None
         
