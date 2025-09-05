@@ -602,7 +602,7 @@ def calculate_technical_indicators(price_data):
             'atm_chg_oi_pe': atm_row.get('changeinOpenInterest_PE', 0),
             'atm_pressure': atm_row.get('BidAskPressure', 0)
         })
-    else:
+        else:
         # Default values if no ATM data
         features.update({
             'atm_pcr': 1.0,
