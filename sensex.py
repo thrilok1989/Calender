@@ -41,8 +41,8 @@ else:
     st.info("Supabase not configured. Add SUPABASE_URL and SUPABASE_KEY to secrets.toml or environment variables to enable data storage.")
 
 # === Streamlit Config ===
-st.set_page_config(page_title="Reliance Options Analyzer", layout="wide")
-st_autorefresh(interval=23000, key="datarefresh")  # Refresh every 23 seconds for rate limit
+st.set_page_config(page_title="Sensex Options Analyzer", layout="wide")
+st_autorefresh(interval=17000, key="datarefresh")  # Refresh every 17 seconds for rate limit
 
 # Initialize session state for price data
 if 'price_data' not in st.session_state:
@@ -83,9 +83,9 @@ except Exception:
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # === Instrument Mapping ===
-# RELIANCE underlying instrument ID for Dhan API (NSE Equity)
-RELIANCE_UNDERLYING_SCRIP = 2885  # Reliance Industries Ltd underlying instrument ID
-RELIANCE_UNDERLYING_SEG = "NSE_EQ"  # NSE Equity segment
+# SENSEX underlying instrument ID for Dhan API (BSE Index)
+SENSEX_UNDERLYING_SCRIP = 1  # Sensex underlying instrument ID
+SENSEX_UNDERLYING_SEG = "IDX_I"  # Index segment
 
 # === Dhan API Functions ===
 def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: str):
@@ -157,7 +157,7 @@ def store_price_data(price):
             "price": price,
             "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
         }
-        supabase_client.table("reliance_price_history").insert(data).execute()
+        supabase_client.table("sensex_price_history").insert(data).execute()
     except Exception as e:
         st.error(f"Error storing price data: {e}")
 
@@ -188,7 +188,7 @@ def store_trade_log(trade_data):
             "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
         }
         
-        supabase_client.table("reliance_trade_log").insert(supabase_trade_data).execute()
+        supabase_client.table("sensex_trade_log").insert(supabase_trade_data).execute()
     except Exception as e:
         st.error(f"Error storing trade log: {e}")
 
@@ -198,7 +198,7 @@ def get_trade_log():
         return []
         
     try:
-        response = supabase_client.table("reliance_trade_log") \
+        response = supabase_client.table("sensex_trade_log") \
             .select("*") \
             .order("timestamp", desc=True) \
             .execute()
@@ -233,10 +233,10 @@ def delete_all_history():
         
     try:
         # Delete all price history
-        supabase_client.table("reliance_price_history").delete().neq('id', 0).execute()
+        supabase_client.table("sensex_price_history").delete().neq('id', 0).execute()
         
         # Delete all trade logs
-        supabase_client.table("reliance_trade_log").delete().neq('id', 0).execute()
+        supabase_client.table("sensex_trade_log").delete().neq('id', 0).execute()
         
         # Clear session state
         if 'price_data' in st.session_state:
@@ -293,14 +293,14 @@ def delta_volume_bias(price, volume, chg_oi):
 
 def calculate_bid_ask_pressure(call_bid_qty, call_ask_qty, put_bid_qty, put_ask_qty):
     """
-    Calculate bid/ask pressure - Reliance stock specific thresholds
+    Calculate bid/ask pressure - Sensex adjusted thresholds
     """
     pressure = (call_bid_qty - call_ask_qty) + (put_ask_qty - put_bid_qty)
     
-    # Determine bias based on pressure value - adjusted for individual stock
-    if pressure > 300:  # Lower threshold for individual stock
+    # Determine bias based on pressure value - adjusted for Sensex
+    if pressure > 2000:  # Higher threshold for Sensex
         bias = "Bullish"
-    elif pressure < -300:
+    elif pressure < -2000:
         bias = "Bearish"
     else:
         bias = "Neutral"
@@ -332,16 +332,16 @@ def determine_level(row):
 
 def is_in_zone(spot, strike, level):
     if level == "Support":
-        return strike - 20 <= spot <= strike + 20  # Tighter range for individual stock
+        return strike - 100 <= spot <= strike + 100  # Wider range for Sensex
     elif level == "Resistance":
-        return strike - 20 <= spot <= strike + 20  # Tighter range for individual stock
+        return strike - 100 <= spot <= strike + 100  # Wider range for Sensex
     return False
 
 # === Display Functions ===
 def color_pressure(val):
-    if val > 300:  # Adjusted for Reliance stock
+    if val > 2000:  # Adjusted for Sensex
         return 'background-color: #90EE90; color: black'  # Light green for bullish
-    elif val < -300:
+    elif val < -2000:
         return 'background-color: #FFB6C1; color: black'  # Light red for bearish
     else:
         return 'background-color: #FFFFE0; color: black'   # Light yellow for neutral
@@ -368,7 +368,7 @@ def analyze():
             return
 
         # Get expiry list from Dhan API
-        expiry_data = get_dhan_expiry_list(RELIANCE_UNDERLYING_SCRIP, RELIANCE_UNDERLYING_SEG)
+        expiry_data = get_dhan_expiry_list(SENSEX_UNDERLYING_SCRIP, SENSEX_UNDERLYING_SEG)
         if not expiry_data or 'data' not in expiry_data:
             st.error("Failed to get expiry list from Dhan API")
             return
@@ -381,7 +381,7 @@ def analyze():
         expiry = expiry_dates[0]  # Use nearest expiry
         
         # Get option chain from Dhan API
-        option_chain_data = get_dhan_option_chain(RELIANCE_UNDERLYING_SCRIP, RELIANCE_UNDERLYING_SEG, expiry)
+        option_chain_data = get_dhan_option_chain(SENSEX_UNDERLYING_SCRIP, SENSEX_UNDERLYING_SEG, expiry)
         if not option_chain_data or 'data' not in option_chain_data:
             st.error("Failed to get option chain from Dhan API")
             return
@@ -459,7 +459,7 @@ def analyze():
                 if 'impliedVolatility_CE' in row and row['impliedVolatility_CE'] > 0:
                     greeks = calculate_greeks('CE', underlying, strike, T, r, row['impliedVolatility_CE'] / 100)
                 else:
-                    greeks = calculate_greeks('CE', underlying, strike, T, r, 0.20)  # 20% default IV for individual stock
+                    greeks = calculate_greeks('CE', underlying, strike, T, r, 0.15)  # 15% default IV
             except:
                 greeks = (0, 0, 0, 0, 0)
             
@@ -470,16 +470,16 @@ def analyze():
                 if 'impliedVolatility_PE' in row and row['impliedVolatility_PE'] > 0:
                     greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
                 else:
-                    greeks = calculate_greeks('PE', underlying, strike, T, r, 0.20)  # 20% default IV for individual stock
+                    greeks = calculate_greeks('PE', underlying, strike, T, r, 0.15)  # 15% default IV
             except:
                 greeks = (0, 0, 0, 0, 0)
             
             df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
 
-        # Analysis logic - Reliance specific adjustments
+        # Analysis logic - Sensex specific adjustments
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
-        # Reliance strikes are usually in multiples of 25/50, smaller range needed
-        strike_range = 200  # Smaller range for individual stock (±200 points)
+        # Sensex strikes are usually in multiples of 100, wider range needed
+        strike_range = 2000  # Wider range for Sensex (±2000 points)
         df = df[df['strikePrice'].between(atm_strike - strike_range, atm_strike + strike_range)]
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
@@ -488,8 +488,8 @@ def analyze():
         total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000
         total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
         
-        st.markdown("# Reliance Industries Options Analyzer")
-        st.markdown("## Reliance Open Interest Change (in Lakhs)")
+        st.markdown("# BSE Sensex Options Analyzer")
+        st.markdown("## Sensex Open Interest Change (in Lakhs)")
         col1, col2 = st.columns(2)
         with col1:
             st.metric("CALL ΔOI", 
@@ -504,8 +504,8 @@ def analyze():
         # Bias calculation and scoring
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
-            # Reliance: Check strikes within ±100 points of ATM
-            if abs(row['strikePrice'] - atm_strike) > 100:
+            # Sensex: Check strikes within ±1000 points of ATM
+            if abs(row['strikePrice'] - atm_strike) > 1000:
                 continue
 
             # Add bid/ask pressure calculation
@@ -536,9 +536,6 @@ def analyze():
                 "PressureBias": pressure_bias
             }
 
-            # Calculate score based on bias
-            for k in row_data:
-                if "_Bias" in k:
             # Calculate score based on bias
             for k in row_data:
                 if "_Bias" in k:
@@ -585,23 +582,23 @@ def analyze():
         df_summary = df_summary.drop(columns=['strikePrice'])
 
         # Calculate market view
+        # Calculate market view
         atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
         market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
 
         # Main Display
-        st.markdown(f"### Reliance Stock Price: ₹{underlying:,.2f}")
+        st.markdown(f"### Sensex Spot Price: ₹{underlying:,.2f}")
         st.success(f"Market View: **{market_view}** | Bias Score: {total_score}")
 
-        with st.expander("Reliance Option Chain Summary"):
+        with st.expander("Sensex Option Chain Summary"):
             st.info(f"""
-            **Reliance PCR Interpretation:**
+            **Sensex PCR Interpretation:**
             - >{st.session_state.pcr_threshold_bull} = Strong Put Activity (Bullish Signal)
             - <{st.session_state.pcr_threshold_bear} = Strong Call Activity (Bearish Signal)
             - PCR Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
-            - Lot Size: 250 contracts
-            - Strike Range: ±200 points from ATM
-            - Refresh Rate: 23 seconds (Rate Limited)
-            - Default IV: 20% (Individual Stock)
+            - Lot Size: 10 contracts
+            - Strike Range: ±2000 points from ATM
+            - Refresh Rate: 17 seconds (Rate Limited)
             """)
             
             st.dataframe(styled_df)
@@ -645,8 +642,8 @@ def analyze():
             if st.button("Delete All History", type="secondary", use_container_width=True):
                 if st.session_state.get('confirm_delete', False):
                     if delete_all_history():
-                        st.success("All Reliance history deleted successfully!")
-                        send_telegram_message("Reliance: All historical data deleted")
+                        st.success("All Sensex history deleted successfully!")
+                        send_telegram_message("Sensex: All historical data deleted")
                         st.session_state.confirm_delete = False
                         st.rerun()
                     else:
@@ -664,7 +661,7 @@ def analyze():
 
     except Exception as e:
         st.error(f"Error: {e}")
-        send_telegram_message(f"Reliance Error: {str(e)}")
+        send_telegram_message(f"Sensex Error: {str(e)}")
 
 # Main Function Call
 if __name__ == "__main__":
