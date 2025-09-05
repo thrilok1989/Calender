@@ -5,6 +5,18 @@ numpy>=1.24.0
 scipy>=1.10.0
 openpyxl>=3.1.0
 pytz>=2023.3
+streamlit
+streamlit-autorefresh
+requests
+pandas
+numpy
+scipy
+scikit-learn
+xgboost
+pytz
+supabase
+tensorflow
+joblib
 
 # Plotting & Visualization
 plotly>=5.15.0
