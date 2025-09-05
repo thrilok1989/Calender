@@ -586,12 +586,12 @@ def calculate_technical_indicators(price_data):
         'price_above_sma20': 1 if prices[-1] > sma_20 else 0
     }
     def extract_options_features(df_summary, underlying):
-    """Extract ML features from options data"""
-    features = {}
+        """Extract ML features from options data"""
+        features = {}
     
-    # ATM features
-    atm_data = df_summary[df_summary['Zone'] == 'ATM'] if 'Zone' in df_summary.columns else pd.DataFrame()
-    if not atm_data.empty:
+        # ATM features
+        atm_data = df_summary[df_summary['Zone'] == 'ATM'] if 'Zone' in df_summary.columns else pd.DataFrame()
+        if not atm_data.empty:
         atm_row = atm_data.iloc[0]
         features.update({
             'atm_pcr': atm_row.get('PCR', 1),
