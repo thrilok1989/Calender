@@ -1149,6 +1149,14 @@ if is_market_hours():
         st.rerun()
 
 if __name__ == "__main__":
+    main().session_state.refresh_counter = 0
+    
+    st.session_state.refresh_counter += 1
+    
+    if st.session_state.refresh_counter % 50 == 0:
+        st.rerun()
+
+if __name__ == "__main__":
     main()DhanHQ credentials not configured!")
         st.markdown("""
         ### Setup Instructions:
