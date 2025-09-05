@@ -604,7 +604,7 @@ def calculate_technical_indicators(price_data):
         })
         else:
         # Default values if no ATM data
-        features.update({
+            features.update({
             'atm_pcr': 1.0,
             'atm_bias_score': 0,
             'atm_oi_ce': 0,
