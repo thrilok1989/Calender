@@ -1420,24 +1420,24 @@ def analyze():
 
         # Options Chain Summary
         confidence_text = f"{max(ensemble_proba.values()):.1%}" if ensemble_proba else 'Training...'
-pcr_filter_status = 'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'
+        pcr_filter_status = 'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'
 
-st.info(f"""
-**Traditional Analysis:**
-- ATM Strike: {atm_strike}
-- Market View: {traditional_view}
-- Total Bias Score: {total_score}
+        st.info(f"""
+        **Traditional Analysis:**
+        - ATM Strike: {atm_strike}
+        - Market View: {traditional_view}
+        - Total Bias Score: {total_score}
 
-**AI Enhancement:**
-- ML Prediction: {ensemble_signal}
-- Confidence: {confidence_text}
-- Features Used: {len(all_features)} indicators
+        **AI Enhancement:**
+        - ML Prediction: {ensemble_signal}
+        - Confidence: {confidence_text}
+        - Features Used: {len(all_features)} indicators
 
-**PCR Thresholds:**
-- Bullish: >{st.session_state.pcr_threshold_bull}
-- Bearish: <{st.session_state.pcr_threshold_bear}
-- Filter: {pcr_filter_status}
-""")
+        **PCR Thresholds:**
+        - Bullish: >{st.session_state.pcr_threshold_bull}
+        - Bearish: <{st.session_state.pcr_threshold_bear}
+        - Filter: {pcr_filter_status}
+        """)
             
             st.dataframe(styled_df, use_container_width=True)
 
