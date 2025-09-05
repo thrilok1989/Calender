@@ -585,7 +585,7 @@ def calculate_technical_indicators(price_data):
         'price_above_sma10': 1 if prices[-1] > sma_10 else 0,
         'price_above_sma20': 1 if prices[-1] > sma_20 else 0
     }
-        def extract_options_features(df_summary, underlying):
+    def extract_options_features(df_summary, underlying):
     """Extract ML features from options data"""
     features = {}
     
