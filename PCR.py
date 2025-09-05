@@ -68,7 +68,7 @@ else:
 
 # === Streamlit Config ===
 st.set_page_config(page_title="AI-Enhanced Nifty Options Analyzer", layout="wide")
-st_autorefresh(interval=22000, key="datarefresh")
+st_autorefresh(interval=2200000, key="datarefresh")
 
 # Initialize session state - Basic
 if 'price_data' not in st.session_state:
