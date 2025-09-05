@@ -140,21 +140,26 @@ class VolumeFootprintIndicator:
         self.current_session_start = None
         
     def detect_htf_change(self, current_data, previous_data):
-        """Detect higher timeframe change"""
-        if not previous_data or not current_data:
-            return True
-            
-        current_time = pd.to_datetime(current_data['timestamp'])
-        previous_time = pd.to_datetime(previous_data['timestamp'])
+    """Detect higher timeframe change"""
+    # Check if previous_data is None or empty DataFrame/Series
+    if previous_data is None or (hasattr(previous_data, 'empty') and previous_data.empty):
+        return True
         
-        if self.timeframe == '1D':
-            return current_time.date() != previous_time.date()
-        elif self.timeframe == '1W':
-            return current_time.isocalendar()[1] != previous_time.isocalendar()[1]
-        elif self.timeframe == '1M':
-            return current_time.month != previous_time.month
-        else:
-            return False
+    # Check if current_data is None or empty
+    if current_data is None or (hasattr(current_data, 'empty') and current_data.empty):
+        return False
+        
+    current_time = pd.to_datetime(current_data['timestamp'])
+    previous_time = pd.to_datetime(previous_data['timestamp'])
+    
+    if self.timeframe == '1D':
+        return current_time.date() != previous_time.date()
+    elif self.timeframe == '1W':
+        return current_time.isocalendar()[1] != previous_time.isocalendar()[1]
+    elif self.timeframe == '1M':
+        return current_time.month != previous_time.month
+    else:
+        return False
     
     def update_volume_footprint(self, data_df):
         """Update volume footprint based on Pine Script logic"""
