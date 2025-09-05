@@ -1439,7 +1439,7 @@ def analyze():
         - Filter: {pcr_filter_status}
         """)
             
-            st.dataframe(styled_df, use_container_width=True)
+        st.dataframe(styled_df, use_container_width=True)
 
         # Technical Indicators Display
         if tech_indicators:
