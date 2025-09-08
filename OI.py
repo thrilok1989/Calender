@@ -880,115 +880,85 @@ def color_pcr(val):
         return 'background-color: #FFB6C1; color: black'
     else:
         return 'background-color: #FFFFE0; color: black'
-# === Main Analysis Function (Part A) ===
-def analyze():
-    if 'trade_log' not in st.session_state:
-        st.session_state.trade_log = []
-    
-    try:
-        now = datetime.now(timezone("Asia/Kolkata"))
-        current_day = now.weekday()
-        current_time = now.time()
-        market_start = datetime.strptime("00:00", "%H:%M").time()
-        market_end = datetime.strptime("15:40", "%H:%M").time()
-
-        if current_day >= 5 or not (market_start <= current_time <= market_end):
-            st.warning("Market Closed (Mon-Fri 9:00-15:40)")
-            return
-
-        # ATM OI Analysis Section
+# ATM OI Analysis Section using Dhan API
         st.markdown("## ATM OI Analysis")
         try:
-            # Fetch NSE data for ATM analysis
-            nse_data = fetch_nifty_option_chain()
-            spot, atm_strike, curr_atm_oi = extract_atm_oi(nse_data)
-            underlying, atm_strike_full, curr_oi_dict, support_strike, resistance_strike = extract_oi(nse_data)
-            
-            # Store current data for next comparison
-            if st.session_state.prev_oi_data is not None:
-                # ATM Action Detection
-                atm_messages = detect_atm_action(spot, atm_strike, st.session_state.prev_oi_data, curr_atm_oi)
+            # Get expiry for ATM analysis
+            expiry_data = get_dhan_expiry_list(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG)
+            if expiry_data and 'data' in expiry_data and expiry_data['data']:
+                expiry = expiry_data['data'][0]  # Use nearest expiry
                 
-                # Slow Move Detection
-                slow_move_result = detect_slow_move_multi(st.session_state.prev_oi_dict, curr_oi_dict, atm_strike)
+                # Fetch Dhan data for ATM analysis
+                dhan_data = fetch_dhan_option_chain_for_atm(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG, expiry)
                 
-                # S/R Action Detection
-                sr_messages = detect_sr_action(spot, support_strike, resistance_strike, st.session_state.prev_oi_dict, curr_oi_dict)
-                
-                # Display results
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("ATM Strike", atm_strike)
-                    st.metric("Support Strike", support_strike)
-                    st.metric("Resistance Strike", resistance_strike)
-                
-                with col2:
-                    st.metric("Market Signal", slow_move_result["signal"])
-                    st.metric("Signal Strength", slow_move_result["strength"])
+                if dhan_data is not None:
+                    spot, atm_strike, curr_atm_oi = extract_atm_oi_from_dhan(dhan_data)
+                    underlying_dhan, atm_strike_full, curr_oi_dict, support_strike, resistance_strike = extract_oi_from_dhan(dhan_data)
                     
-                if atm_messages:
-                    st.markdown("### ATM Action Messages")
-                    for msg in atm_messages:
-                        st.info(f"👉 {msg}")
-                        # Store in session state
-                        st.session_state.atm_action_history.append({
-                            "Time": now.strftime("%H:%M:%S"),
-                            "Message": msg
-                        })
-                
-                if sr_messages:
-                    st.markdown("### Support/Resistance Action")
-                    for msg in sr_messages:
-                        st.warning(f"📊 {msg}")
-                
-                # Store slow move signals
-                st.session_state.slow_move_signals.append({
-                    "Time": now.strftime("%H:%M:%S"),
-                    "Signal": slow_move_result["signal"],
-                    "Strength": slow_move_result["strength"]
-                })
-                
-                # Keep only last 10 records
-                if len(st.session_state.slow_move_signals) > 10:
-                    st.session_state.slow_move_signals = st.session_state.slow_move_signals[-10:]
-                    
+                    if all(x is not None for x in [spot, atm_strike, curr_atm_oi, curr_oi_dict]):
+                        # Store current data for next comparison
+                        if st.session_state.prev_oi_data is not None and st.session_state.prev_oi_dict is not None:
+                            # ATM Action Detection
+                            atm_messages = detect_atm_action_dhan(spot, atm_strike, st.session_state.prev_oi_data, curr_atm_oi)
+                            
+                            # Slow Move Detection
+                            slow_move_result = detect_slow_move_multi_dhan(st.session_state.prev_oi_dict, curr_oi_dict, atm_strike)
+                            
+                            # S/R Action Detection
+                            sr_messages = detect_sr_action_dhan(spot, support_strike, resistance_strike, st.session_state.prev_oi_dict, curr_oi_dict)
+                            
+                            # Display results
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("ATM Strike", atm_strike)
+                                st.metric("Support Strike", support_strike)
+                                st.metric("Resistance Strike", resistance_strike)
+                            
+                            with col2:
+                                st.metric("Market Signal", slow_move_result["signal"])
+                                st.metric("Signal Strength", slow_move_result["strength"])
+                                
+                            if atm_messages:
+                                st.markdown("### ATM Action Messages")
+                                for msg in atm_messages:
+                                    st.info(f"👉 {msg}")
+                                    # Store in session state
+                                    st.session_state.atm_action_history.append({
+                                        "Time": now.strftime("%H:%M:%S"),
+                                        "Message": msg
+                                    })
+                            
+                            if sr_messages:
+                                st.markdown("### Support/Resistance Action")
+                                for msg in sr_messages:
+                                    st.warning(f"📊 {msg}")
+                            
+                            # Store slow move signals
+                            st.session_state.slow_move_signals.append({
+                                "Time": now.strftime("%H:%M:%S"),
+                                "Signal": slow_move_result["signal"],
+                                "Strength": slow_move_result["strength"]
+                            })
+                            
+                            # Keep only last 10 records
+                            if len(st.session_state.slow_move_signals) > 10:
+                                st.session_state.slow_move_signals = st.session_state.slow_move_signals[-10:]
+                                
+                        else:
+                            st.info("Collecting first snapshot for ATM OI analysis...")
+                        
+                        # Update previous data
+                        st.session_state.prev_oi_data = curr_atm_oi.copy()
+                        st.session_state.prev_oi_dict = curr_oi_dict.copy()
+                    else:
+                        st.warning("Unable to extract valid data from Dhan API response")
+                else:
+                    st.warning("Dhan API temporarily unavailable for ATM analysis.")
             else:
-                st.info("Collecting first snapshot for ATM OI analysis...")
-            
-            # Update previous data
-            st.session_state.prev_oi_data = curr_atm_oi.copy()
-            st.session_state.prev_oi_dict = curr_oi_dict.copy()
-            
+                st.warning("Unable to fetch expiry data for ATM analysis.")
+                
         except Exception as e:
-            st.error(f"Error in ATM OI Analysis: {e}")
-
-        # Get expiry list from Dhan API
-        expiry_data = get_dhan_expiry_list(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG)
-        if not expiry_data or 'data' not in expiry_data:
-            st.error("Failed to get expiry list from Dhan API")
-            return
-        
-        expiry_dates = expiry_data['data']
-        if not expiry_dates:
-            st.error("No expiry dates available")
-            return
-        
-        expiry = expiry_dates[0]  # Use nearest expiry
-        
-        # Get option chain from Dhan API
-        option_chain_data = get_dhan_option_chain(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG, expiry)
-        if not option_chain_data or 'data' not in option_chain_data:
-            st.error("Failed to get option chain from Dhan API")
-            return
-        
-        data = option_chain_data['data']
-        underlying = data['last_price']
-        
-        # Store price data in Supabase
-        store_price_data(underlying)
-        
-        # Check for target/SL hits
-        check_target_sl_hits(underlying)
+            st.warning(f"ATM OI Analysis temporarily unavailable: {e}")
 # Process option chain data
         oc_data = data['oc']
         
