@@ -76,7 +76,7 @@ if 'pcr_history' not in st.session_state:
 
 # Initialize Manual Support/Resistance Alert System
 if 'sr_alerts_sent' not in st.session_state:
-    st
+    st.session_state.sr_alerts_sent = set()  # Track which alerts have been sent
 
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
@@ -384,6 +384,98 @@ def delete_all_database_history():
         st.error(f"Error deleting database history: {e}")
         return False
 
+def store_sr_levels(support_1, support_2, resistance_1, resistance_2):
+    """Store manual support/resistance levels in Supabase"""
+    if not supabase_client:
+        return
+        
+    try:
+        # First, delete existing levels for today
+        today = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
+        supabase_client.table("sr_levels") \
+            .delete() \
+            .eq("date", today) \
+            .execute()
+        
+        # Insert new levels
+        data = {
+            "date": today,
+            "support_1": support_1,
+            "support_2": support_2,
+            "resistance_1": resistance_1,
+            "resistance_2": resistance_2,
+            "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat(),
+            "updated_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
+        }
+        
+        supabase_client.table("sr_levels").insert(data).execute()
+    except Exception as e:
+        st.error(f"Error storing S/R levels: {e}")
+
+def get_sr_levels():
+    """Get manual support/resistance levels from Supabase"""
+    if not supabase_client:
+        return None, None, None, None
+        
+    try:
+        today = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
+        response = supabase_client.table("sr_levels") \
+            .select("*") \
+            .eq("date", today) \
+            .order("updated_at", desc=True) \
+            .limit(1) \
+            .execute()
+        
+        if response.data:
+            data = response.data[0]
+            return (
+                data.get('support_1'),
+                data.get('support_2'), 
+                data.get('resistance_1'),
+                data.get('resistance_2')
+            )
+        else:
+            return None, None, None, None
+    except Exception as e:
+        st.error(f"Error retrieving S/R levels: {e}")
+        return None, None, None, None
+
+def delete_all_database_history():
+    """Delete all historical data from database tables"""
+    if not supabase_client:
+        st.error("Database not connected")
+        return False
+        
+    try:
+        # Delete from all tables
+        tables_to_clear = ["price_history", "trade_log", "sr_levels"]
+        
+        for table in tables_to_clear:
+            try:
+                # Get count before deletion
+                count_response = supabase_client.table(table).select("id", count="exact").execute()
+                record_count = count_response.count if hasattr(count_response, 'count') else 0
+                
+                # Delete all records
+                supabase_client.table(table).delete().neq("id", 0).execute()
+                st.success(f"Deleted {record_count} records from {table}")
+                
+            except Exception as table_error:
+                st.warning(f"Could not clear {table}: {table_error}")
+        
+        # Clear session state data as well
+        st.session_state.trade_log = []
+        st.session_state.call_log_book = []
+        st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
+        st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
+        st.session_state.sr_alerts_sent = set()
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error deleting database history: {e}")
+        return False
+
 def check_target_sl_hits(current_price):
     """Check if any active trades have hit target or stop loss"""
     if not supabase_client:
@@ -447,11 +539,14 @@ def check_target_sl_hits(current_price):
 
 def check_manual_sr_alerts(current_price):
     """Check if current price is near manual support/resistance levels and send alerts"""
+    # Get S/R levels from database
+    support_1, support_2, resistance_1, resistance_2 = get_sr_levels()
+    
     sr_levels = {
-        'Support 1': st.session_state.manual_support_1,
-        'Support 2': st.session_state.manual_support_2,
-        'Resistance 1': st.session_state.manual_resistance_1,
-        'Resistance 2': st.session_state.manual_resistance_2
+        'Support 1': support_1,
+        'Support 2': support_2,
+        'Resistance 1': resistance_1,
+        'Resistance 2': resistance_2
     }
     
     for level_name, level_value in sr_levels.items():
