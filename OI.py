@@ -1379,7 +1379,6 @@ def color_pcr(val):
         
          # Auto update call log with current price
         auto_update_call_log(underlying)
-
     except Exception as e:
         st.error(f"Error: {e}")
         send_telegram_message(f"Error: {str(e)}")
