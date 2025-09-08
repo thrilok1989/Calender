@@ -766,7 +766,7 @@ def analyze():
         # Bias calculation and scoring
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
-            if abs(row['strikePrice'] - atm_strike) > 100:
+            if abs(row['strikePrice'] - atm_strike) > 50:
                 continue
 
             # Add bid/ask pressure calculation
