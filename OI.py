@@ -90,89 +90,216 @@ TELEGRAM_CHAT_ID = "5704496584"
 # NIFTY 50 underlying instrument ID for Dhan API
 NIFTY_UNDERLYING_SCRIP = 13  # This needs to be verified with Dhan's instrument list
 NIFTY_UNDERLYING_SEG = "IDX_I"  # Index segment
-# === New NSE Option Chain Functions ===
-def fetch_nifty_option_chain():
-    url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-    headers = {
-        "user-agent": "Mozilla/5.0",
-        "accept-language": "en-US,en;q=0.9",
-        "accept-encoding": "gzip, deflate, br",
-    }
-    session = requests.Session()
-    resp = session.get(url, headers=headers)
-    return resp.json()
+# === Dhan API ATM OI Analysis Functions ===
+def fetch_dhan_option_chain_for_atm(underlying_scrip: int, underlying_seg: str, expiry: str):
+    """
+    Fetch option chain from Dhan API for ATM analysis
+    """
+    try:
+        option_chain_data = get_dhan_option_chain(underlying_scrip, underlying_seg, expiry)
+        if not option_chain_data or 'data' not in option_chain_data:
+            return None
+        return option_chain_data['data']
+    except Exception as e:
+        st.warning(f"Error fetching Dhan option chain for ATM analysis: {e}")
+        return None
 
-def extract_atm_oi(data):
-    records = data["records"]["data"]
-    spot = data["records"]["underlyingValue"]
-    atm_strike = round(spot / 100) * 100
+def extract_atm_oi_from_dhan(dhan_data):
+    """
+    Extract ATM OI data from Dhan API response
+    """
+    try:
+        if not dhan_data or 'oc' not in dhan_data:
+            return None, None, None
+            
+        spot = dhan_data['last_price']
+        atm_strike = round(spot / 100) * 100
+        oc_data = dhan_data['oc']
 
-    atm_oi = {"CE": 0, "PE": 0}
-    for rec in records:
-        if rec["strikePrice"] == atm_strike:
-            atm_oi["CE"] = rec.get("CE", {}).get("openInterest", 0)
-            atm_oi["PE"] = rec.get("PE", {}).get("openInterest", 0)
-            break
+        atm_oi = {"CE": 0, "PE": 0}
+        
+        # Find ATM strike data
+        atm_strike_str = str(int(atm_strike))
+        if atm_strike_str in oc_data:
+            strike_data = oc_data[atm_strike_str]
+            if 'ce' in strike_data:
+                atm_oi["CE"] = strike_data['ce'].get('oi', 0)
+            if 'pe' in strike_data:
+                atm_oi["PE"] = strike_data['pe'].get('oi', 0)
 
-    return spot, atm_strike, atm_oi
+        return spot, atm_strike, atm_oi
+    except Exception as e:
+        st.warning(f"Error extracting ATM OI from Dhan data: {e}")
+        return None, None, None
 
-def detect_atm_action(spot, atm_strike, prev_oi, curr_oi):
-    ce_prev, ce_curr = prev_oi["CE"], curr_oi["CE"]
-    pe_prev, pe_curr = prev_oi["PE"], curr_oi["PE"]
+def extract_oi_from_dhan(dhan_data):
+    """
+    Extract full OI data from Dhan API response
+    """
+    try:
+        if not dhan_data or 'oc' not in dhan_data:
+            return None, None, None, None, None
+            
+        underlying = dhan_data['last_price']
+        atm_strike = round(underlying / 100) * 100
+        oc_data = dhan_data['oc']
+        
+        oi_dict = {}
+        ce_oi_map, pe_oi_map = {}, {}
 
-    d_ce, d_pe = ce_curr - ce_prev, pe_curr - pe_prev
+        for strike_str, strike_data in oc_data.items():
+            try:
+                strike = float(strike_str)
+                ce_oi = strike_data.get('ce', {}).get('oi', 0)
+                pe_oi = strike_data.get('pe', {}).get('oi', 0)
+                
+                oi_dict[strike] = {"CE": ce_oi, "PE": pe_oi}
+                ce_oi_map[strike] = ce_oi
+                pe_oi_map[strike] = pe_oi
+            except (ValueError, KeyError):
+                continue
 
-    ce_speed = d_ce / ce_prev if ce_prev > 0 else 0
-    pe_speed = d_pe / pe_prev if pe_prev > 0 else 0
-
-    messages = []
-
-    # Case 0: Both rising (consolidation)
-    if d_ce > 0 and d_pe > 0:
-        if ce_speed > pe_speed:
-            messages.append(f"ATM {atm_strike}: Both CE & PE OI rising → Consolidation with Resistance Bias. CE↑ faster.")
-        elif pe_speed > ce_speed:
-            messages.append(f"ATM {atm_strike}: Both CE & PE OI rising → Consolidation with Support Bias. PE↑ faster.")
+        # Find support & resistance
+        if pe_oi_map and ce_oi_map:
+            support_strike = max(pe_oi_map, key=pe_oi_map.get) if pe_oi_map else atm_strike
+            resistance_strike = max(ce_oi_map, key=ce_oi_map.get) if ce_oi_map else atm_strike
         else:
-            messages.append(f"ATM {atm_strike}: Both CE & PE OI rising → Market in Balance (Range building).")
+            support_strike = resistance_strike = atm_strike
 
-    # Case 1: ATM acting as Support (PE dominance)
-    if pe_curr > ce_curr:
-        if d_pe > 0:
-            messages.append(f"ATM {atm_strike} acting as Support, building (PE OI rising). Speed: {round(pe_speed,4)}")
-        elif d_pe < 0 and spot < atm_strike:
-            messages.append(f"ATM {atm_strike} Support broken → flipped to Resistance. Momentum started. Speed: {round(abs(pe_speed),4)}")
+        return underlying, atm_strike, oi_dict, support_strike, resistance_strike
+    except Exception as e:
+        st.warning(f"Error extracting OI from Dhan data: {e}")
+        return None, None, None, None, None
 
-    # Case 2: ATM acting as Resistance (CE dominance)
-    if ce_curr > pe_curr:
-        if d_ce > 0:
-            messages.append(f"ATM {atm_strike} acting as Resistance, building (CE OI rising). Speed: {round(ce_speed,4)}")
-        elif d_ce < 0 and spot > atm_strike:
-            messages.append(f"ATM {atm_strike} Resistance broken → flipped to Support. Momentum started. Speed: {round(abs(ce_speed),4)}")
+def detect_atm_action_dhan(spot, atm_strike, prev_oi, curr_oi):
+    """
+    Detect ATM action using Dhan data format
+    """
+    try:
+        if not prev_oi or not curr_oi:
+            return []
+            
+        ce_prev, ce_curr = prev_oi.get("CE", 0), curr_oi.get("CE", 0)
+        pe_prev, pe_curr = prev_oi.get("PE", 0), curr_oi.get("PE", 0)
 
-    return messages
+        d_ce, d_pe = ce_curr - ce_prev, pe_curr - pe_prev
 
-def extract_oi(data):
-    records = data["records"]["data"]
-    underlying = data["records"]["underlyingValue"]
-    atm_strike = round(underlying / 100) * 100
-    
-    oi_dict = {}
-    ce_oi_map, pe_oi_map = {}, {}
+        ce_speed = d_ce / ce_prev if ce_prev > 0 else 0
+        pe_speed = d_pe / pe_prev if pe_prev > 0 else 0
 
-    for rec in records:
-        strike = rec["strikePrice"]
-        ce_oi = rec.get("CE", {}).get("openInterest", 0)
-        pe_oi = rec.get("PE", {}).get("openInterest", 0)
-        oi_dict[strike] = {"CE": ce_oi, "PE": pe_oi}
-        ce_oi_map[strike] = ce_oi
-        pe_oi_map[strike] = pe_oi
+        messages = []
 
-    # Find support & resistance
-    support_strike = max(pe_oi_map, key=pe_oi_map.get)
-    resistance_strike = max(ce_oi_map, key=ce_oi_map.get)
+        # Case 0: Both rising (consolidation)
+        if d_ce > 0 and d_pe > 0:
+            if ce_speed > pe_speed:
+                messages.append(f"ATM {atm_strike}: Both CE & PE OI rising → Consolidation with Resistance Bias. CE↑ faster.")
+            elif pe_speed > ce_speed:
+                messages.append(f"ATM {atm_strike}: Both CE & PE OI rising → Consolidation with Support Bias. PE↑ faster.")
+            else:
+                messages.append(f"ATM {atm_strike}: Both CE & PE OI rising → Market in Balance (Range building).")
 
-    return underlying, atm_strike, oi_dict, support_strike, resistance_strike
+        # Case 1: ATM acting as Support (PE dominance)
+        if pe_curr > ce_curr:
+            if d_pe > 0:
+                messages.append(f"ATM {atm_strike} acting as Support, building (PE OI rising). Speed: {round(pe_speed,4)}")
+            elif d_pe < 0 and spot < atm_strike:
+                messages.append(f"ATM {atm_strike} Support broken → flipped to Resistance. Momentum started. Speed: {round(abs(pe_speed),4)}")
+
+        # Case 2: ATM acting as Resistance (CE dominance)
+        if ce_curr > pe_curr:
+            if d_ce > 0:
+                messages.append(f"ATM {atm_strike} acting as Resistance, building (CE OI rising). Speed: {round(ce_speed,4)}")
+            elif d_ce < 0 and spot > atm_strike:
+                messages.append(f"ATM {atm_strike} Resistance broken → flipped to Support. Momentum started. Speed: {round(abs(ce_speed),4)}")
+
+        return messages
+    except Exception as e:
+        st.warning(f"Error in ATM action detection: {e}")
+        return []
+
+def detect_slow_move_multi_dhan(oi_prev, oi_curr, atm_strike):
+    """
+    Detect slow moves using Dhan data format
+    """
+    try:
+        if not oi_prev or not oi_curr:
+            return {"signal": "Neutral", "strength": 0}
+            
+        strikes_to_check = [atm_strike - 100, atm_strike, atm_strike + 100]
+        signals, strengths = [], []
+
+        for strike in strikes_to_check:
+            if strike not in oi_prev or strike not in oi_curr:
+                continue
+
+            oi_ce_prev = oi_prev[strike].get("CE", 0)
+            oi_ce_curr = oi_curr[strike].get("CE", 0)
+            oi_pe_prev = oi_prev[strike].get("PE", 0)
+            oi_pe_curr = oi_curr[strike].get("PE", 0)
+
+            d_oi_ce, d_oi_pe = oi_ce_curr - oi_ce_prev, oi_pe_curr - oi_pe_prev
+            ce_change_pct = d_oi_ce / oi_ce_prev if oi_ce_prev > 0 else 0
+            pe_change_pct = d_oi_pe / oi_pe_prev if oi_pe_prev > 0 else 0
+
+            bullish_bias = pe_change_pct - ce_change_pct
+            bearish_bias = ce_change_pct - pe_change_pct
+            total_oi = oi_ce_curr + oi_pe_curr
+            strength = abs(d_oi_pe - d_oi_ce) / total_oi if total_oi > 0 else 0
+            strengths.append(strength)
+
+            if d_oi_pe < 0 and d_oi_ce > 0:
+                signals.append("Reversal Down")
+            elif d_oi_ce < 0 and d_oi_pe > 0:
+                signals.append("Reversal Up")
+            elif bullish_bias > 0 and strength <= 0.05:
+                signals.append("Slow Up")
+            elif bearish_bias > 0 and strength <= 0.05:
+                signals.append("Slow Down")
+            else:
+                signals.append("Neutral")
+
+        if signals:
+            final_signal = max(set(signals), key=signals.count)
+            avg_strength = round(sum(strengths) / len(strengths), 4) if strengths else 0
+        else:
+            final_signal, avg_strength = "Neutral", 0
+
+        return {"signal": final_signal, "strength": avg_strength}
+    except Exception as e:
+        st.warning(f"Error in slow move detection: {e}")
+        return {"signal": "Neutral", "strength": 0}
+
+def detect_sr_action_dhan(spot, support_strike, resistance_strike, oi_prev, oi_curr):
+    """
+    Detect S/R action using Dhan data format
+    """
+    try:
+        if not oi_prev or not oi_curr:
+            return []
+            
+        msg = []
+        # Support action
+        if support_strike in oi_prev and support_strike in oi_curr:
+            pe_prev = oi_prev[support_strike].get("PE", 0)
+            pe_curr = oi_curr[support_strike].get("PE", 0)
+            if pe_curr > pe_prev:
+                msg.append(f"Support {support_strike} Building (PE OI rising)")
+            elif pe_curr < pe_prev and spot < support_strike:
+                msg.append(f"Support {support_strike} Broken → Downtrend")
+                
+        # Resistance action
+        if resistance_strike in oi_prev and resistance_strike in oi_curr:
+            ce_prev = oi_prev[resistance_strike].get("CE", 0)
+            ce_curr = oi_curr[resistance_strike].get("CE", 0)
+            if ce_curr > ce_prev:
+                msg.append(f"Resistance {resistance_strike} Building (CE OI rising)")
+            elif ce_curr < ce_prev and spot > resistance_strike:
+                msg.append(f"Resistance {resistance_strike} Broken → Uptrend")
+        return msg
+    except Exception as e:
+        st.warning(f"Error in S/R action detection: {e}")
+        return []
+        
 def detect_slow_move_multi(oi_prev, oi_curr, atm_strike):
     strikes_to_check = [atm_strike - 100, atm_strike, atm_strike + 100]
     signals, strengths = [], []
