@@ -620,7 +620,7 @@ def analyze():
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
         current_time = now.time()
-        market_start = datetime.strptime("00:00", "%H:%M").time()
+        market_start = datetime.strptime("09:00", "%H:%M").time()
         market_end = datetime.strptime("15:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
