@@ -74,7 +74,7 @@ def is_valid_trading_time():
     
     # Check time (9:00 to 15:30)
     current_time = now.time()
-    start_time = datetime.strptime("09:00", "%H:%M").time()
+    start_time = datetime.strptime("08:00", "%H:%M").time()
     end_time = datetime.strptime("15:30", "%H:%M").time()
     
     return start_time <= current_time <= end_time
