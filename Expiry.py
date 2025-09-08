@@ -64,6 +64,10 @@ def parse_ist_time(time_str, format_str="%Y-%m-%d %H:%M:%S"):
     naive_dt = datetime.strptime(time_str, format_str)
     return IST.localize(naive_dt)
 
+def get_naive_ist_time():
+    """Get current IST time as naive datetime (for session state storage)"""
+    return get_ist_time().replace(tzinfo=None)
+
 # ===================== TELEGRAM FUNCTIONS =====================
 def send_telegram_message(message):
     """Send message via Telegram bot (optional feature)"""
@@ -599,12 +603,14 @@ def main():
     if 'data' not in st.session_state:
         st.session_state.data = None
     
-    # Auto-refresh logic
+    # Auto-refresh logic - use naive datetime for session state
     refresh_interval = 120  # 2 minutes
-    if st.session_state.last_update is None or (get_ist_time() - st.session_state.last_update).seconds >= refresh_interval:
+    current_time = get_naive_ist_time()
+    
+    if st.session_state.last_update is None or (current_time - st.session_state.last_update).seconds >= refresh_interval:
         with st.spinner("Fetching latest data..."):
             st.session_state.data = run_analysis()
-            st.session_state.last_update = get_ist_time()
+            st.session_state.last_update = current_time
     
     # Display data if available
     if st.session_state.data:
@@ -665,14 +671,17 @@ def main():
     if st.button("Refresh Now"):
         with st.spinner("Refreshing data..."):
             st.session_state.data = run_analysis()
-            st.session_state.last_update = get_ist_time()
+            st.session_state.last_update = get_naive_ist_time()
         st.rerun()
     
     # Countdown to next refresh
     if st.session_state.last_update:
         next_refresh = st.session_state.last_update + timedelta(seconds=refresh_interval)
-        time_remaining = next_refresh - get_ist_time()
-        st.write(f"Next refresh in: {time_remaining.seconds} seconds")
+        time_remaining = next_refresh - get_naive_ist_time()
+        if time_remaining.total_seconds() > 0:
+            st.write(f"Next refresh in: {int(time_remaining.total_seconds())} seconds")
+        else:
+            st.write("Refresh due now")
 
 if __name__ == "__main__":
     main()
