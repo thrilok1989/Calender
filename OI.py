@@ -1386,4 +1386,4 @@ def color_pcr(val):
 
 # Main Function Call
 if __name__ == "__main__":
-    analyze())
+    analyze()
