@@ -558,9 +558,7 @@ def calculate_bid_ask_pressure(call_bid_qty, call_ask_qty, put_bid_qty, put_ask_
     
     return pressure, bias
 
-# Weights for bias scoring
-weights = {
-    "ChgOI_Bias
+
 # Weights for bias scoring
 weights = {
     "ChgOI_Bias": 2,
