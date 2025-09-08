@@ -11,7 +11,8 @@ from typing import Optional, Tuple, Dict
 import numpy as np
 import pandas as pd
 import requests
-from pytz import timezone  # Added for timezone support
+from pytz import timezone
+import random
 
 # ===================== CONFIG =====================
 SYMBOL = os.getenv("NSE_SYMBOL", "NIFTY").upper()  # "NIFTY" or "BANKNIFTY"
@@ -26,6 +27,7 @@ PCR_BULL = float(os.getenv("PCR_BULL", 1.2))
 PCR_BEAR = float(os.getenv("PCR_BEAR", 0.9))
 TOP_N_DELTA_OI = int(os.getenv("TOP_N_DELTA_OI", 5))
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", 20))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", 3))  # Added retry configuration
 
 # Timezone configuration
 IST = timezone('Asia/Kolkata')  # Indian Standard Time
@@ -42,8 +44,12 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/123.0.0.0 Safari/537.36"
     ),
-    "accept-language": "en-US,en;q=0.9",
-    "accept-encoding": "gzip, deflate, br",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Referer": f"{BASE}/",
+    "Origin": BASE,
 }
 
 # ===================== TIME UTILITIES =====================
@@ -105,21 +111,81 @@ def is_valid_trading_time():
     
     return start_time <= current_time <= end_time
 
-# ===================== DATA FETCH =====================
+# ===================== DATA FETCH WITH IMPROVED ERROR HANDLING =====================
 def _nse_session() -> requests.Session:
+    """Create a session with proper headers and cookies"""
     s = requests.Session()
-    # Seed cookies: visit homepage and option-chain page once
+    s.headers.update(HEADERS)
+    
+    # Add some common headers that NSE expects
+    s.headers.update({
+        'Authority': 'www.nseindia.com',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+    })
+    
+    # Try to get cookies by visiting the main page first
     try:
-        s.get(BASE, headers=HEADERS, timeout=HTTP_TIMEOUT)
+        s.get(BASE, timeout=HTTP_TIMEOUT)
+        time.sleep(0.5)  # Small delay
     except:
         pass
+    
     return s
 
+def fetch_option_chain_with_retry(max_retries=MAX_RETRIES):
+    """Fetch option chain data with retry logic"""
+    session = None
+    
+    for attempt in range(max_retries):
+        try:
+            if session is None:
+                session = _nse_session()
+            
+            # Add a small delay between retries with jitter
+            if attempt > 0:
+                delay = 1 + (attempt * 0.5) + random.uniform(0, 0.3)
+                time.sleep(delay)
+            
+            response = session.get(OC_URL, timeout=HTTP_TIMEOUT)
+            response.raise_for_status()
+            
+            # Check if response content is valid JSON
+            content = response.content.strip()
+            if not content:
+                st.warning(f"Empty response from NSE (attempt {attempt + 1}/{max_retries})")
+                continue
+                
+            data = response.json()
+            
+            # Validate the response structure
+            if not isinstance(data, dict) or 'records' not in data:
+                st.warning(f"Invalid response structure (attempt {attempt + 1}/{max_retries})")
+                continue
+                
+            return data
+            
+        except requests.exceptions.JSONDecodeError:
+            st.warning(f"Invalid JSON response (attempt {attempt + 1}/{max_retries})")
+            # Create a new session for the next attempt
+            session = None
+            
+        except requests.exceptions.RequestException as e:
+            st.warning(f"Network error (attempt {attempt + 1}/{max_retries}): {e}")
+            # Create a new session for the next attempt
+            session = None
+            
+        except Exception as e:
+            st.warning(f"Unexpected error (attempt {attempt + 1}/{max_retries}): {e}")
+            session = None
+    
+    # If all retries failed
+    raise Exception(f"Failed to fetch option chain data after {max_retries} attempts")
+
 def fetch_option_chain() -> dict:
-    s = _nse_session()
-    r = s.get(OC_URL, headers=HEADERS, timeout=HTTP_TIMEOUT)
-    r.raise_for_status()
-    return r.json()
+    """Main function to fetch option chain data"""
+    return fetch_option_chain_with_retry()
 
 # ===================== PARSE & CORE METRICS =====================
 def parse_chain(raw: dict) -> Tuple[pd.DataFrame, float, str, str]:
@@ -130,6 +196,7 @@ def parse_chain(raw: dict) -> Tuple[pd.DataFrame, float, str, str]:
     expiries = records.get("expiryDates") or filtered.get("expiryDates") or []
     expiry = expiries[0] if expiries else ""
     rows = []
+    
     for item in records.get("data", []):
         sp = item.get("strikePrice")
         if sp is None:
@@ -145,6 +212,7 @@ def parse_chain(raw: dict) -> Tuple[pd.DataFrame, float, str, str]:
             "PE_ChgOI": int(pe.get("changeinOpenInterest", 0) or 0),
             "PE_LTP": float(pe.get("lastPrice", float("nan"))),
         })
+    
     df = pd.DataFrame(rows).sort_values("strikePrice").reset_index(drop=True)
     ts_str = format_ist_time()  # Use IST timestamp
     return df, spot, expiry, ts_str
@@ -257,7 +325,7 @@ def compute_delta_oi(curr: pd.DataFrame, prev: Optional[pd.DataFrame]) -> pd.Dat
     prev_slim = prev[['strikePrice', 'CE_OI', 'PE_OI']].copy()
     merged = pd.merge(curr_slim, prev_slim, on='strikePrice', how='left', suffixes=('', '_prev'))
     merged['CE_DeltaOI'] = (merged['CE_OI'] - merged['CE_OI_prev']).fillna(0).astype(int)
-    merged['PE_DeltaOI'] = (merged['PE_OI'] - merged['PE_OI_prev']).fillna(0).astype(int)
+    merged['PE_DeltaOI'] = (merged['PE_OI'] - merged['PE_OI_prev']).fillna(0).astize(int)
     return merged[['strikePrice', 'CE_OI', 'PE_OI', 'CE_DeltaOI', 'PE_DeltaOI']]
 
 def top_delta_oi(delta_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
