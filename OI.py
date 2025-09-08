@@ -10,7 +10,6 @@ from pytz import timezone
 import io
 import os
 import json
-import time
 
 # === Dhan API Configuration ===
 try:
@@ -44,6 +43,7 @@ else:
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
 st_autorefresh(interval=80000, key="datarefresh")  # Refresh every 2 min
+
 # Initialize session state for price data
 if 'price_data' not in st.session_state:
     st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
@@ -74,13 +74,17 @@ if 'use_pcr_filter' not in st.session_state:
 if 'pcr_history' not in st.session_state:
     st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
 
-# Initialize session state for ATM OI tracking
-if 'prev_oi_data' not in st.session_state:
-    st.session_state.prev_oi_data = None
-if 'atm_action_history' not in st.session_state:
-    st.session_state.atm_action_history = []
-if 'slow_move_signals' not in st.session_state:
-    st.session_state.slow_move_signals = []
+# Initialize Manual Support/Resistance Alert System
+if 'manual_support_1' not in st.session_state:
+    st.session_state.manual_support_1 = None
+if 'manual_support_2' not in st.session_state:
+    st.session_state.manual_support_2 = None
+if 'manual_resistance_1' not in st.session_state:
+    st.session_state.manual_resistance_1 = None
+if 'manual_resistance_2' not in st.session_state:
+    st.session_state.manual_resistance_2 = None
+if 'sr_alerts_sent' not in st.session_state:
+    st.session_state.sr_alerts_sent = set()  # Track which alerts have been sent
 
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
@@ -90,273 +94,7 @@ TELEGRAM_CHAT_ID = "5704496584"
 # NIFTY 50 underlying instrument ID for Dhan API
 NIFTY_UNDERLYING_SCRIP = 13  # This needs to be verified with Dhan's instrument list
 NIFTY_UNDERLYING_SEG = "IDX_I"  # Index segment
-# === Dhan API ATM OI Analysis Functions ===
-def fetch_dhan_option_chain_for_atm(underlying_scrip: int, underlying_seg: str, expiry: str):
-    """
-    Fetch option chain from Dhan API for ATM analysis
-    """
-    try:
-        option_chain_data = get_dhan_option_chain(underlying_scrip, underlying_seg, expiry)
-        if not option_chain_data or 'data' not in option_chain_data:
-            return None
-        return option_chain_data['data']
-    except Exception as e:
-        st.warning(f"Error fetching Dhan option chain for ATM analysis: {e}")
-        return None
 
-def extract_atm_oi_from_dhan(dhan_data):
-    """
-    Extract ATM OI data from Dhan API response
-    """
-    try:
-        if not dhan_data or 'oc' not in dhan_data:
-            return None, None, None
-            
-        spot = dhan_data['last_price']
-        atm_strike = round(spot / 100) * 100
-        oc_data = dhan_data['oc']
-
-        atm_oi = {"CE": 0, "PE": 0}
-        
-        # Find ATM strike data
-        atm_strike_str = str(int(atm_strike))
-        if atm_strike_str in oc_data:
-            strike_data = oc_data[atm_strike_str]
-            if 'ce' in strike_data:
-                atm_oi["CE"] = strike_data['ce'].get('oi', 0)
-            if 'pe' in strike_data:
-                atm_oi["PE"] = strike_data['pe'].get('oi', 0)
-
-        return spot, atm_strike, atm_oi
-    except Exception as e:
-        st.warning(f"Error extracting ATM OI from Dhan data: {e}")
-        return None, None, None
-
-def extract_oi_from_dhan(dhan_data):
-    """
-    Extract full OI data from Dhan API response
-    """
-    try:
-        if not dhan_data or 'oc' not in dhan_data:
-            return None, None, None, None, None
-            
-        underlying = dhan_data['last_price']
-        atm_strike = round(underlying / 100) * 100
-        oc_data = dhan_data['oc']
-        
-        oi_dict = {}
-        ce_oi_map, pe_oi_map = {}, {}
-
-        for strike_str, strike_data in oc_data.items():
-            try:
-                strike = float(strike_str)
-                ce_oi = strike_data.get('ce', {}).get('oi', 0)
-                pe_oi = strike_data.get('pe', {}).get('oi', 0)
-                
-                oi_dict[strike] = {"CE": ce_oi, "PE": pe_oi}
-                ce_oi_map[strike] = ce_oi
-                pe_oi_map[strike] = pe_oi
-            except (ValueError, KeyError):
-                continue
-
-        # Find support & resistance
-        if pe_oi_map and ce_oi_map:
-            support_strike = max(pe_oi_map, key=pe_oi_map.get) if pe_oi_map else atm_strike
-            resistance_strike = max(ce_oi_map, key=ce_oi_map.get) if ce_oi_map else atm_strike
-        else:
-            support_strike = resistance_strike = atm_strike
-
-        return underlying, atm_strike, oi_dict, support_strike, resistance_strike
-    except Exception as e:
-        st.warning(f"Error extracting OI from Dhan data: {e}")
-        return None, None, None, None, None
-
-def detect_atm_action_dhan(spot, atm_strike, prev_oi, curr_oi):
-    """
-    Detect ATM action using Dhan data format
-    """
-    try:
-        if not prev_oi or not curr_oi:
-            return []
-            
-        ce_prev, ce_curr = prev_oi.get("CE", 0), curr_oi.get("CE", 0)
-        pe_prev, pe_curr = prev_oi.get("PE", 0), curr_oi.get("PE", 0)
-
-        d_ce, d_pe = ce_curr - ce_prev, pe_curr - pe_prev
-
-        ce_speed = d_ce / ce_prev if ce_prev > 0 else 0
-        pe_speed = d_pe / pe_prev if pe_prev > 0 else 0
-
-        messages = []
-
-        # Case 0: Both rising (consolidation)
-        if d_ce > 0 and d_pe > 0:
-            if ce_speed > pe_speed:
-                messages.append(f"ATM {atm_strike}: Both CE & PE OI rising → Consolidation with Resistance Bias. CE↑ faster.")
-            elif pe_speed > ce_speed:
-                messages.append(f"ATM {atm_strike}: Both CE & PE OI rising → Consolidation with Support Bias. PE↑ faster.")
-            else:
-                messages.append(f"ATM {atm_strike}: Both CE & PE OI rising → Market in Balance (Range building).")
-
-        # Case 1: ATM acting as Support (PE dominance)
-        if pe_curr > ce_curr:
-            if d_pe > 0:
-                messages.append(f"ATM {atm_strike} acting as Support, building (PE OI rising). Speed: {round(pe_speed,4)}")
-            elif d_pe < 0 and spot < atm_strike:
-                messages.append(f"ATM {atm_strike} Support broken → flipped to Resistance. Momentum started. Speed: {round(abs(pe_speed),4)}")
-
-        # Case 2: ATM acting as Resistance (CE dominance)
-        if ce_curr > pe_curr:
-            if d_ce > 0:
-                messages.append(f"ATM {atm_strike} acting as Resistance, building (CE OI rising). Speed: {round(ce_speed,4)}")
-            elif d_ce < 0 and spot > atm_strike:
-                messages.append(f"ATM {atm_strike} Resistance broken → flipped to Support. Momentum started. Speed: {round(abs(ce_speed),4)}")
-
-        return messages
-    except Exception as e:
-        st.warning(f"Error in ATM action detection: {e}")
-        return []
-
-def detect_slow_move_multi_dhan(oi_prev, oi_curr, atm_strike):
-    """
-    Detect slow moves using Dhan data format
-    """
-    try:
-        if not oi_prev or not oi_curr:
-            return {"signal": "Neutral", "strength": 0}
-            
-        strikes_to_check = [atm_strike - 100, atm_strike, atm_strike + 100]
-        signals, strengths = [], []
-
-        for strike in strikes_to_check:
-            if strike not in oi_prev or strike not in oi_curr:
-                continue
-
-            oi_ce_prev = oi_prev[strike].get("CE", 0)
-            oi_ce_curr = oi_curr[strike].get("CE", 0)
-            oi_pe_prev = oi_prev[strike].get("PE", 0)
-            oi_pe_curr = oi_curr[strike].get("PE", 0)
-
-            d_oi_ce, d_oi_pe = oi_ce_curr - oi_ce_prev, oi_pe_curr - oi_pe_prev
-            ce_change_pct = d_oi_ce / oi_ce_prev if oi_ce_prev > 0 else 0
-            pe_change_pct = d_oi_pe / oi_pe_prev if oi_pe_prev > 0 else 0
-
-            bullish_bias = pe_change_pct - ce_change_pct
-            bearish_bias = ce_change_pct - pe_change_pct
-            total_oi = oi_ce_curr + oi_pe_curr
-            strength = abs(d_oi_pe - d_oi_ce) / total_oi if total_oi > 0 else 0
-            strengths.append(strength)
-
-            if d_oi_pe < 0 and d_oi_ce > 0:
-                signals.append("Reversal Down")
-            elif d_oi_ce < 0 and d_oi_pe > 0:
-                signals.append("Reversal Up")
-            elif bullish_bias > 0 and strength <= 0.05:
-                signals.append("Slow Up")
-            elif bearish_bias > 0 and strength <= 0.05:
-                signals.append("Slow Down")
-            else:
-                signals.append("Neutral")
-
-        if signals:
-            final_signal = max(set(signals), key=signals.count)
-            avg_strength = round(sum(strengths) / len(strengths), 4) if strengths else 0
-        else:
-            final_signal, avg_strength = "Neutral", 0
-
-        return {"signal": final_signal, "strength": avg_strength}
-    except Exception as e:
-        st.warning(f"Error in slow move detection: {e}")
-        return {"signal": "Neutral", "strength": 0}
-
-def detect_sr_action_dhan(spot, support_strike, resistance_strike, oi_prev, oi_curr):
-    """
-    Detect S/R action using Dhan data format
-    """
-    try:
-        if not oi_prev or not oi_curr:
-            return []
-            
-        msg = []
-        # Support action
-        if support_strike in oi_prev and support_strike in oi_curr:
-            pe_prev = oi_prev[support_strike].get("PE", 0)
-            pe_curr = oi_curr[support_strike].get("PE", 0)
-            if pe_curr > pe_prev:
-                msg.append(f"Support {support_strike} Building (PE OI rising)")
-            elif pe_curr < pe_prev and spot < support_strike:
-                msg.append(f"Support {support_strike} Broken → Downtrend")
-                
-        # Resistance action
-        if resistance_strike in oi_prev and resistance_strike in oi_curr:
-            ce_prev = oi_prev[resistance_strike].get("CE", 0)
-            ce_curr = oi_curr[resistance_strike].get("CE", 0)
-            if ce_curr > ce_prev:
-                msg.append(f"Resistance {resistance_strike} Building (CE OI rising)")
-            elif ce_curr < ce_prev and spot > resistance_strike:
-                msg.append(f"Resistance {resistance_strike} Broken → Uptrend")
-        return msg
-    except Exception as e:
-        st.warning(f"Error in S/R action detection: {e}")
-        return []
-        
-def detect_slow_move_multi(oi_prev, oi_curr, atm_strike):
-    strikes_to_check = [atm_strike - 100, atm_strike, atm_strike + 100]
-    signals, strengths = [], []
-
-    for strike in strikes_to_check:
-        if strike not in oi_prev or strike not in oi_curr:
-            continue
-
-        oi_ce_prev, oi_ce_curr = oi_prev[strike]["CE"], oi_curr[strike]["CE"]
-        oi_pe_prev, oi_pe_curr = oi_prev[strike]["PE"], oi_curr[strike]["PE"]
-
-        d_oi_ce, d_oi_pe = oi_ce_curr - oi_ce_prev, oi_pe_curr - oi_pe_prev
-        ce_change_pct = d_oi_ce / oi_ce_prev if oi_ce_prev > 0 else 0
-        pe_change_pct = d_oi_pe / oi_pe_prev if oi_pe_prev > 0 else 0
-
-        bullish_bias = pe_change_pct - ce_change_pct
-        bearish_bias = ce_change_pct - pe_change_pct
-        total_oi = oi_ce_curr + oi_pe_curr
-        strength = abs(d_oi_pe - d_oi_ce) / total_oi if total_oi > 0 else 0
-        strengths.append(strength)
-
-        if d_oi_pe < 0 and d_oi_ce > 0:
-            signals.append("Reversal Down")
-        elif d_oi_ce < 0 and d_oi_pe > 0:
-            signals.append("Reversal Up")
-        elif bullish_bias > 0 and strength <= 0.05:
-            signals.append("Slow Up")
-        elif bearish_bias > 0 and strength <= 0.05:
-            signals.append("Slow Down")
-        else:
-            signals.append("Neutral")
-
-    if signals:
-        final_signal = max(set(signals), key=signals.count)
-        avg_strength = round(sum(strengths) / len(strengths), 4)
-    else:
-        final_signal, avg_strength = "Neutral", 0
-
-    return {"signal": final_signal, "strength": avg_strength}
-
-def detect_sr_action(spot, support_strike, resistance_strike, oi_prev, oi_curr):
-    msg = []
-    # Support action
-    if support_strike in oi_prev and support_strike in oi_curr:
-        pe_prev, pe_curr = oi_prev[support_strike]["PE"], oi_curr[support_strike]["PE"]
-        if pe_curr > pe_prev:
-            msg.append(f"Support {support_strike} Building (PE OI rising)")
-        elif pe_curr < pe_prev and spot < support_strike:
-            msg.append(f"Support {support_strike} Broken → Downtrend")
-    # Resistance action
-    if resistance_strike in oi_prev and resistance_strike in oi_curr:
-        ce_prev, ce_curr = oi_prev[resistance_strike]["CE"], oi_curr[resistance_strike]["CE"]
-        if ce_curr > ce_prev:
-            msg.append(f"Resistance {resistance_strike} Building (CE OI rising)")
-        elif ce_curr < ce_prev and spot > resistance_strike:
-            msg.append(f"Resistance {resistance_strike} Broken → Uptrend")
-    return msg
 # === Dhan API Functions ===
 def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: str):
     """
@@ -466,6 +204,7 @@ def get_dhan_ltp(security_ids: list, segment: str):
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching Dhan LTP: {e}")
         return None
+
 # === Supabase Data Management Functions ===
 def store_price_data(price):
     """Store price data in Supabase"""
@@ -560,6 +299,7 @@ def get_trade_log():
     except Exception as e:
         st.error(f"Error retrieving trade log: {e}")
         return []
+
 def check_target_sl_hits(current_price):
     """Check if any active trades have hit target or stop loss"""
     if not supabase_client:
@@ -621,6 +361,39 @@ def check_target_sl_hits(current_price):
     except Exception as e:
         st.error(f"Error checking target/SL hits: {e}")
 
+def check_manual_sr_alerts(current_price):
+    """Check if current price is near manual support/resistance levels and send alerts"""
+    sr_levels = {
+        'Support 1': st.session_state.manual_support_1,
+        'Support 2': st.session_state.manual_support_2,
+        'Resistance 1': st.session_state.manual_resistance_1,
+        'Resistance 2': st.session_state.manual_resistance_2
+    }
+    
+    for level_name, level_value in sr_levels.items():
+        if level_value is None:
+            continue
+            
+        # Check if price is within ±5 points of the level
+        if abs(current_price - level_value) <= 5:
+            alert_key = f"{level_name}_{level_value}_{datetime.now().strftime('%Y%m%d')}"
+            
+            # Only send alert once per day per level
+            if alert_key not in st.session_state.sr_alerts_sent:
+                st.session_state.sr_alerts_sent.add(alert_key)
+                
+                # Determine if it's approaching from above or below
+                direction = "approaching from above" if current_price > level_value else "approaching from below"
+                
+                message = f"🚨 MANUAL S/R ALERT 🚨\n"
+                message += f"Level: {level_name} ({level_value})\n"
+                message += f"Current Price: {current_price}\n"
+                message += f"Difference: {current_price - level_value:+.1f} points\n"
+                message += f"Status: {direction}\n"
+                message += f"Time: {datetime.now(timezone('Asia/Kolkata')).strftime('%H:%M:%S')}"
+                
+                send_telegram_message(message)
+
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
@@ -630,6 +403,7 @@ def send_telegram_message(message):
             st.warning("⚠️ Telegram message failed.")
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
+
 # === Calculation and Analysis Functions ===
 def calculate_greeks(option_type, S, K, T, r, sigma):
     try:
@@ -685,15 +459,12 @@ def calculate_bid_ask_pressure(call_bid_qty, call_ask_qty, put_bid_qty, put_ask_
     
     return pressure, bias
 
-
-# Weights for bias scoring
+# Weights for bias scoring - Removed IV_Bias and Gamma_Bias
 weights = {
     "ChgOI_Bias": 2,
     "Volume_Bias": 1,
-    "Gamma_Bias": 1,
     "AskQty_Bias": 1,
     "BidQty_Bias": 1,
-    "IV_Bias": 1,
     "DVP_Bias": 1,
     "PressureBias": 1,
 }
@@ -729,7 +500,85 @@ def get_support_resistance_zones(df, spot):
     resistance_zone = (min(nearest_resistances), max(nearest_resistances)) if len(nearest_resistances) >= 2 else (nearest_resistances[0], nearest_resistances[0]) if nearest_resistances else (None, None)
 
     return support_zone, resistance_zone
+
 # === Display and Helper Functions ===
+def display_manual_sr_settings():
+    """Display manual support/resistance input section"""
+    st.markdown("### 📍 Manual Support & Resistance Alerts")
+    st.info("Enter your support/resistance levels below. You'll get Telegram alerts when price comes within ±5 points of these levels.")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.session_state.manual_support_1 = st.number_input(
+            "Support Level 1", 
+            min_value=0.0, 
+            max_value=50000.0,
+            value=st.session_state.manual_support_1 if st.session_state.manual_support_1 is not None else 0.0,
+            step=1.0,
+            help="Enter first support level"
+        )
+        if st.session_state.manual_support_1 == 0.0:
+            st.session_state.manual_support_1 = None
+    
+    with col2:
+        st.session_state.manual_support_2 = st.number_input(
+            "Support Level 2", 
+            min_value=0.0, 
+            max_value=50000.0,
+            value=st.session_state.manual_support_2 if st.session_state.manual_support_2 is not None else 0.0,
+            step=1.0,
+            help="Enter second support level"
+        )
+        if st.session_state.manual_support_2 == 0.0:
+            st.session_state.manual_support_2 = None
+    
+    with col3:
+        st.session_state.manual_resistance_1 = st.number_input(
+            "Resistance Level 1", 
+            min_value=0.0, 
+            max_value=50000.0,
+            value=st.session_state.manual_resistance_1 if st.session_state.manual_resistance_1 is not None else 0.0,
+            step=1.0,
+            help="Enter first resistance level"
+        )
+        if st.session_state.manual_resistance_1 == 0.0:
+            st.session_state.manual_resistance_1 = None
+    
+    with col4:
+        st.session_state.manual_resistance_2 = st.number_input(
+            "Resistance Level 2", 
+            min_value=0.0, 
+            max_value=50000.0,
+            value=st.session_state.manual_resistance_2 if st.session_state.manual_resistance_2 is not None else 0.0,
+            step=1.0,
+            help="Enter second resistance level"
+        )
+        if st.session_state.manual_resistance_2 == 0.0:
+            st.session_state.manual_resistance_2 = None
+    
+    # Display current levels
+    st.markdown("#### Current Alert Levels:")
+    levels_display = []
+    if st.session_state.manual_support_1:
+        levels_display.append(f"🟢 Support 1: {st.session_state.manual_support_1}")
+    if st.session_state.manual_support_2:
+        levels_display.append(f"🟢 Support 2: {st.session_state.manual_support_2}")
+    if st.session_state.manual_resistance_1:
+        levels_display.append(f"🔴 Resistance 1: {st.session_state.manual_resistance_1}")
+    if st.session_state.manual_resistance_2:
+        levels_display.append(f"🔴 Resistance 2: {st.session_state.manual_resistance_2}")
+    
+    if levels_display:
+        st.write(" | ".join(levels_display))
+    else:
+        st.write("No levels set")
+    
+    # Clear alerts button
+    if st.button("🗑️ Clear All Alert History"):
+        st.session_state.sr_alerts_sent.clear()
+        st.success("Alert history cleared. You'll receive fresh alerts when price approaches your levels.")
+
 def display_enhanced_trade_log():
     # Get trade log from Supabase
     trade_data = get_trade_log()
@@ -823,6 +672,7 @@ def handle_export_data(df_summary, spot_price):
         except Exception as e:
             st.error(f"Export failed: {e}")
             st.session_state.export_data = False
+
 def auto_update_call_log(current_price):
     for call in st.session_state.call_log_book:
         if call["Status"] != "Active":
@@ -880,86 +730,55 @@ def color_pcr(val):
         return 'background-color: #FFB6C1; color: black'
     else:
         return 'background-color: #FFFFE0; color: black'
-# ATM OI Analysis Section using Dhan API
-        st.markdown("## ATM OI Analysis")
-        try:
-            # Get expiry for ATM analysis
-            expiry_data = get_dhan_expiry_list(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG)
-            if expiry_data and 'data' in expiry_data and expiry_data['data']:
-                expiry = expiry_data['data'][0]  # Use nearest expiry
-                
-                # Fetch Dhan data for ATM analysis
-                dhan_data = fetch_dhan_option_chain_for_atm(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG, expiry)
-                
-                if dhan_data is not None:
-                    spot, atm_strike, curr_atm_oi = extract_atm_oi_from_dhan(dhan_data)
-                    underlying_dhan, atm_strike_full, curr_oi_dict, support_strike, resistance_strike = extract_oi_from_dhan(dhan_data)
-                    
-                    if all(x is not None for x in [spot, atm_strike, curr_atm_oi, curr_oi_dict]):
-                        # Store current data for next comparison
-                        if st.session_state.prev_oi_data is not None and st.session_state.prev_oi_dict is not None:
-                            # ATM Action Detection
-                            atm_messages = detect_atm_action_dhan(spot, atm_strike, st.session_state.prev_oi_data, curr_atm_oi)
-                            
-                            # Slow Move Detection
-                            slow_move_result = detect_slow_move_multi_dhan(st.session_state.prev_oi_dict, curr_oi_dict, atm_strike)
-                            
-                            # S/R Action Detection
-                            sr_messages = detect_sr_action_dhan(spot, support_strike, resistance_strike, st.session_state.prev_oi_dict, curr_oi_dict)
-                            
-                            # Display results
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.metric("ATM Strike", atm_strike)
-                                st.metric("Support Strike", support_strike)
-                                st.metric("Resistance Strike", resistance_strike)
-                            
-                            with col2:
-                                st.metric("Market Signal", slow_move_result["signal"])
-                                st.metric("Signal Strength", slow_move_result["strength"])
-                                
-                            if atm_messages:
-                                st.markdown("### ATM Action Messages")
-                                for msg in atm_messages:
-                                    st.info(f"👉 {msg}")
-                                    # Store in session state
-                                    st.session_state.atm_action_history.append({
-                                        "Time": now.strftime("%H:%M:%S"),
-                                        "Message": msg
-                                    })
-                            
-                            if sr_messages:
-                                st.markdown("### Support/Resistance Action")
-                                for msg in sr_messages:
-                                    st.warning(f"📊 {msg}")
-                            
-                            # Store slow move signals
-                            st.session_state.slow_move_signals.append({
-                                "Time": now.strftime("%H:%M:%S"),
-                                "Signal": slow_move_result["signal"],
-                                "Strength": slow_move_result["strength"]
-                            })
-                            
-                            # Keep only last 10 records
-                            if len(st.session_state.slow_move_signals) > 10:
-                                st.session_state.slow_move_signals = st.session_state.slow_move_signals[-10:]
-                                
-                        else:
-                            st.info("Collecting first snapshot for ATM OI analysis...")
-                        
-                        # Update previous data
-                        st.session_state.prev_oi_data = curr_atm_oi.copy()
-                        st.session_state.prev_oi_dict = curr_oi_dict.copy()
-                    else:
-                        st.warning("Unable to extract valid data from Dhan API response")
-                else:
-                    st.warning("Dhan API temporarily unavailable for ATM analysis.")
-            else:
-                st.warning("Unable to fetch expiry data for ATM analysis.")
-                
-        except Exception as e:
-            st.warning(f"ATM OI Analysis temporarily unavailable: {e}")
-# Process option chain data
+
+# === Main Analysis Function (Part A) ===
+def analyze():
+    if 'trade_log' not in st.session_state:
+        st.session_state.trade_log = []
+    
+    try:
+        now = datetime.now(timezone("Asia/Kolkata"))
+        current_day = now.weekday()
+        current_time = now.time()
+        market_start = datetime.strptime("09:00", "%H:%M").time()
+        market_end = datetime.strptime("18:40", "%H:%M").time()
+
+        if current_day >= 5 or not (market_start <= current_time <= market_end):
+            st.warning("Market Closed (Mon-Fri 9:00-15:40)")
+            return
+
+        # Get expiry list from Dhan API
+        expiry_data = get_dhan_expiry_list(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG)
+        if not expiry_data or 'data' not in expiry_data:
+            st.error("Failed to get expiry list from Dhan API")
+            return
+        
+        expiry_dates = expiry_data['data']
+        if not expiry_dates:
+            st.error("No expiry dates available")
+            return
+        
+        expiry = expiry_dates[0]  # Use nearest expiry
+        
+        # Get option chain from Dhan API
+        option_chain_data = get_dhan_option_chain(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG, expiry)
+        if not option_chain_data or 'data' not in option_chain_data:
+            st.error("Failed to get option chain from Dhan API")
+            return
+        
+        data = option_chain_data['data']
+        underlying = data['last_price']
+        
+        # Store price data in Supabase
+        store_price_data(underlying)
+        
+        # Check for target/SL hits
+        check_target_sl_hits(underlying)
+        
+        # Check manual support/resistance alerts
+        check_manual_sr_alerts(underlying)
+
+        # Process option chain data
         oc_data = data['oc']
         
         # Convert to DataFrame format similar to NSE
@@ -1042,7 +861,8 @@ def color_pcr(val):
                 greeks = (0, 0, 0, 0, 0)  # Default values if calculation fails
             
             df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
-# Continue with analysis logic
+
+        # Continue with analysis logic
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
         df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
@@ -1051,6 +871,9 @@ def color_pcr(val):
         # Open Interest Change Comparison
         total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000
         total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
+        
+        # Display Manual Support/Resistance Settings at the top
+        display_manual_sr_settings()
         
         st.markdown("## Open Interest Change (in Lakhs)")
         col1, col2 = st.columns(2)
@@ -1074,7 +897,7 @@ def color_pcr(val):
         # Bias calculation and scoring
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
-            if abs(row['strikePrice'] - atm_strike) > 100:
+            if abs(row['strikePrice'] - atm_strike) > 50:
                 continue
 
             # Add bid/ask pressure calculation
@@ -1092,10 +915,8 @@ def color_pcr(val):
                 "Level": row['Level'],
                 "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
                 "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
-                "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) < row.get('Gamma_PE', 0) else "Bearish",
                 "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
                 "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
-                "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) > row.get('impliedVolatility_PE', 0) else "Bearish",
                 "DVP_Bias": delta_volume_bias(
                     row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
                     row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
@@ -1117,7 +938,8 @@ def color_pcr(val):
             bias_results.append(row_data)
 
         df_summary = pd.DataFrame(bias_results)
-# PCR CALCULATION AND MERGE
+        
+        # PCR CALCULATION AND MERGE
         df_summary = pd.merge(
             df_summary,
             df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
@@ -1178,7 +1000,8 @@ def color_pcr(val):
 
         support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
         resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
-# Signal generation logic
+
+        # Signal generation logic
         atm_signal, suggested_trade = "No Signal", ""
         signal_sent = False
 
@@ -1269,7 +1092,8 @@ def color_pcr(val):
 
                 signal_sent = True
                 break
-# Main Display
+
+        # Main Display
         st.markdown(f"### Spot Price: {underlying}")
         st.success(f"Market View: **{market_view}** Bias Score: {total_score}")
         
@@ -1314,19 +1138,6 @@ def color_pcr(val):
         st.markdown("---")
         st.markdown("## Enhanced Features")
         
-        # Display ATM Action History
-        if st.session_state.atm_action_history:
-            with st.expander("ATM Action History"):
-                df_atm_history = pd.DataFrame(st.session_state.atm_action_history)
-                st.dataframe(df_atm_history)
-        
-        # Display Slow Move Signals
-        if st.session_state.slow_move_signals:
-            with st.expander("Market Signals History"):
-                df_signals = pd.DataFrame(st.session_state.slow_move_signals)
-                st.dataframe(df_signals)
-                st.line_chart(df_signals.set_index('Time')['Strength'])
-        
         # PCR Configuration
         st.markdown("### PCR Configuration")
         col1, col2, col3 = st.columns(3)
@@ -1349,7 +1160,8 @@ def color_pcr(val):
                 "Enable PCR Filtering", 
                 value=st.session_state.use_pcr_filter
             )
-# PCR History
+            
+        # PCR History
         with st.expander("PCR History"):
             if not st.session_state.pcr_history.empty:
                 pcr_pivot = st.session_state.pcr_history.pivot_table(
