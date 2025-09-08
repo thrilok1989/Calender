@@ -411,14 +411,12 @@ def calculate_bid_ask_pressure(call_bid_qty, call_ask_qty, put_bid_qty, put_ask_
     
     return pressure, bias
 
-# Weights for bias scoring
+# Weights for bias scoring - Removed IV_Bias and Gamma_Bias
 weights = {
     "ChgOI_Bias": 2,
     "Volume_Bias": 1,
-    "Gamma_Bias": 1,
     "AskQty_Bias": 1,
     "BidQty_Bias": 1,
-    "IV_Bias": 1,
     "DVP_Bias": 1,
     "PressureBias": 1,
 }
@@ -784,10 +782,8 @@ def analyze():
                 "Level": row['Level'],
                 "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
                 "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
-                "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) < row.get('Gamma_PE', 0) else "Bearish",
                 "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
                 "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
-                "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) < row.get('impliedVolatility_PE', 0) else "Bearish",
                 "DVP_Bias": delta_volume_bias(
                     row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
                     row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
