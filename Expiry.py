@@ -11,6 +11,7 @@ from typing import Optional, Tuple, Dict
 import numpy as np
 import pandas as pd
 import requests
+from pytz import timezone  # Added for timezone support
 
 # ===================== CONFIG =====================
 SYMBOL = os.getenv("NSE_SYMBOL", "NIFTY").upper()  # "NIFTY" or "BANKNIFTY"
@@ -25,6 +26,9 @@ PCR_BULL = float(os.getenv("PCR_BULL", 1.2))
 PCR_BEAR = float(os.getenv("PCR_BEAR", 0.9))
 TOP_N_DELTA_OI = int(os.getenv("TOP_N_DELTA_OI", 5))
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", 20))
+
+# Timezone configuration
+IST = timezone('Asia/Kolkata')  # Indian Standard Time
 
 # Telegram Config (optional)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -41,6 +45,24 @@ HEADERS = {
     "accept-language": "en-US,en;q=0.9",
     "accept-encoding": "gzip, deflate, br",
 }
+
+# ===================== TIME UTILITIES =====================
+def get_ist_time():
+    """Get current time in IST timezone"""
+    return datetime.now(IST)
+
+def format_ist_time(dt=None, format_str="%Y-%m-%d %H:%M:%S"):
+    """Format datetime object to IST time string"""
+    if dt is None:
+        dt = get_ist_time()
+    elif dt.tzinfo is None:
+        dt = IST.localize(dt)
+    return dt.strftime(format_str)
+
+def parse_ist_time(time_str, format_str="%Y-%m-%d %H:%M:%S"):
+    """Parse string to IST datetime object"""
+    naive_dt = datetime.strptime(time_str, format_str)
+    return IST.localize(naive_dt)
 
 # ===================== TELEGRAM FUNCTIONS =====================
 def send_telegram_message(message):
@@ -65,16 +87,16 @@ def send_telegram_message(message):
 
 # ===================== TIME VALIDATION =====================
 def is_valid_trading_time():
-    """Check if current time is within trading hours (Mon-Fri, 9:00-15:30)"""
-    now = datetime.now()
+    """Check if current time is within trading hours (Mon-Fri, 9:00-15:30 IST)"""
+    now = get_ist_time()
     
     # Check if weekday (Monday=0, Friday=4)
     if now.weekday() > 4:
         return False
     
-    # Check time (9:00 to 15:30)
+    # Check time (9:00 to 15:30 IST)
     current_time = now.time()
-    start_time = datetime.strptime("08:00", "%H:%M").time()
+    start_time = datetime.strptime("09:00", "%H:%M").time()
     end_time = datetime.strptime("15:30", "%H:%M").time()
     
     return start_time <= current_time <= end_time
@@ -120,7 +142,7 @@ def parse_chain(raw: dict) -> Tuple[pd.DataFrame, float, str, str]:
             "PE_LTP": float(pe.get("lastPrice", float("nan"))),
         })
     df = pd.DataFrame(rows).sort_values("strikePrice").reset_index(drop=True)
-    ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts_str = format_ist_time()  # Use IST timestamp
     return df, spot, expiry, ts_str
 
 def calculate_pcr(df: pd.DataFrame) -> float:
@@ -201,13 +223,15 @@ def load_snapshot_older_than(minutes: int) -> Tuple[Optional[pd.DataFrame], Opti
     files = sorted(pathlib.Path(SNAPSHOT_DIR).glob("*.csv"))
     if not files:
         return None, None
-    cutoff = datetime.now() - timedelta(minutes=minutes)
+    cutoff = get_ist_time() - timedelta(minutes=minutes)  # Use IST time
     chosen = None
     chosen_ts = None
     for f in reversed(files):
         try:
             ts_str = f.stem.split("__")[-1]
-            ts = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+            # Parse as IST time
+            naive_dt = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+            ts = IST.localize(naive_dt)
         except Exception:
             continue
         if ts <= cutoff:
@@ -450,7 +474,7 @@ def append_to_excel(overview: pd.DataFrame,
 def run_analysis():
     try:
         if not is_valid_trading_time():
-            st.warning("Outside trading hours (Mon-Fri, 9:00-15:30). Analysis paused.")
+            st.warning("Outside trading hours (Mon-Fri, 9:00-15:30 IST). Analysis paused.")
             return None
 
         raw = fetch_option_chain()
@@ -535,7 +559,7 @@ def run_analysis():
         
         # Send Telegram notification if there's a signal
         if signal["Signal"] != "WAIT":
-            telegram_msg = f"{SYMBOL} Signal: {signal['Signal']}\nSpot: {spot}, PCR: {pcr}\nEntry: {signal['EntryZone']}\nReason: {signal['Reason']}"
+            telegram_msg = f"{SYMBOL} Signal: {signal['Signal']}\nSpot: {spot}, PCR: {pcr}\nEntry: {signal['EntryZone']}\nReason: {signal['Reason']}\nTime: {ts} IST"
             send_telegram_message(telegram_msg)
         
         return {
@@ -567,7 +591,7 @@ def main():
     )
     
     st.title(f"{SYMBOL} Expiry Day Analytics Dashboard")
-    st.write("Auto-refreshing every 2 minutes | Mon-Fri 9:00-15:30")
+    st.write(f"Auto-refreshing every 2 minutes | Mon-Fri 9:00-15:30 IST | Current IST Time: {format_ist_time()}")
     
     # Initialize session state
     if 'last_update' not in st.session_state:
@@ -577,10 +601,10 @@ def main():
     
     # Auto-refresh logic
     refresh_interval = 120  # 2 minutes
-    if st.session_state.last_update is None or (datetime.now() - st.session_state.last_update).seconds >= refresh_interval:
+    if st.session_state.last_update is None or (get_ist_time() - st.session_state.last_update).seconds >= refresh_interval:
         with st.spinner("Fetching latest data..."):
             st.session_state.data = run_analysis()
-            st.session_state.last_update = datetime.now()
+            st.session_state.last_update = get_ist_time()
     
     # Display data if available
     if st.session_state.data:
@@ -634,20 +658,20 @@ def main():
             st.subheader("Option Chain Data")
             st.dataframe(data["chain_aug"].head(20))
         
-        st.write(f"Last updated: {data['timestamp']}")
+        st.write(f"Last updated: {data['timestamp']} IST")
         st.write(f"Snapshot saved: {data['snap_path']}")
     
     # Manual refresh button
     if st.button("Refresh Now"):
         with st.spinner("Refreshing data..."):
             st.session_state.data = run_analysis()
-            st.session_state.last_update = datetime.now()
+            st.session_state.last_update = get_ist_time()
         st.rerun()
     
     # Countdown to next refresh
     if st.session_state.last_update:
         next_refresh = st.session_state.last_update + timedelta(seconds=refresh_interval)
-        time_remaining = next_refresh - datetime.now()
+        time_remaining = next_refresh - get_ist_time()
         st.write(f"Next refresh in: {time_remaining.seconds} seconds")
 
 if __name__ == "__main__":
