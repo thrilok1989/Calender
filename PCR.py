@@ -75,8 +75,16 @@ if 'pcr_history' not in st.session_state:
     st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
 
 # Initialize Manual Support/Resistance Alert System
+if 'manual_support_1' not in st.session_state:
+    st.session_state.manual_support_1 = None
+if 'manual_support_2' not in st.session_state:
+    st.session_state.manual_support_2 = None
+if 'manual_resistance_1' not in st.session_state:
+    st.session_state.manual_resistance_1 = None
+if 'manual_resistance_2' not in st.session_state:
+    st.session_state.manual_resistance_2 = None
 if 'sr_alerts_sent' not in st.session_state:
-    st
+    st.session_state.sr_alerts_sent = set()  # Track which alerts have been sent
 
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
