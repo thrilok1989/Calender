@@ -1,4 +1,4 @@
-# streamlit_app.py - Enhanced Part 1: Imports and Configuration
+# streamlit_app.py - Final Part 1: Imports and Configuration
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -26,7 +26,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-# Enhanced Part 2: Telegram Notifier Class
+# Final Part 2: Telegram Notifier Class
 class TelegramNotifier:
     def __init__(self, bot_token: str = None, chat_id: str = None):
         """Initialize Telegram notifier"""
@@ -113,8 +113,8 @@ class TelegramNotifier:
 <b>Strike:</b> {strike} {option_type}
 <b>SR Score:</b> {data['sr_score']:.1f}
 <b>State:</b> {data['current_state']}
-<b>OI Change:</b> {data['oi_change_pct']:.2f}%
-<b>Bid/Ask Ratio:</b> {data['bid_ask_ratio']:.2f}
+<b>OI Change:</b> {data.get('oi_change_pct', 0):.2f}%
+<b>Bid/Ask Ratio:</b> {data.get('bid_ask_ratio', 0):.2f}
 
 <i>Time: {datetime.now().strftime('%H:%M:%S')}</i>
 """
@@ -126,25 +126,9 @@ class TelegramNotifier:
 
 <b>Underlying:</b> {underlying}
 <b>Strike:</b> {strike} {option_type}
-<b>Previous State:</b> Strong Level
 <b>Current State:</b> {data['current_state']}
 <b>Speed:</b> {data['transition_speed']}
-<b>Score Change:</b> {data['sr_score']:.1f}
-
-<i>Time: {datetime.now().strftime('%H:%M:%S')}</i>
-"""
-        elif alert_type == "STATE_CHANGE":
-            emoji = "🔄"
-            title = "STATE CHANGE ALERT"
-            message = f"""
-{emoji} <b>{title}</b> {emoji}
-
-<b>Underlying:</b> {underlying}
-<b>Strike:</b> {strike} {option_type}
-<b>New State:</b> {data['current_state']}
-<b>Direction:</b> {data['transition_direction']}
-<b>Speed:</b> {data['transition_speed']}
-<b>SR Score:</b> {data['sr_score']:.1f}
+<b>Score:</b> {data['sr_score']:.1f}
 
 <i>Time: {datetime.now().strftime('%H:%M:%S')}</i>
 """
@@ -158,14 +142,6 @@ class TelegramNotifier:
         if not alerts:
             return True
             
-        # Group alerts by type
-        alert_summary = {}
-        for alert in alerts:
-            alert_type = alert['type']
-            if alert_type not in alert_summary:
-                alert_summary[alert_type] = []
-            alert_summary[alert_type].append(alert)
-        
         # Send summary message first
         summary_message = f"""
 📊 <b>MARKET ALERT SUMMARY</b> 📊
@@ -173,8 +149,13 @@ class TelegramNotifier:
 
 """
         
-        for alert_type, alert_list in alert_summary.items():
-            summary_message += f"<b>{alert_type}:</b> {len(alert_list)} alerts\n"
+        alert_counts = {}
+        for alert in alerts:
+            alert_type = alert['type']
+            alert_counts[alert_type] = alert_counts.get(alert_type, 0) + 1
+        
+        for alert_type, count in alert_counts.items():
+            summary_message += f"<b>{alert_type}:</b> {count} alerts\n"
         
         summary_message += f"\n<i>Total Alerts: {len(alerts)}</i>"
         
@@ -182,7 +163,7 @@ class TelegramNotifier:
         
         # Send individual alerts for critical ones
         critical_alerts = [a for a in alerts if a['type'] in ['FAST_TRANSITION', 'BREAKOUT', 'HIGH_VELOCITY']]
-        for alert in critical_alerts[:5]:  # Limit to 5 detailed alerts to avoid spam
+        for alert in critical_alerts[:5]:  # Limit to 5 detailed alerts
             detailed_message = self.format_alert_message(
                 alert['type'], alert['underlying'], alert['data']
             )
@@ -207,49 +188,82 @@ Ready to send alerts for:
 • Potential Breakouts
 """
         return self.send_message(message)
-# Enhanced Part 3: SupabaseManager Class
+        # Final Part 3: SupabaseManager Class with Secrets
 class SupabaseManager:
     def __init__(self):
-        """Initialize Supabase client"""
+        """Initialize Supabase client using secrets"""
         try:
-            self.url = st.secrets["SUPABASE_URL"]
-            self.key = st.secrets["SUPABASE_ANON_KEY"]
+            self.url = st.secrets["database"]["SUPABASE_URL"]
+            self.key = st.secrets["database"]["SUPABASE_ANON_KEY"]
             self.supabase: Client = create_client(self.url, self.key)
-            self.create_tables()
+            self.check_tables()
+        except KeyError as e:
+            st.error(f"Missing Supabase configuration in secrets: {e}")
+            self.supabase = None
         except Exception as e:
             st.error(f"Supabase connection failed: {e}")
             self.supabase = None
     
-    def create_tables(self):
-        """Create necessary tables if they don't exist"""
+    def check_tables(self):
+        """Check if tables exist and show setup instructions if not"""
         if not self.supabase:
             return
         
         try:
-            # Check if table exists
+            # Try to query the table to check if it exists
             result = self.supabase.table('market_data').select("id").limit(1).execute()
-        except:
-            # Table doesn't exist, show instructions
-            st.sidebar.warning("""
-            Database tables not found. 
-            Please run the SQL setup script in your Supabase dashboard.
-            """)
+            
+            # Check if we have the correct columns
+            if result.data is not None:
+                # Test a more complete query to verify column structure
+                test_result = self.supabase.table('market_data')\
+                    .select("strike,option_type,sr_score")\
+                    .limit(1)\
+                    .execute()
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "does not exist" in error_msg or "column" in error_msg:
+                st.sidebar.error("""
+                Database Setup Required
+                
+                The database table doesn't exist or has incorrect structure.
+                Please run the corrected SQL setup script in your Supabase dashboard.
+                """)
+            else:
+                st.sidebar.warning(f"Database check failed: {e}")
     
-    def save_market_data(self, data: List[Dict]):
-        """Save market data to Supabase"""
+    def save_market_data(self, data: List[Dict]) -> bool:
+        """Save market data to Supabase with error handling"""
         if not self.supabase or not data:
             return False
         
         try:
+            # Validate data structure before inserting
+            required_fields = ['underlying', 'strike', 'option_type', 'sr_score', 
+                             'current_state', 'transition_direction', 'transition_speed']
+            
+            for record in data:
+                for field in required_fields:
+                    if field not in record:
+                        st.error(f"Missing required field: {field}")
+                        return False
+            
             result = self.supabase.table('market_data').insert(data).execute()
             return True
+            
         except Exception as e:
+            error_msg = str(e)
+            if "column" in error_msg.lower() and "does not exist" in error_msg.lower():
+                st.error("Database column mismatch. Please run the corrected setup script.")
+            else:
+                st.error(f"Error saving data: {e}")
             logger.error(f"Error saving data: {e}")
             return False
     
     def get_historical_data(self, underlying: str, strike: float, option_type: str, 
                            hours_back: int = 24) -> pd.DataFrame:
-        """Get historical data for analysis"""
+        """Get historical data for analysis with error handling"""
         if not self.supabase:
             return pd.DataFrame()
         
@@ -265,13 +279,19 @@ class SupabaseManager:
                 .order('timestamp')\
                 .execute()
             
-            return pd.DataFrame(result.data)
+            if result.data:
+                return pd.DataFrame(result.data)
+            return pd.DataFrame()
+            
         except Exception as e:
-            logger.error(f"Error fetching historical data: {e}")
+            if "column" in str(e).lower():
+                st.warning("Database structure mismatch. Historical data unavailable.")
+            else:
+                logger.error(f"Error fetching historical data: {e}")
             return pd.DataFrame()
     
     def get_latest_scan_data(self, underlying: str, minutes_back: int = 10) -> pd.DataFrame:
-        """Get latest scan data"""
+        """Get latest scan data with error handling"""
         if not self.supabase:
             return pd.DataFrame()
         
@@ -285,18 +305,23 @@ class SupabaseManager:
                 .order('timestamp', desc=True)\
                 .execute()
             
-            df = pd.DataFrame(result.data)
+            df = pd.DataFrame(result.data) if result.data else pd.DataFrame()
+            
             if not df.empty:
                 # Get latest record for each strike-type combination
                 df = df.groupby(['strike', 'option_type']).first().reset_index()
             return df
+            
         except Exception as e:
-            logger.error(f"Error fetching latest data: {e}")
+            if "column" in str(e).lower():
+                st.warning("Database structure mismatch. Latest data unavailable.")
+            else:
+                logger.error(f"Error fetching latest data: {e}")
             return pd.DataFrame()
     
     def get_previous_states(self, underlying: str, strikes: List[float], 
                            minutes_back: int = 30) -> Dict:
-        """Get previous states for comparison"""
+        """Get previous states for comparison with error handling"""
         if not self.supabase:
             return {}
         
@@ -313,7 +338,8 @@ class SupabaseManager:
                 .order('timestamp', desc=True)\
                 .execute()
             
-            df = pd.DataFrame(result.data)
+            df = pd.DataFrame(result.data) if result.data else pd.DataFrame()
+            
             if not df.empty:
                 # Get most recent state for each strike-type
                 df = df.groupby(['strike', 'option_type']).first().reset_index()
@@ -328,36 +354,50 @@ class SupabaseManager:
                 return previous_states
             
             return {}
+            
         except Exception as e:
             logger.error(f"Error fetching previous states: {e}")
             return {}
     
-    def save_alert_log(self, alert_data: Dict):
-        """Save alert to database for tracking"""
+    def save_alert_log(self, alert_data: Dict) -> bool:
+        """Save alert to database for tracking with error handling"""
         if not self.supabase:
             return False
         
         try:
-            # Create alerts table if it doesn't exist (run this in Supabase SQL editor first)
             alert_record = {
-                'timestamp': datetime.now().isoformat(),
                 'underlying': alert_data['underlying'],
-                'strike': alert_data['data']['strike'],
-                'option_type': alert_data['data']['type'],
+                'strike': float(alert_data['data']['strike']),
+                'option_type': alert_data['data']['type'].lower(),
                 'alert_type': alert_data['type'],
-                'sr_score': alert_data['data']['sr_score'],
+                'sr_score': float(alert_data['data']['sr_score']),
                 'transition_direction': alert_data['data']['transition_direction'],
                 'transition_speed': alert_data['data']['transition_speed'],
-                'score_velocity': alert_data['data']['score_velocity']
+                'score_velocity': float(alert_data['data']['score_velocity']),
+                'sent_to_telegram': True
             }
             
-            # Note: You'll need to create this table in Supabase
-            # result = self.supabase.table('alert_logs').insert(alert_record).execute()
+            # Try to save to alert_logs table
+            result = self.supabase.table('alert_logs').insert(alert_record).execute()
+            return True
+            
+        except Exception as e:
+            # If alert_logs table doesn't exist, just log the error but don't fail
+            logger.warning(f"Could not save alert log: {e}")
+            return False
+    
+    def test_connection(self) -> bool:
+        """Test database connection"""
+        if not self.supabase:
+            return False
+        
+        try:
+            result = self.supabase.table('market_data').select("count").limit(1).execute()
             return True
         except Exception as e:
-            logger.error(f"Error saving alert log: {e}")
+            logger.error(f"Database connection test failed: {e}")
             return False
-# Enhanced Part 4: DhanSRScanner Class - Initialization and API Methods
+            # Final Part 4: DhanSRScanner Class - Initialization and API Methods
 class DhanSRScanner:
     def __init__(self, access_token: str, client_id: str, db_manager: SupabaseManager):
         """Initialize scanner with database integration"""
@@ -460,7 +500,7 @@ class DhanSRScanner:
             result_strikes.append(strikes[atm_index + 1])  # ATM+1
         
         return result_strikes
-# Enhanced Part 5: SR Score Calculation and Analysis Methods
+        # Final Part 5: SR Score Calculation and Analysis Methods
     def calculate_sr_score_with_history(self, strike: float, option_type: str, 
                                        option_data: Dict, spot_price: float) -> Dict:
         """Calculate SR score using current data and database history"""
@@ -659,22 +699,6 @@ class DhanSRScanner:
                     'data': row.to_dict()
                 })
         
-        # Check for state changes (if we have previous data)
-        if alert_settings.get('state_changes', True) and hasattr(self, 'previous_scan_data'):
-            strikes = df['strike'].unique()
-            previous_states = self.db_manager.get_previous_states(underlying, strikes.tolist())
-            
-            for _, row in df.iterrows():
-                key = f"{row['strike']}_{row['type'].lower()}"
-                if key in previous_states:
-                    prev_state = previous_states[key]['state']
-                    if prev_state != row['current_state'] and abs(row['sr_score']) > 30:
-                        alerts.append({
-                            'type': 'STATE_CHANGE',
-                            'underlying': underlying,
-                            'data': row.to_dict()
-                        })
-        
         # Send alerts if any found
         if alerts:
             success = telegram_notifier.send_batch_alerts(alerts)
@@ -686,7 +710,7 @@ class DhanSRScanner:
             return alerts
         
         return []
-# Enhanced Part 6: Main Scanning Function
+             # Final Part 6: Main Scanning Function
     def scan_and_save(self, underlying: str = "NIFTY", expiry: str = None, 
                      telegram_notifier: TelegramNotifier = None, 
                      alert_settings: Dict = None) -> pd.DataFrame:
@@ -819,7 +843,7 @@ class DhanSRScanner:
         self.previous_scan_data = df.copy()
         
         return df
-# Enhanced Part 7: Chart Creation and Helper Functions
+# Final Part 7: Chart Creation and Helper Functions
 def create_charts(df: pd.DataFrame, db_manager: SupabaseManager):
     """Create interactive charts"""
     if df.empty:
@@ -883,22 +907,6 @@ def create_charts(df: pd.DataFrame, db_manager: SupabaseManager):
                 line=dict(color='blue', width=2)
             ))
             
-            # Add state change markers
-            fig_historical.add_trace(go.Scatter(
-                x=pd.to_datetime(historical_df['timestamp']),
-                y=historical_df['sr_score'],
-                mode='markers',
-                name='State Changes',
-                marker=dict(
-                    size=8,
-                    color=historical_df['sr_score'],
-                    colorscale='RdYlGn',
-                    showscale=False
-                ),
-                text=historical_df['current_state'],
-                hovertemplate='<b>%{x}</b><br>Score: %{y}<br>State: %{text}<extra></extra>'
-            ))
-            
             fig_historical.update_layout(
                 title=f"Historical SR Score - {atm_data['strike']} {atm_data['type']}",
                 xaxis_title="Time",
@@ -944,72 +952,28 @@ def display_setup_instructions():
         ### Database Setup (One-time)
         1. Create a Supabase account and project
         2. Go to SQL Editor in your Supabase dashboard
-        3. Run this SQL script:
+        3. Run the corrected SQL setup script
         
-        ```sql
-        CREATE TABLE IF NOT EXISTS market_data (
-            id SERIAL PRIMARY KEY,
-            timestamp TIMESTAMPTZ DEFAULT NOW(),
-            underlying VARCHAR(20),
-            strike DECIMAL(10,2),
-            option_type VARCHAR(2),
-            expiry DATE,
-            spot_price DECIMAL(10,2),
-            ltp DECIMAL(10,4),
-            change_pct DECIMAL(8,4),
-            volume BIGINT,
-            open_interest BIGINT,
-            oi_change BIGINT,
-            oi_change_pct DECIMAL(8,4),
-            bid_qty BIGINT,
-            ask_qty BIGINT,
-            bid_ask_ratio DECIMAL(10,4),
-            sr_score DECIMAL(8,2),
-            current_state VARCHAR(50),
-            transition_direction VARCHAR(50),
-            transition_speed VARCHAR(20),
-            score_velocity DECIMAL(8,4),
-            score_acceleration DECIMAL(8,4),
-            trend_strength DECIMAL(8,2)
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_market_data_timestamp ON market_data(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_market_data_strike_type ON market_data(strike, option_type);
-        ```
-        
-        ### Streamlit Secrets Setup
-        Create `.streamlit/secrets.toml` file:
-        ```toml
-        SUPABASE_URL = "your-supabase-url"
-        SUPABASE_ANON_KEY = "your-supabase-anon-key"
-        ```
-        """)
-
-def display_telegram_setup():
-    """Display Telegram bot setup instructions"""
-    with st.expander("Telegram Bot Setup", expanded=False):
-        st.markdown("""
-        ### Create Telegram Bot
-        1. Open Telegram and search for @BotFather
+        ### Telegram Bot Setup
+        1. Message @BotFather on Telegram
         2. Send `/newbot` command
-        3. Follow instructions to create your bot
-        4. Copy the Bot Token provided
+        3. Get Bot Token and Chat ID
         
-        ### Get Chat ID
-        1. Send a message to your bot
-        2. Visit: `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
-        3. Look for "chat":{"id": YOUR_CHAT_ID}
-        4. Copy the Chat ID
+        ### Secrets Configuration
+        Create `.streamlit/secrets.toml`:
+        ```toml
+        [database]
+        SUPABASE_URL = "your-url"
+        SUPABASE_ANON_KEY = "your-key"
         
-        ### Test Setup
-        Send a test message to verify configuration works.
+        [dhan_api]
+        ACCESS_TOKEN = "your-token"
+        CLIENT_ID = "your-id"
         
-        ### Alert Types
-        - **Fast Transitions**: FAST/VERY_FAST speed changes
-        - **High Velocity**: Score velocity > 10
-        - **Strong Levels**: |SR Score| > 60
-        - **Breakouts**: Score near zero with high speed
-        - **State Changes**: Transitions between support/resistance states
+        [telegram]
+        BOT_TOKEN = "your-bot-token"
+        CHAT_ID = "your-chat-id"
+        ```
         """)
 
 def get_transition_emoji(direction: str, speed: str) -> str:
@@ -1031,69 +995,58 @@ def get_transition_emoji(direction: str, speed: str) -> str:
     }
     
     return f"{direction_map.get(direction, '❓')} {speed_map.get(speed, '❓')}"
-
-def format_alert_summary(alerts: List[Dict]) -> str:
-    """Format alert summary for display"""
-    if not alerts:
-        return "No alerts generated"
-    
-    summary = {}
-    for alert in alerts:
-        alert_type = alert['type']
-        if alert_type not in summary:
-            summary[alert_type] = 0
-        summary[alert_type] += 1
-    
-    result = "Alert Summary:\n"
-    for alert_type, count in summary.items():
-        emoji = "🚨" if "FAST" in alert_type else "⚡" if "VELOCITY" in alert_type else "🎯"
-        result += f"{emoji} {alert_type}: {count}\n"
-    
-    return result
-# Enhanced Part 8: Streamlit UI with Telegram Integration
+    # Final Part 8: Main Streamlit UI with Secrets Configuration
 def main():
-    """Main Streamlit app with Telegram notifications"""
+    """Main Streamlit app with secrets-based configuration"""
     st.title("Support Resistance Scanner Pro")
     st.markdown("*Real-time Options Flow Analysis with Cloud Database & Telegram Alerts*")
     
     # Setup instructions
     display_setup_instructions()
-    display_telegram_setup()
+    
+    # Load configuration from secrets
+    try:
+        # Database configuration
+        supabase_url = st.secrets["database"]["SUPABASE_URL"]
+        supabase_key = st.secrets["database"]["SUPABASE_ANON_KEY"]
+        
+        # Dhan API configuration
+        access_token = st.secrets["dhan_api"]["ACCESS_TOKEN"]
+        client_id = st.secrets["dhan_api"]["CLIENT_ID"]
+        
+        # Telegram configuration
+        telegram_bot_token = st.secrets["telegram"]["BOT_TOKEN"]
+        telegram_chat_id = st.secrets["telegram"]["CHAT_ID"]
+        
+        st.sidebar.success("All credentials loaded from secrets")
+        
+    except KeyError as e:
+        st.error(f"Missing configuration in secrets.toml: {e}")
+        st.info("Please ensure all required credentials are in your secrets.toml file")
+        return
     
     # Sidebar configuration
     st.sidebar.header("Configuration")
     
-    # API credentials
-    access_token = st.sidebar.text_input("Dhan Access Token", type="password")
-    client_id = st.sidebar.text_input("Dhan Client ID")
-    
     # Scan settings
     underlying = st.sidebar.selectbox("Underlying", ["NIFTY", "BANKNIFTY", "FINNIFTY"])
     
-    # Telegram configuration
+    # Telegram settings
     st.sidebar.header("Telegram Notifications")
-    telegram_enabled = st.sidebar.checkbox("Enable Telegram Alerts")
-    
-    telegram_bot_token = None
-    telegram_chat_id = None
-    alert_settings = {}
+    telegram_enabled = st.sidebar.checkbox("Enable Telegram Alerts", value=True)
     
     if telegram_enabled:
-        telegram_bot_token = st.sidebar.text_input("Bot Token", type="password")
-        telegram_chat_id = st.sidebar.text_input("Chat ID")
-        
         # Test connection button
-        if telegram_bot_token and telegram_chat_id:
-            if st.sidebar.button("Test Telegram Connection"):
-                test_notifier = TelegramNotifier(telegram_bot_token, telegram_chat_id)
-                if test_notifier.test_connection():
-                    test_msg = test_notifier.send_message("Test message from SR Scanner!")
-                    if test_msg:
-                        st.sidebar.success("Telegram connection successful!")
-                    else:
-                        st.sidebar.error("Failed to send test message")
+        if st.sidebar.button("Test Telegram Connection"):
+            test_notifier = TelegramNotifier(telegram_bot_token, telegram_chat_id)
+            if test_notifier.test_connection():
+                test_msg = test_notifier.send_message("Test message from SR Scanner!")
+                if test_msg:
+                    st.sidebar.success("Telegram connection successful!")
                 else:
-                    st.sidebar.error("Telegram connection failed")
+                    st.sidebar.error("Failed to send test message")
+            else:
+                st.sidebar.error("Telegram connection failed")
         
         # Alert settings
         st.sidebar.subheader("Alert Settings")
@@ -1109,25 +1062,40 @@ def main():
         st.sidebar.subheader("Alert Thresholds")
         velocity_threshold = st.sidebar.slider("Velocity Threshold", 5, 20, 10)
         score_threshold = st.sidebar.slider("Strong Level Threshold", 30, 80, 60)
+    else:
+        alert_settings = {}
     
-    # Initialize database
+    # Initialize database with secrets
     if 'db_manager' not in st.session_state:
         st.session_state.db_manager = SupabaseManager()
     
     db_manager = st.session_state.db_manager
-    
-    if not access_token or not client_id:
-        st.warning("Please enter your Dhan API credentials in the sidebar.")
-        st.info("Get your credentials from: https://dhanhq.co/api")
-        return
     
     # Initialize scanner
     scanner = DhanSRScanner(access_token, client_id, db_manager)
     
     # Initialize Telegram notifier
     telegram_notifier = None
-    if telegram_enabled and telegram_bot_token and telegram_chat_id:
+    if telegram_enabled:
         telegram_notifier = TelegramNotifier(telegram_bot_token, telegram_chat_id)
+    
+    # Display credentials status
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Status")
+    st.sidebar.success("Dhan API: Connected")
+    
+    if telegram_enabled and telegram_notifier:
+        if telegram_notifier.test_connection():
+            st.sidebar.success("Telegram: Connected")
+        else:
+            st.sidebar.error("Telegram: Failed")
+    else:
+        st.sidebar.info("Telegram: Disabled")
+    
+    if db_manager and db_manager.test_connection():
+        st.sidebar.success("Database: Connected")
+    else:
+        st.sidebar.error("Database: Failed")
     
     # Control buttons
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -1164,7 +1132,7 @@ def main():
     
     with col3:
         auto_refresh_enabled = st.session_state.get('auto_refresh', False)
-        if st.button(f"Auto Refresh {'ON' if auto_refresh_enabled else 'OFF'}"):
+        if st.button(f"Auto {'ON' if auto_refresh_enabled else 'OFF'}"):
             st.session_state.auto_refresh = not auto_refresh_enabled
             if st.session_state.auto_refresh:
                 st.success("Auto refresh enabled (60s interval)")
@@ -1180,7 +1148,7 @@ def main():
             st.success("Cache cleared")
     
     with col5:
-        if telegram_notifier and st.button("Send Test Alert"):
+        if telegram_notifier and st.button("Test Alert"):
             test_alert = {
                 'type': 'FAST_TRANSITION',
                 'underlying': underlying,
@@ -1203,7 +1171,7 @@ def main():
            (datetime.now() - st.session_state.last_scan_time).seconds > 60:
             time.sleep(1)
             st.rerun()
-    
+              # Final Part 9: Data Display and Final Components
     # Display data
     if 'current_data' in st.session_state and not st.session_state.current_data.empty:
         df = st.session_state.current_data
@@ -1234,14 +1202,8 @@ def main():
                 st.metric("Last Scan", f"{time_ago}s ago")
         
         with col6:
-            telegram_status = "Connected" if telegram_notifier else "Disabled"
+            telegram_status = "Connected" if telegram_enabled and telegram_notifier else "Disabled"
             st.metric("Telegram", telegram_status)
-        
-        # Alert summary if alerts were sent
-        if hasattr(scanner, 'previous_scan_data') and telegram_notifier:
-            alerts_sent = st.session_state.get('alerts_sent', 0)
-            if alerts_sent > 0:
-                st.info(f"Sent {alerts_sent} alerts this session")
         
         # Charts
         st.subheader("Visual Analysis")
@@ -1258,7 +1220,7 @@ def main():
         with col2:
             if fig_velocity:
                 st.plotly_chart(fig_velocity, use_container_width=True)
-# Enhanced Part 9: Data Display and Final Components
+        
         # Data table
         st.subheader("Detailed Analysis")
         
@@ -1406,21 +1368,90 @@ def main():
             }
             st.dataframe(pd.DataFrame(sample_data))
     
-    # Telegram status in sidebar
-    if telegram_enabled:
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("Telegram Status")
-        if telegram_notifier:
-            if telegram_notifier.test_connection():
-                st.sidebar.success("Connected")
-            else:
-                st.sidebar.error("Connection Failed")
-        else:
-            st.sidebar.warning("Not Configured")
-    
     # Footer
     st.markdown("---")
     st.markdown("*Powered by Dhan API, Streamlit, Supabase & Telegram*")
-
+    # Final Part 10: Main Function Call
 if __name__ == "__main__":
     main()
+
+
+# Complete secrets.toml template for reference:
+"""
+[database]
+SUPABASE_URL = "https://your-project-id.supabase.co"
+SUPABASE_ANON_KEY = "your-supabase-anon-key"
+
+[dhan_api]
+ACCESS_TOKEN = "your-dhan-access-token"
+CLIENT_ID = "your-dhan-client-id"
+
+[telegram]
+BOT_TOKEN = "your-telegram-bot-token"
+CHAT_ID = "your-telegram-chat-id"
+"""
+
+# Complete requirements.txt for reference:
+"""
+streamlit==1.28.0
+pandas==2.0.3
+numpy==1.24.3
+plotly==5.15.0
+requests==2.31.0
+supabase==1.0.4
+python-dotenv==1.0.0
+"""
+
+# Corrected database setup SQL for reference:
+"""
+-- Run this in your Supabase SQL Editor
+DROP TABLE IF EXISTS market_data CASCADE;
+DROP TABLE IF EXISTS alert_logs CASCADE;
+
+CREATE TABLE market_data (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ DEFAULT NOW(),
+    underlying VARCHAR(20) NOT NULL,
+    strike DECIMAL(10,2) NOT NULL,
+    option_type VARCHAR(10) NOT NULL,
+    expiry DATE NOT NULL,
+    spot_price DECIMAL(10,2) NOT NULL,
+    ltp DECIMAL(10,4) NOT NULL,
+    change_pct DECIMAL(8,4) DEFAULT 0,
+    volume BIGINT DEFAULT 0,
+    open_interest BIGINT DEFAULT 0,
+    oi_change BIGINT DEFAULT 0,
+    oi_change_pct DECIMAL(8,4) DEFAULT 0,
+    bid_qty BIGINT DEFAULT 0,
+    ask_qty BIGINT DEFAULT 0,
+    bid_ask_ratio DECIMAL(10,4) DEFAULT 1,
+    sr_score DECIMAL(8,2) NOT NULL,
+    current_state VARCHAR(50) NOT NULL,
+    transition_direction VARCHAR(50) NOT NULL,
+    transition_speed VARCHAR(20) NOT NULL,
+    score_velocity DECIMAL(8,4) DEFAULT 0,
+    score_acceleration DECIMAL(8,4) DEFAULT 0,
+    trend_strength DECIMAL(8,2) DEFAULT 0
+);
+
+CREATE TABLE alert_logs (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ DEFAULT NOW(),
+    underlying VARCHAR(20) NOT NULL,
+    strike DECIMAL(10,2) NOT NULL,
+    option_type VARCHAR(10) NOT NULL,
+    alert_type VARCHAR(50) NOT NULL,
+    sr_score DECIMAL(8,2) NOT NULL,
+    transition_direction VARCHAR(50) NOT NULL,
+    transition_speed VARCHAR(20) NOT NULL,
+    score_velocity DECIMAL(8,4) DEFAULT 0,
+    sent_to_telegram BOOLEAN DEFAULT FALSE
+);
+
+-- Create indexes
+CREATE INDEX idx_market_data_timestamp ON market_data(timestamp);
+CREATE INDEX idx_market_data_strike_type ON market_data(strike, option_type);
+CREATE INDEX idx_market_data_underlying ON market_data(underlying);
+CREATE INDEX idx_market_data_composite ON market_data(underlying, strike, option_type, timestamp DESC);
+CREATE INDEX idx_alert_logs_timestamp ON alert_logs(timestamp);
+"""
