@@ -988,8 +988,7 @@ def analyze():
         total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
         
         # Display Manual Support/Resistance Settings at the top
-        available_strikes = sorted(df['strikePrice'].unique())
-        display_manual_sr_settings(underlying, available_strikes)
+        display_manual_sr_settings()
         
         st.markdown("## Open Interest Change (in Lakhs)")
         col1, col2 = st.columns(2)
