@@ -74,6 +74,10 @@ if 'use_pcr_filter' not in st.session_state:
 if 'pcr_history' not in st.session_state:
     st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
 
+# Initialize Manual Support/Resistance Alert System
+if 'sr_alerts_sent' not in st.session_state:
+    st
+
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
 TELEGRAM_CHAT_ID = "5704496584"
@@ -82,6 +86,7 @@ TELEGRAM_CHAT_ID = "5704496584"
 # NIFTY 50 underlying instrument ID for Dhan API
 NIFTY_UNDERLYING_SCRIP = 13  # This needs to be verified with Dhan's instrument list
 NIFTY_UNDERLYING_SEG = "IDX_I"  # Index segment
+
 # === Dhan API Functions ===
 def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: str):
     """
@@ -191,7 +196,8 @@ def get_dhan_ltp(security_ids: list, segment: str):
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching Dhan LTP: {e}")
         return None
-        # === Supabase Data Management Functions ===
+
+# === Supabase Data Management Functions ===
 def store_price_data(price):
     """Store price data in Supabase"""
     if not supabase_client:
@@ -286,6 +292,98 @@ def get_trade_log():
         st.error(f"Error retrieving trade log: {e}")
         return []
 
+def store_sr_levels(support_1, support_2, resistance_1, resistance_2):
+    """Store manual support/resistance levels in Supabase"""
+    if not supabase_client:
+        return
+        
+    try:
+        # First, delete existing levels for today
+        today = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
+        supabase_client.table("sr_levels") \
+            .delete() \
+            .eq("date", today) \
+            .execute()
+        
+        # Insert new levels
+        data = {
+            "date": today,
+            "support_1": support_1,
+            "support_2": support_2,
+            "resistance_1": resistance_1,
+            "resistance_2": resistance_2,
+            "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat(),
+            "updated_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
+        }
+        
+        supabase_client.table("sr_levels").insert(data).execute()
+    except Exception as e:
+        st.error(f"Error storing S/R levels: {e}")
+
+def get_sr_levels():
+    """Get manual support/resistance levels from Supabase"""
+    if not supabase_client:
+        return None, None, None, None
+        
+    try:
+        today = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
+        response = supabase_client.table("sr_levels") \
+            .select("*") \
+            .eq("date", today) \
+            .order("updated_at", desc=True) \
+            .limit(1) \
+            .execute()
+        
+        if response.data:
+            data = response.data[0]
+            return (
+                data.get('support_1'),
+                data.get('support_2'), 
+                data.get('resistance_1'),
+                data.get('resistance_2')
+            )
+        else:
+            return None, None, None, None
+    except Exception as e:
+        st.error(f"Error retrieving S/R levels: {e}")
+        return None, None, None, None
+
+def delete_all_database_history():
+    """Delete all historical data from database tables"""
+    if not supabase_client:
+        st.error("Database not connected")
+        return False
+        
+    try:
+        # Delete from all tables
+        tables_to_clear = ["price_history", "trade_log", "sr_levels"]
+        
+        for table in tables_to_clear:
+            try:
+                # Get count before deletion
+                count_response = supabase_client.table(table).select("id", count="exact").execute()
+                record_count = count_response.count if hasattr(count_response, 'count') else 0
+                
+                # Delete all records
+                supabase_client.table(table).delete().neq("id", 0).execute()
+                st.success(f"Deleted {record_count} records from {table}")
+                
+            except Exception as table_error:
+                st.warning(f"Could not clear {table}: {table_error}")
+        
+        # Clear session state data as well
+        st.session_state.trade_log = []
+        st.session_state.call_log_book = []
+        st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
+        st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
+        st.session_state.sr_alerts_sent = set()
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error deleting database history: {e}")
+        return False
+
 def check_target_sl_hits(current_price):
     """Check if any active trades have hit target or stop loss"""
     if not supabase_client:
@@ -347,6 +445,39 @@ def check_target_sl_hits(current_price):
     except Exception as e:
         st.error(f"Error checking target/SL hits: {e}")
 
+def check_manual_sr_alerts(current_price):
+    """Check if current price is near manual support/resistance levels and send alerts"""
+    sr_levels = {
+        'Support 1': st.session_state.manual_support_1,
+        'Support 2': st.session_state.manual_support_2,
+        'Resistance 1': st.session_state.manual_resistance_1,
+        'Resistance 2': st.session_state.manual_resistance_2
+    }
+    
+    for level_name, level_value in sr_levels.items():
+        if level_value is None:
+            continue
+            
+        # Check if price is within ±5 points of the level
+        if abs(current_price - level_value) <= 5:
+            alert_key = f"{level_name}_{level_value}_{datetime.now().strftime('%Y%m%d')}"
+            
+            # Only send alert once per day per level
+            if alert_key not in st.session_state.sr_alerts_sent:
+                st.session_state.sr_alerts_sent.add(alert_key)
+                
+                # Determine if it's approaching from above or below
+                direction = "approaching from above" if current_price > level_value else "approaching from below"
+                
+                message = f"🚨 MANUAL S/R ALERT 🚨\n"
+                message += f"Level: {level_name} ({level_value})\n"
+                message += f"Current Price: {current_price}\n"
+                message += f"Difference: {current_price - level_value:+.1f} points\n"
+                message += f"Status: {direction}\n"
+                message += f"Time: {datetime.now(timezone('Asia/Kolkata')).strftime('%H:%M:%S')}"
+                
+                send_telegram_message(message)
+
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
@@ -356,7 +487,8 @@ def send_telegram_message(message):
             st.warning("⚠️ Telegram message failed.")
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
-        # === Calculation and Analysis Functions ===
+
+# === Calculation and Analysis Functions ===
 def calculate_greeks(option_type, S, K, T, r, sigma):
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -452,7 +584,116 @@ def get_support_resistance_zones(df, spot):
     resistance_zone = (min(nearest_resistances), max(nearest_resistances)) if len(nearest_resistances) >= 2 else (nearest_resistances[0], nearest_resistances[0]) if nearest_resistances else (None, None)
 
     return support_zone, resistance_zone
-    # === Display and Helper Functions ===
+
+# === Display and Helper Functions ===
+def display_manual_sr_settings():
+    """Display manual support/resistance input section"""
+    st.markdown("### 📍 Manual Support & Resistance Alerts")
+    st.info("Enter your support/resistance levels below. You'll get Telegram alerts when price comes within ±5 points of these levels.")
+    
+    # Get current values from database
+    current_support_1, current_support_2, current_resistance_1, current_resistance_2 = get_sr_levels()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        support_1 = st.number_input(
+            "Support Level 1", 
+            min_value=0.0, 
+            max_value=50000.0,
+            value=current_support_1 if current_support_1 is not None else 0.0,
+            step=1.0,
+            help="Enter first support level",
+            key="support_1_input"
+        )
+        if support_1 == 0.0:
+            support_1 = None
+    
+    with col2:
+        support_2 = st.number_input(
+            "Support Level 2", 
+            min_value=0.0, 
+            max_value=50000.0,
+            value=current_support_2 if current_support_2 is not None else 0.0,
+            step=1.0,
+            help="Enter second support level",
+            key="support_2_input"
+        )
+        if support_2 == 0.0:
+            support_2 = None
+    
+    with col3:
+        resistance_1 = st.number_input(
+            "Resistance Level 1", 
+            min_value=0.0, 
+            max_value=50000.0,
+            value=current_resistance_1 if current_resistance_1 is not None else 0.0,
+            step=1.0,
+            help="Enter first resistance level",
+            key="resistance_1_input"
+        )
+        if resistance_1 == 0.0:
+            resistance_1 = None
+    
+    with col4:
+        resistance_2 = st.number_input(
+            "Resistance Level 2", 
+            min_value=0.0, 
+            max_value=50000.0,
+            value=current_resistance_2 if current_resistance_2 is not None else 0.0,
+            step=1.0,
+            help="Enter second resistance level",
+            key="resistance_2_input"
+        )
+        if resistance_2 == 0.0:
+            resistance_2 = None
+    
+    # Check if values have changed and store in database
+    if (support_1 != current_support_1 or support_2 != current_support_2 or 
+        resistance_1 != current_resistance_1 or resistance_2 != current_resistance_2):
+        store_sr_levels(support_1, support_2, resistance_1, resistance_2)
+        st.success("Support/Resistance levels updated in database!")
+    
+    # Display current levels
+    st.markdown("#### Current Alert Levels:")
+    levels_display = []
+    if support_1:
+        levels_display.append(f"🟢 Support 1: {support_1}")
+    if support_2:
+        levels_display.append(f"🟢 Support 2: {support_2}")
+    if resistance_1:
+        levels_display.append(f"🔴 Resistance 1: {resistance_1}")
+    if resistance_2:
+        levels_display.append(f"🔴 Resistance 2: {resistance_2}")
+    
+    if levels_display:
+        st.write(" | ".join(levels_display))
+    else:
+        st.write("No levels set")
+    
+    # Action buttons
+    col_a, col_b, col_c = st.columns(3)
+    
+    with col_a:
+        if st.button("🗑️ Clear Alert History", help="Clear sent alerts history for fresh notifications"):
+            st.session_state.sr_alerts_sent.clear()
+            st.success("Alert history cleared. You'll receive fresh alerts when price approaches your levels.")
+    
+    with col_b:
+        if st.button("💾 Save Current Levels", help="Manually save current levels to database"):
+            store_sr_levels(support_1, support_2, resistance_1, resistance_2)
+            st.success("Levels saved to database!")
+    
+    with col_c:
+        if st.button("🗂️ Delete All Database History", 
+                    help="⚠️ This will delete ALL historical data from database", 
+                    type="secondary"):
+            # Confirmation dialog
+            if st.button("⚠️ CONFIRM DELETE ALL DATA", type="primary"):
+                if delete_all_database_history():
+                    st.success("All database history deleted successfully!")
+                    st.rerun()  # Refresh the page to show cleared data
+
 def display_enhanced_trade_log():
     # Get trade log from Supabase
     trade_data = get_trade_log()
@@ -604,7 +845,8 @@ def color_pcr(val):
         return 'background-color: #FFB6C1; color: black'
     else:
         return 'background-color: #FFFFE0; color: black'
-        # === Main Analysis Function (Part A) ===
+
+# === Main Analysis Function (Part A) ===
 def analyze():
     if 'trade_log' not in st.session_state:
         st.session_state.trade_log = []
@@ -647,6 +889,9 @@ def analyze():
         
         # Check for target/SL hits
         check_target_sl_hits(underlying)
+        
+        # Check manual support/resistance alerts
+        check_manual_sr_alerts(underlying)
 
         # Process option chain data
         oc_data = data['oc']
@@ -731,7 +976,7 @@ def analyze():
                 greeks = (0, 0, 0, 0, 0)  # Default values if calculation fails
             
             df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
-            # === Main Analysis Function (Part B) - Continuing from Part A ===
+
         # Continue with analysis logic
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
         df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
@@ -741,6 +986,10 @@ def analyze():
         # Open Interest Change Comparison
         total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000
         total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
+        
+        # Display Manual Support/Resistance Settings at the top
+        available_strikes = sorted(df['strikePrice'].unique())
+        display_manual_sr_settings(underlying, available_strikes)
         
         st.markdown("## Open Interest Change (in Lakhs)")
         col1, col2 = st.columns(2)
@@ -867,7 +1116,7 @@ def analyze():
 
         support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
         resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
-        # === Signal Logic and Final Display (Part C) - Continuing from Part B ===
+
         # Signal generation logic
         atm_signal, suggested_trade = "No Signal", ""
         signal_sent = False
@@ -959,7 +1208,7 @@ def analyze():
 
                 signal_sent = True
                 break
-                # === Final Display and Configuration (Part D) - Continuing from Part C ===
+
         # Main Display
         st.markdown(f"### Spot Price: {underlying}")
         st.success(f"Market View: **{market_view}** Bias Score: {total_score}")
