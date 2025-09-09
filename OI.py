@@ -950,29 +950,7 @@ def display_setup_instructions():
     with st.expander("Setup Instructions", expanded=False):
         st.markdown("""
         ### Database Setup (One-time)
-        1. Create a Supabase account and project
-        2. Go to SQL Editor in your Supabase dashboard
-        3. Run the corrected SQL setup script
         
-        ### Telegram Bot Setup
-        1. Message @BotFather on Telegram
-        2. Send `/newbot` command
-        3. Get Bot Token and Chat ID
-        
-        ### Secrets Configuration
-        Create `.streamlit/secrets.toml`:
-        ```toml
-        [database]
-        SUPABASE_URL = "your-url"
-        SUPABASE_ANON_KEY = "your-key"
-        
-        [dhan_api]
-        ACCESS_TOKEN = "your-token"
-        CLIENT_ID = "your-id"
-        
-        [telegram]
-        BOT_TOKEN = "your-bot-token"
-        CHAT_ID = "your-chat-id"
         ```
         """)
 
