@@ -292,98 +292,6 @@ def get_trade_log():
         st.error(f"Error retrieving trade log: {e}")
         return []
 
-def store_sr_levels(support_1, support_2, resistance_1, resistance_2):
-    """Store manual support/resistance levels in Supabase"""
-    if not supabase_client:
-        return
-        
-    try:
-        # First, delete existing levels for today
-        today = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
-        supabase_client.table("sr_levels") \
-            .delete() \
-            .eq("date", today) \
-            .execute()
-        
-        # Insert new levels
-        data = {
-            "date": today,
-            "support_1": support_1,
-            "support_2": support_2,
-            "resistance_1": resistance_1,
-            "resistance_2": resistance_2,
-            "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat(),
-            "updated_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
-        }
-        
-        supabase_client.table("sr_levels").insert(data).execute()
-    except Exception as e:
-        st.error(f"Error storing S/R levels: {e}")
-
-def get_sr_levels():
-    """Get manual support/resistance levels from Supabase"""
-    if not supabase_client:
-        return None, None, None, None
-        
-    try:
-        today = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
-        response = supabase_client.table("sr_levels") \
-            .select("*") \
-            .eq("date", today) \
-            .order("updated_at", desc=True) \
-            .limit(1) \
-            .execute()
-        
-        if response.data:
-            data = response.data[0]
-            return (
-                data.get('support_1'),
-                data.get('support_2'), 
-                data.get('resistance_1'),
-                data.get('resistance_2')
-            )
-        else:
-            return None, None, None, None
-    except Exception as e:
-        st.error(f"Error retrieving S/R levels: {e}")
-        return None, None, None, None
-
-def delete_all_database_history():
-    """Delete all historical data from database tables"""
-    if not supabase_client:
-        st.error("Database not connected")
-        return False
-        
-    try:
-        # Delete from all tables
-        tables_to_clear = ["price_history", "trade_log", "sr_levels"]
-        
-        for table in tables_to_clear:
-            try:
-                # Get count before deletion
-                count_response = supabase_client.table(table).select("id", count="exact").execute()
-                record_count = count_response.count if hasattr(count_response, 'count') else 0
-                
-                # Delete all records
-                supabase_client.table(table).delete().neq("id", 0).execute()
-                st.success(f"Deleted {record_count} records from {table}")
-                
-            except Exception as table_error:
-                st.warning(f"Could not clear {table}: {table_error}")
-        
-        # Clear session state data as well
-        st.session_state.trade_log = []
-        st.session_state.call_log_book = []
-        st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
-        st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
-        st.session_state.sr_alerts_sent = set()
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"Error deleting database history: {e}")
-        return False
-
 def check_target_sl_hits(current_price):
     """Check if any active trades have hit target or stop loss"""
     if not supabase_client:
@@ -591,108 +499,77 @@ def display_manual_sr_settings():
     st.markdown("### 📍 Manual Support & Resistance Alerts")
     st.info("Enter your support/resistance levels below. You'll get Telegram alerts when price comes within ±5 points of these levels.")
     
-    # Get current values from database
-    current_support_1, current_support_2, current_resistance_1, current_resistance_2 = get_sr_levels()
-    
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        support_1 = st.number_input(
+        st.session_state.manual_support_1 = st.number_input(
             "Support Level 1", 
             min_value=0.0, 
             max_value=50000.0,
-            value=current_support_1 if current_support_1 is not None else 0.0,
+            value=st.session_state.manual_support_1 if st.session_state.manual_support_1 is not None else 0.0,
             step=1.0,
-            help="Enter first support level",
-            key="support_1_input"
+            help="Enter first support level"
         )
-        if support_1 == 0.0:
-            support_1 = None
+        if st.session_state.manual_support_1 == 0.0:
+            st.session_state.manual_support_1 = None
     
     with col2:
-        support_2 = st.number_input(
+        st.session_state.manual_support_2 = st.number_input(
             "Support Level 2", 
             min_value=0.0, 
             max_value=50000.0,
-            value=current_support_2 if current_support_2 is not None else 0.0,
+            value=st.session_state.manual_support_2 if st.session_state.manual_support_2 is not None else 0.0,
             step=1.0,
-            help="Enter second support level",
-            key="support_2_input"
+            help="Enter second support level"
         )
-        if support_2 == 0.0:
-            support_2 = None
+        if st.session_state.manual_support_2 == 0.0:
+            st.session_state.manual_support_2 = None
     
     with col3:
-        resistance_1 = st.number_input(
+        st.session_state.manual_resistance_1 = st.number_input(
             "Resistance Level 1", 
             min_value=0.0, 
             max_value=50000.0,
-            value=current_resistance_1 if current_resistance_1 is not None else 0.0,
+            value=st.session_state.manual_resistance_1 if st.session_state.manual_resistance_1 is not None else 0.0,
             step=1.0,
-            help="Enter first resistance level",
-            key="resistance_1_input"
+            help="Enter first resistance level"
         )
-        if resistance_1 == 0.0:
-            resistance_1 = None
+        if st.session_state.manual_resistance_1 == 0.0:
+            st.session_state.manual_resistance_1 = None
     
     with col4:
-        resistance_2 = st.number_input(
+        st.session_state.manual_resistance_2 = st.number_input(
             "Resistance Level 2", 
             min_value=0.0, 
             max_value=50000.0,
-            value=current_resistance_2 if current_resistance_2 is not None else 0.0,
+            value=st.session_state.manual_resistance_2 if st.session_state.manual_resistance_2 is not None else 0.0,
             step=1.0,
-            help="Enter second resistance level",
-            key="resistance_2_input"
+            help="Enter second resistance level"
         )
-        if resistance_2 == 0.0:
-            resistance_2 = None
-    
-    # Check if values have changed and store in database
-    if (support_1 != current_support_1 or support_2 != current_support_2 or 
-        resistance_1 != current_resistance_1 or resistance_2 != current_resistance_2):
-        store_sr_levels(support_1, support_2, resistance_1, resistance_2)
-        st.success("Support/Resistance levels updated in database!")
+        if st.session_state.manual_resistance_2 == 0.0:
+            st.session_state.manual_resistance_2 = None
     
     # Display current levels
     st.markdown("#### Current Alert Levels:")
     levels_display = []
-    if support_1:
-        levels_display.append(f"🟢 Support 1: {support_1}")
-    if support_2:
-        levels_display.append(f"🟢 Support 2: {support_2}")
-    if resistance_1:
-        levels_display.append(f"🔴 Resistance 1: {resistance_1}")
-    if resistance_2:
-        levels_display.append(f"🔴 Resistance 2: {resistance_2}")
+    if st.session_state.manual_support_1:
+        levels_display.append(f"🟢 Support 1: {st.session_state.manual_support_1}")
+    if st.session_state.manual_support_2:
+        levels_display.append(f"🟢 Support 2: {st.session_state.manual_support_2}")
+    if st.session_state.manual_resistance_1:
+        levels_display.append(f"🔴 Resistance 1: {st.session_state.manual_resistance_1}")
+    if st.session_state.manual_resistance_2:
+        levels_display.append(f"🔴 Resistance 2: {st.session_state.manual_resistance_2}")
     
     if levels_display:
         st.write(" | ".join(levels_display))
     else:
         st.write("No levels set")
     
-    # Action buttons
-    col_a, col_b, col_c = st.columns(3)
-    
-    with col_a:
-        if st.button("🗑️ Clear Alert History", help="Clear sent alerts history for fresh notifications"):
-            st.session_state.sr_alerts_sent.clear()
-            st.success("Alert history cleared. You'll receive fresh alerts when price approaches your levels.")
-    
-    with col_b:
-        if st.button("💾 Save Current Levels", help="Manually save current levels to database"):
-            store_sr_levels(support_1, support_2, resistance_1, resistance_2)
-            st.success("Levels saved to database!")
-    
-    with col_c:
-        if st.button("🗂️ Delete All Database History", 
-                    help="⚠️ This will delete ALL historical data from database", 
-                    type="secondary"):
-            # Confirmation dialog
-            if st.button("⚠️ CONFIRM DELETE ALL DATA", type="primary"):
-                if delete_all_database_history():
-                    st.success("All database history deleted successfully!")
-                    st.rerun()  # Refresh the page to show cleared data
+    # Clear alerts button
+    if st.button("🗑️ Clear All Alert History"):
+        st.session_state.sr_alerts_sent.clear()
+        st.success("Alert history cleared. You'll receive fresh alerts when price approaches your levels.")
 
 def display_enhanced_trade_log():
     # Get trade log from Supabase
