@@ -384,7 +384,7 @@ class PivotIndicator:
             return pd.DataFrame()
         
         df_temp = df.copy()
-        df_temp.set_index('datetime', in=True)
+        df_temp.set_index('datetime', inplace=True)
         
         try:
             resampled = df_temp.resample(rule).agg({
@@ -758,7 +758,7 @@ def display_metrics(ltp_data, df, db, symbol="NIFTY50"):
             
             with col1:
                 color = "price-up" if change >= 0 else "price-down"
-                st.markdown(f"""
+                                st.markdown(f"""
                 <div class="metric-container">
                     <h4>Current Price</h4>
                     <h2 class="{color}">₹{current_price:,.2f}</h2>
