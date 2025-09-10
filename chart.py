@@ -243,7 +243,7 @@ class DhanAPI:
         self.base_url = "https://api.dhan.co/v2"
         self.headers = {
             'Accept': 'application/json',
-            'Content-Type': application/json',
+            'Content-Type': 'application/json',
             'access-token': self.access_token,
             'client-id': self.client_id
         }
