@@ -118,7 +118,7 @@ class SupabaseDB:
     def get_candle_data(self, symbol, exchange, timeframe, hours_back=24):
         """Retrieve candle data from Supabase"""
         try:
-            cutoff_time = datetime.now(pytz.UTC) - timedelta(hours=hours_back)
+                        cutoff_time = datetime.now(pytz.UTC) - timedelta(hours=hours_back)
             
             result = self.client.table('candle_data')\
                 .select('*')\
@@ -559,7 +559,7 @@ def process_candle_data(data, interval):
     })
     
     ist = pytz.timezone('Asia/Kolkata')
-    df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
+    df['datetime'] = pd.to_datetime(df['timestamp', unit='s']).dt.tz_localize('UTC').dt.tz_convert(ist)
     
     return df
 
@@ -670,7 +670,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True, pivot_settin
         row=2, col=1
     )
     
-    fig.update_layout(
+        fig.update_layout(
         title=title,
         template='plotly_dark',
         xaxis_rangeslider_visible=False,
@@ -758,7 +758,7 @@ def display_metrics(ltp_data, df, db, symbol="NIFTY50"):
             
             with col1:
                 color = "price-up" if change >= 0 else "price-down"
-                                st.markdown(f"""
+                st.markdown(f"""
                 <div class="metric-container">
                     <h4>Current Price</h4>
                     <h2 class="{color}">₹{current_price:,.2f}</h2>
@@ -994,7 +994,7 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
                 line=dict(color='#00ff88', width=2)
             ))
             
-            fig_price.update_layout(
+                        fig_price.update_layout(
                 title="30-Day Price Trend",
                 template='plotly_dark',
                 height=300,
