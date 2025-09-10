@@ -55,3 +55,13 @@ vaderSentiment>=3.3.2
 streamlit-autorefresh>=0.0.1
 python-dotenv
 schedule
+streamlit
+streamlit-autorefresh
+requests
+pandas
+plotly
+numpy
+scipy
+pytz
+supabase
+aiohttp
