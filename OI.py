@@ -136,7 +136,7 @@ class SupabaseDB:
         else:
             return pd.DataFrame()
             
-    except Exception as e:
+      except Exception as e:
         st.error(f"Error retrieving candle data: {str(e)}")
         return pd.DataFrame()
     
