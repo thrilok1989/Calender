@@ -116,29 +116,29 @@ class SupabaseDB:
                 st.error(f"Error saving candle data: {str(e)}")
     
     def get_candle_data(self, symbol, exchange, timeframe, hours_back=24):
-        """Retrieve candle data from Supabase"""
-        try:
-                        cutoff_time = datetime.now(pytz.UTC) - timedelta(hours=hours_back)
-            
-            result = self.client.table('candle_data')\
-                .select('*')\
-                .eq('symbol', symbol)\
-                .eq('exchange', exchange)\
-                .eq('timeframe', timeframe)\
-                .gte('datetime', cutoff_time.isoformat())\
-                .order('timestamp', desc=False)\
-                .execute()
-            
-            if result.data:
-                df = pd.DataFrame(result.data)
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                return df
-            else:
-                return pd.DataFrame()
-                
-        except Exception as e:
-            st.error(f"Error retrieving candle data: {str(e)}")
+    """Retrieve candle data from Supabase"""
+    try:
+        cutoff_time = datetime.now(pytz.UTC) - timedelta(hours=hours_back)
+        
+        result = self.client.table('candle_data')\
+            .select('*')\
+            .eq('symbol', symbol)\
+            .eq('exchange', exchange)\
+            .eq('timeframe', timeframe)\
+            .gte('datetime', cutoff_time.isoformat())\
+            .order('timestamp', desc=False)\
+            .execute()
+        
+        if result.data:
+            df = pd.DataFrame(result.data)
+            df['datetime'] = pd.to_datetime(df['datetime'])
+            return df
+        else:
             return pd.DataFrame()
+            
+    except Exception as e:
+        st.error(f"Error retrieving candle data: {str(e)}")
+        return pd.DataFrame()
     
     def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, pivot_settings):
         """Save user preferences"""
