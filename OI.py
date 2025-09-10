@@ -116,26 +116,26 @@ class SupabaseDB:
                 st.error(f"Error saving candle data: {str(e)}")
     
     def get_candle_data(self, symbol, exchange, timeframe, hours_back=24):
-       """Retrieve candle data from Supabase"""
-       try:
-        cutoff_time = datetime.now(pytz.UTC) - timedelta(hours=hours_back)
-        
-        result = self.client.table('candle_data')\
-            .select('*')\
-            .eq('symbol', symbol)\
-            .eq('exchange', exchange)\
-            .eq('timeframe', timeframe)\
-            .gte('datetime', cutoff_time.isoformat())\
-            .order('timestamp', desc=False)\
-            .execute()
-        
-        if result.data:
-            df = pd.DataFrame(result.data)
-            df['datetime'] = pd.to_datetime(df['datetime'])
-            return df
-        else:
-            return pd.DataFrame()
+        """Retrieve candle data from Supabase"""
+        try:
+            cutoff_time = datetime.now(pytz.UTC) - timedelta(hours=hours_back)
             
+            result = self.client.table('candle_data')\
+                .select('*')\
+                .eq('symbol', symbol)\
+                .eq('exchange', exchange)\
+                .eq('timeframe', timeframe)\
+                .gte('datetime', cutoff_time.isoformat())\
+                .order('timestamp', desc=False)\
+                .execute()
+            
+            if result.data:
+                df = pd.DataFrame(result.data)
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                return df
+            else:
+                return pd.DataFrame()
+                
         except Exception as e:
             st.error(f"Error retrieving candle data: {str(e)}")
             return pd.DataFrame()
@@ -559,7 +559,7 @@ def process_candle_data(data, interval):
     })
     
     ist = pytz.timezone('Asia/Kolkata')
-    df['datetime'] = pd.to_datetime(df['timestamp', unit='s']).dt.tz_localize('UTC').dt.tz_convert(ist)
+    df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
     
     return df
 
@@ -670,7 +670,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True, pivot_settin
         row=2, col=1
     )
     
-        fig.update_layout(
+    fig.update_layout(
         title=title,
         template='plotly_dark',
         xaxis_rangeslider_visible=False,
@@ -994,7 +994,7 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
                 line=dict(color='#00ff88', width=2)
             ))
             
-                        fig_price.update_layout(
+            fig_price.update_layout(
                 title="30-Day Price Trend",
                 template='plotly_dark',
                 height=300,
@@ -1037,253 +1037,3 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
         with col4:
             max_loss = analytics_df['price_change_pct'].min()
             st.metric("Max Daily Loss", f"{max_loss:.2f}%")
-
-def main():
-    st.title("📈 Nifty Trading & Options Analyzer")
-    
-    # Initialize Supabase
-    try:
-        if not supabase_url or not supabase_key:
-            st.error("Please configure your Supabase credentials in Streamlit secrets")
-            st.info("""
-            Add the following to your Streamlit secrets:
-            ```
-            [supabase]
-            url = "your_supabase_url"
-            anon_key = "your_supabase_anon_key"
-            ```
-            """)
-            return
-        
-        db = SupabaseDB(supabase_url, supabase_key)
-        db.create_tables()
-    except Exception as e:
-        st.error(f"Database connection error: {str(e)}")
-        return
-    
-    # Initialize API credentials
-    try:
-        if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
-            st.error("Please configure your Dhan API credentials in Streamlit secrets")
-            st.info("""
-            Add the following to your Streamlit secrets:
-            ```
-            DHAN_CLIENT_ID = "your_client_id"
-            DHAN_ACCESS_TOKEN = "your_access_token"
-            ```
-            """)
-            return
-        
-        access_token, client_id, issues = validate_credentials(DHAN_ACCESS_TOKEN, DHAN_CLIENT_ID)
-        
-        if issues:
-            st.error("Issues found with API credentials:")
-            for issue in issues:
-                st.error(f"• {issue}")
-            st.info("The app will try to use the cleaned values automatically.")
-        
-        st.sidebar.success("API credentials processed")
-        
-    except Exception as e:
-        st.error(f"Credential validation error: {str(e)}")
-        return
-    
-    # Get user ID and preferences
-    user_id = get_user_id()
-    user_prefs = db.get_user_preferences(user_id)
-    
-    # Sidebar for configuration
-    st.sidebar.header("Configuration")
-    
-    # Timeframe selection
-    timeframes = {
-        "1 min": "1",
-        "3 min": "3", 
-        "5 min": "5",
-        "10 min": "10",
-        "15 min": "15"
-    }
-    
-    default_timeframe = next((k for k, v in timeframes.items() if v == user_prefs['timeframe']), "5 min")
-    selected_timeframe = st.sidebar.selectbox(
-        "Select Timeframe",
-        list(timeframes.keys()),
-        index=list(timeframes.keys()).index(default_timeframe)
-    )
-    
-    interval = timeframes[selected_timeframe]
-    
-    # Pivot indicator controls
-    st.sidebar.header("📊 Pivot Indicator Settings")
-    
-    show_pivots = st.sidebar.checkbox("Show Pivot Levels", value=True, help="Display Higher Timeframe Support/Resistance levels")
-    
-    if show_pivots:
-        st.sidebar.subheader("Toggle Individual Pivot Levels")
-        
-        if 'pivot_settings' not in user_prefs:
-            user_prefs['pivot_settings'] = {
-                'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
-            }
-        
-        show_3m = st.sidebar.checkbox("3 Minute Pivots", value=user_prefs['pivot_settings'].get('show_3m', True), help="🟢 Green lines")
-        show_5m = st.sidebar.checkbox("5 Minute Pivots", value=user_prefs['pivot_settings'].get('show_5m', True), help="🟠 Orange lines")
-        show_10m = st.sidebar.checkbox("10 Minute Pivots", value=user_prefs['pivot_settings'].get('show_10m', True), help="🟣 Pink lines")
-        show_15m = st.sidebar.checkbox("15 Minute Pivots", value=user_prefs['pivot_settings'].get('show_15m', True), help="🔵 Blue lines")
-        
-        pivot_settings = {
-            'show_3m': show_3m,
-            'show_5m': show_5m,
-            'show_10m': show_10m,
-            'show_15m': show_15m
-        }
-        
-        st.sidebar.info("""
-        **Pivot Levels Legend:**
-        🟢 3M (Green) - 3-minute timeframe
-        🟠 5M (Orange) - 5-minute timeframe  
-        🟣 10M (Pink) - 10-minute timeframe
-        🔵 15M (Blue) - 15-minute timeframe
-        
-        S = Support, R = Resistance
-        """)
-    else:
-        pivot_settings = {
-            'show_3m': False, 'show_5m': False, 'show_10m': False, 'show_15m': False
-        }
-    
-    # Auto-refresh settings
-    auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=user_prefs['auto_refresh'])
-    
-    # Days back for data
-    days_back = st.sidebar.slider("Days of Historical Data", 1, 5, user_prefs['days_back'])
-    
-    # Data source preference
-    use_cache = st.sidebar.checkbox("Use Cached Data", value=True, help="Use database cache for faster loading")
-    
-    # Save preferences
-    if st.sidebar.button("💾 Save Preferences"):
-        db.save_user_preferences(user_id, interval, auto_refresh, days_back, pivot_settings)
-        st.sidebar.success("Preferences saved!")
-    
-    # Manual refresh button
-    if st.sidebar.button("🔄 Refresh Now"):
-        st.rerun()
-    
-    # Show analytics dashboard
-    show_analytics = st.sidebar.checkbox("Show Analytics Dashboard", value=False)
-    
-    # Initialize API
-    api = DhanAPI(access_token, client_id)
-    
-    # Main layout - Trading chart and Options analysis side by side
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.header("📈 Trading Chart")
-        
-        # Data fetching strategy
-        df = pd.DataFrame()
-        
-        if use_cache:
-            df = db.get_candle_data("NIFTY50", "IDX_I", interval, hours_back=days_back*24)
-            
-            if df.empty or (datetime.now(pytz.UTC) - df['datetime'].max().tz_convert(pytz.UTC)).total_seconds() > 300:
-                with st.spinner("Fetching latest data from API..."):
-                    data = api.get_intraday_data(
-                        security_id="13",
-                        exchange_segment="IDX_I", 
-                        instrument="INDEX",
-                        interval=interval,
-                        days_back=days_back
-                    )
-                    
-                    if data:
-                        df = process_candle_data(data, interval)
-                        db.save_candle_data("NIFTY50", "IDX_I", interval, df)
-        else:
-            with st.spinner("Fetching fresh data from API..."):
-                data = api.get_intraday_data(
-                    security_id="13",
-                    exchange_segment="IDX_I", 
-                    instrument="INDEX",
-                    interval=interval,
-                    days_back=days_back
-                )
-                
-                if data:
-                    df = process_candle_data(data, interval)
-                    db.save_candle_data("NIFTY50", "IDX_I", interval, df)
-        
-        # Get LTP data
-        ltp_data = api.get_ltp_data("13", "IDX_I")
-        
-        # Display metrics
-        if not df.empty:
-            display_metrics(ltp_data, df, db)
-        
-        # Create and display chart
-        if not df.empty:
-            fig = create_candlestick_chart(
-                df, 
-                f"Nifty 50 - {selected_timeframe} Chart {'with Pivot Levels' if show_pivots else ''}", 
-                interval,
-                show_pivots=show_pivots,
-                pivot_settings=pivot_settings
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Show data info
-            col1_info, col2_info, col3_info, col4_info = st.columns(4)
-            with col1_info:
-                st.info(f"📊 Data Points: {len(df)}")
-            with col2_info:
-                latest_time = df['datetime'].max().strftime("%Y-%m-%d %H:%M:%S IST")
-                st.info(f"🕐 Latest: {latest_time}")
-            with col3_info:
-                data_source = "Database Cache" if use_cache else "Live API"
-                st.info(f"📡 Source: {data_source}")
-            with col4_info:
-                pivot_status = "✅ Enabled" if show_pivots else "❌ Disabled"
-                st.info(f"📈 Pivots: {pivot_status}")
-            
-            if show_pivots and len(df) > 50:
-                st.markdown("""
-                **Pivot Levels Legend:**
-                - 🟢 **3M Levels**: 3-minute timeframe support/resistance
-                - 🟠 **5M Levels**: 5-minute timeframe swing points  
-                - 🟣 **10M Levels**: 10-minute support/resistance zones
-                - 🔵 **15M Levels**: 15-minute major support/resistance levels
-                
-                *R = Resistance (Price ceiling), S = Support (Price floor)*
-                """)
-        else:
-            st.error("No data available. Please check your API credentials and try again.")
-    
-    with col2:
-        st.header("📊 Options Analysis")
-        
-        # Options chain analysis
-        underlying_price = analyze_option_chain()
-        
-        if underlying_price:
-            st.info(f"**NIFTY SPOT:** {underlying_price:.2f}")
-    
-    # Analytics dashboard below
-    if show_analytics:
-        st.markdown("---")
-        display_analytics_dashboard(db)
-    
-    # Show current time
-    ist = pytz.timezone('Asia/Kolkata')
-    current_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
-    st.sidebar.info(f"Last Updated: {current_time}")
-    
-    # Auto-refresh logic
-    if auto_refresh:
-        st.sidebar.info("Auto-refresh enabled - page will refresh every 2 minutes")
-        time.sleep(120)
-        st.rerun()
-
-if __name__ == "__main__":
-    main()
