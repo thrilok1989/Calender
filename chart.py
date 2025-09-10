@@ -824,4 +824,152 @@ def main():
             🟢 4H (Green)
             🔵 12H (Blue) 
             🟣 Daily (Purple)
-            🟠
+            🟠 Weekly (Orange)
+            
+            S = Support, R = Resistance
+            """)
+        
+        # Auto-refresh settings
+        auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=user_prefs['auto_refresh'])
+        
+        # Days back for data
+        days_back = st.sidebar.slider("Days of Historical Data", 1, 5, user_prefs['days_back'])
+        
+        # Data source preference
+        use_cache = st.sidebar.checkbox("Use Cached Data", value=True, help="Use database cache for faster loading")
+        
+        # Save preferences
+        if st.sidebar.button("💾 Save Preferences"):
+            db.save_user_preferences(user_id, interval, auto_refresh, days_back)
+            st.sidebar.success("Preferences saved!")
+        
+        # Manual refresh button
+        if st.sidebar.button("🔄 Refresh Now"):
+            st.experimental_rerun()
+        
+        # Show analytics dashboard
+        show_analytics = st.sidebar.checkbox("Show Analytics Dashboard", value=False)
+        
+        # Initialize API
+        api = DhanAPI(access_token, client_id)
+        
+        # Create tabs
+        tab1, tab2 = st.tabs(["Live Chart", "Analytics"])
+        
+        with tab1:
+            # Create placeholder for chart
+            chart_container = st.container()
+            metrics_container = st.container()
+            
+            # Data fetching strategy
+            df = pd.DataFrame()
+            
+            if use_cache:
+                # Try to get recent data from database first
+                df = db.get_candle_data("NIFTY50", "IDX_I", interval, hours_back=days_back*24)
+                
+                # If no recent data or data is old, fetch from API
+                if df.empty or (datetime.now(pytz.UTC) - df['datetime'].max().tz_convert(pytz.UTC)).total_seconds() > 300:
+                    with st.spinner("Fetching latest data from API..."):
+                        data = api.get_intraday_data(
+                            security_id="13",
+                            exchange_segment="IDX_I", 
+                            instrument="INDEX",
+                            interval=interval,
+                            days_back=days_back
+                        )
+                        
+                        if data:
+                            df = process_candle_data(data, interval)
+                            # Save to database
+                            db.save_candle_data("NIFTY50", "IDX_I", interval, df)
+            else:
+                # Always fetch fresh data from API
+                with st.spinner("Fetching fresh data from API..."):
+                    data = api.get_intraday_data(
+                        security_id="13",
+                        exchange_segment="IDX_I", 
+                        instrument="INDEX",
+                        interval=interval,
+                        days_back=days_back
+                    )
+                    
+                    if data:
+                        df = process_candle_data(data, interval)
+                        # Save to database
+                        db.save_candle_data("NIFTY50", "IDX_I", interval, df)
+            
+            # Get LTP data
+            ltp_data = api.get_ltp_data("13", "IDX_I")
+            
+            # Display metrics
+            with metrics_container:
+                if not df.empty:
+                    display_metrics(ltp_data, df, db)
+            
+            # Create and display chart
+            with chart_container:
+                if not df.empty:
+                    fig = create_candlestick_chart(
+                        df, 
+                        f"Nifty 50 - {selected_timeframe} Chart {'with Pivot Levels' if show_pivots else ''}", 
+                        interval,
+                        show_pivots=show_pivots
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Show data info
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.info(f"📊 Data Points: {len(df)}")
+                    with col2:
+                        latest_time = df['datetime'].max().strftime("%Y-%m-%d %H:%M:%S IST")
+                        st.info(f"🕐 Latest: {latest_time}")
+                    with col3:
+                        data_source = "Database Cache" if use_cache else "Live API"
+                        st.info(f"📡 Source: {data_source}")
+                    with col4:
+                        pivot_status = "✅ Enabled" if show_pivots else "❌ Disabled"
+                        st.info(f"📈 Pivots: {pivot_status}")
+                    
+                    # Show pivot levels legend
+                    if show_pivots and len(df) > 50:
+                        st.markdown("""
+                        **Pivot Levels Legend:**
+                        - 🟢 **4H Levels**: Short-term intraday support/resistance
+                        - 🔵 **12H Levels**: Medium-term swing points  
+                        - 🟣 **Daily Levels**: Key daily support/resistance zones
+                        - 🟠 **Weekly Levels**: Major weekly support/resistance levels
+                        
+                        *R = Resistance (Price ceiling), S = Support (Price floor)*
+                        """)
+                else:
+                    st.error("No data available. Please check your API credentials and try again.")
+        
+        with tab2:
+            if show_analytics:
+                display_analytics_dashboard(db)
+            else:
+                st.info("Enable 'Show Analytics Dashboard' in the sidebar to view historical analytics.")
+        
+        # Show current time
+        ist = pytz.timezone('Asia/Kolkata')
+        current_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+        st.sidebar.info(f"Last Updated: {current_time}")
+        
+        # Auto-refresh logic (simplified for stability)
+        if auto_refresh:
+            st.sidebar.info("Auto-refresh enabled - page will refresh every 2 minutes")
+            time.sleep(120)  # 2 minutes
+            st.experimental_rerun()
+    
+    except Exception as e:
+        st.error(f"Application error: {str(e)}")
+        st.info("Please check your credentials and try again.")
+        
+        # Add a button to reset the app
+        if st.button("Reset Application"):
+            st.experimental_rerun()
+
+if __name__ == "__main__":
+    main()
