@@ -136,9 +136,9 @@ class SupabaseDB:
         else:
             return pd.DataFrame()
             
-      except Exception as e:
-        st.error(f"Error retrieving candle data: {str(e)}")
-        return pd.DataFrame()
+        except Exception as e:
+            st.error(f"Error retrieving candle data: {str(e)}")
+            return pd.DataFrame()
     
     def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, pivot_settings):
         """Save user preferences"""
