@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import json
 from supabase import create_client, Client
 import hashlib
+import numpy as np
 
 # Page configuration
 st.set_page_config(
@@ -277,8 +278,47 @@ def process_candle_data(data, interval):
     
     return df
 
+# === Pivot High/Low detection ===
+def pivot_high(series, left, right):
+    return series.shift(-right).rolling(left+right+1, center=True).max() == series.shift(-right)
+
+def pivot_low(series, left, right):
+    return series.shift(-right).rolling(left+right+1, center=True).min() == series.shift(-right)
+
+# === Higher Timeframe Resampling ===
+def resample_ohlc(df, tf):
+    rule_map = {
+        "240": "240min",
+        "720": "720min",
+        "D": "1D",
+        "W": "1W"
+    }
+    rule = rule_map.get(tf, tf)
+    return df.resample(rule).agg({
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum"
+    }).dropna()
+
+# === Pivot calculation ===
+def get_pivots(df, tf="D", length=5):
+    df_htf = resample_ohlc(df, tf)
+    
+    highs = df_htf['high']
+    lows = df_htf['low']
+    
+    ph_mask = pivot_high(highs, length, length)
+    pl_mask = pivot_low(lows, length, length)
+    
+    pivot_highs = highs[ph_mask].dropna()
+    pivot_lows = lows[pl_mask].dropna()
+    
+    return pivot_highs, pivot_lows
+
 def create_candlestick_chart(df, title, interval):
-    """Create TradingView-style candlestick chart"""
+    """Create TradingView-style candlestick chart with pivot indicators"""
     if df.empty:
         return go.Figure()
     
@@ -308,6 +348,53 @@ def create_candlestick_chart(df, title, interval):
         ),
         row=1, col=1
     )
+    
+    # Add pivot indicators if we have enough data
+    if len(df) > 50:
+        # Set datetime as index for pivot calculations
+        df_indexed = df.set_index('datetime')
+        
+        # Calculate pivots for different timeframes
+        configs = [
+            ("240", 4, "green"),
+            ("720", 5, "blue"),
+            ("D",   5, "purple"),
+        ]
+        
+        for tf, length, color in configs:
+            try:
+                ph, pl = get_pivots(df_indexed, tf, length)
+                
+                # Add pivot highs
+                for t, v in ph.items():
+                    fig.add_hline(
+                        y=v, 
+                        line_dash="dash", 
+                        line_color=color, 
+                        opacity=0.6,
+                        row=1, col=1,
+                        annotation_text=f"{tf} H {v:.1f}",
+                        annotation_position="right",
+                        annotation_font_size=10,
+                        annotation_font_color=color
+                    )
+                
+                # Add pivot lows
+                for t, v in pl.items():
+                    fig.add_hline(
+                        y=v, 
+                        line_dash="dash", 
+                        line_color=color, 
+                        opacity=0.6,
+                        row=1, col=1,
+                        annotation_text=f"{tf} L {v:.1f}",
+                        annotation_position="right",
+                        annotation_font_size=10,
+                        annotation_font_color=color
+                    )
+            except Exception as e:
+                # Skip if there's an error with this timeframe
+                continue
     
     # Volume bars
     colors = ['#00ff88' if close >= open else '#ff4444' 
@@ -646,6 +733,15 @@ def main():
         
         # Data source preference
         use_cache = st.sidebar.checkbox("Use Cached Data", value=True, help="Use database cache for faster loading")
+        
+        # Pivot indicator settings
+        st.sidebar.subheader("Pivot Indicator Settings")
+        show_pivots = st.sidebar.checkbox("Show Pivot Levels", value=True)
+        pivot_tf = st.sidebar.selectbox(
+            "Pivot Timeframe",
+            ["240min (4H)", "720min (12H)", "Daily", "All"],
+            index=3
+        )
         
         # Save preferences
         if st.sidebar.button("💾 Save Preferences"):
