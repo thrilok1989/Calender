@@ -117,7 +117,7 @@ class SupabaseDB:
             st.error(f"Error retrieving candle data: {str(e)}")
             return pd.DataFrame()
     
-    def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back):
+    def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, pivot_settings):
         """Save user preferences"""
         try:
             data = {
@@ -125,6 +125,7 @@ class SupabaseDB:
                 'timeframe': timeframe,
                 'auto_refresh': auto_refresh,
                 'days_back': days_back,
+                'pivot_settings': json.dumps(pivot_settings),
                 'updated_at': datetime.now(pytz.UTC).isoformat()
             }
             
@@ -146,17 +147,35 @@ class SupabaseDB:
                 .execute()
             
             if result.data:
-                return result.data[0]
+                prefs = result.data[0]
+                # Handle pivot settings
+                if 'pivot_settings' in prefs and prefs['pivot_settings']:
+                    prefs['pivot_settings'] = json.loads(prefs['pivot_settings'])
+                else:
+                    prefs['pivot_settings'] = {
+                        'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
+                    }
+                return prefs
             else:
                 return {
                     'timeframe': '5',
                     'auto_refresh': True,
-                    'days_back': 1
+                    'days_back': 1,
+                    'pivot_settings': {
+                        'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
+                    }
                 }
                 
         except Exception as e:
             st.error(f"Error retrieving preferences: {str(e)}")
-            return {'timeframe': '5', 'auto_refresh': True, 'days_back': 1}
+            return {
+                'timeframe': '5', 
+                'auto_refresh': True, 
+                'days_back': 1,
+                'pivot_settings': {
+                    'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
+                }
+            }
     
     def save_market_analytics(self, symbol, analytics_data):
         """Save daily market analytics"""
@@ -269,7 +288,7 @@ class DhanAPI:
             st.error(f"Error fetching LTP: {str(e)}")
             return None
 
-# === PIVOT INDICATOR CLASS - FIXED ===
+# === PIVOT INDICATOR CLASS - UPDATED ===
 class PivotIndicator:
     """Higher Timeframe Pivot Support/Resistance Indicator"""
     
@@ -290,9 +309,9 @@ class PivotIndicator:
         """Resample OHLC data to higher timeframes"""
         rule_map = {
             "3": "3min",
+            "5": "5min",
+            "10": "10min",
             "15": "15min",
-            "240": "4H",
-            "720": "12H", 
             "D": "1D",
             "W": "1W"
         }
@@ -339,18 +358,21 @@ class PivotIndicator:
         return pivot_highs, pivot_lows
     
     @staticmethod
-    def get_all_pivots(df):
+    def get_all_pivots(df, pivot_settings):
         """Get pivots for all configured timeframes"""
         configs = [
-            ("3", 3, "#00ff88", "3M"),    # 3 Minute - Green
-            ("15", 4, "#4444ff", "15M"),  # 15 Minute - Blue  
-            ("240", 5, "#ff44ff", "4H"),  # 4 Hour - Purple
-            ("720", 5, "#ff8800", "12H"), # 12 Hour - Orange
+            ("3", 3, "#00ff88", "3M", pivot_settings.get('show_3m', True)),    # 3 Minute - Green
+            ("5", 4, "#ff9900", "5M", pivot_settings.get('show_5m', True)),    # 5 Minute - Orange
+            ("10", 4, "#ff44ff", "10M", pivot_settings.get('show_10m', True)), # 10 Minute - Pink
+            ("15", 4, "#4444ff", "15M", pivot_settings.get('show_15m', True)), # 15 Minute - Blue
         ]
         
         all_pivots = []
         
-        for tf, length, color, label in configs:
+        for tf, length, color, label, enabled in configs:
+            if not enabled:
+                continue
+                
             try:
                 ph, pl = PivotIndicator.get_pivots(df, tf, length)
                 
@@ -400,7 +422,7 @@ def process_candle_data(data, interval):
     
     return df
 
-def create_candlestick_chart(df, title, interval, show_pivots=True):
+def create_candlestick_chart(df, title, interval, show_pivots=True, pivot_settings=None):
     """Create TradingView-style candlestick chart with optional pivot levels"""
     if df.empty:
         return go.Figure()
@@ -435,7 +457,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True):
     # === ADD PIVOT LEVELS IF ENABLED ===
     if show_pivots and len(df) > 50:  # Only show pivots if we have enough data
         try:
-            pivots = PivotIndicator.get_all_pivots(df)
+            pivots = PivotIndicator.get_all_pivots(df, pivot_settings or {})
             
             # Group pivots by timeframe for better visualization
             timeframes = {}
@@ -831,20 +853,48 @@ def main():
     
     interval = timeframes[selected_timeframe]
     
-    # === PIVOT INDICATOR CONTROLS ===
-    st.sidebar.header("📊 Pivot Indicator")
+    # === PIVOT INDICATOR CONTROLS - UPDATED ===
+    st.sidebar.header("📊 Pivot Indicator Settings")
+    
+    # Master toggle for all pivot levels
     show_pivots = st.sidebar.checkbox("Show Pivot Levels", value=True, help="Display Higher Timeframe Support/Resistance levels")
     
+    # Individual pivot level toggles
     if show_pivots:
+        st.sidebar.subheader("Toggle Individual Pivot Levels")
+        
+        # Initialize pivot settings if not present
+        if 'pivot_settings' not in user_prefs:
+            user_prefs['pivot_settings'] = {
+                'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
+            }
+        
+        # Create toggles for each pivot level
+        show_3m = st.sidebar.checkbox("3 Minute Pivots", value=user_prefs['pivot_settings'].get('show_3m', True), help="🟢 Green lines")
+        show_5m = st.sidebar.checkbox("5 Minute Pivots", value=user_prefs['pivot_settings'].get('show_5m', True), help="🟠 Orange lines")
+        show_10m = st.sidebar.checkbox("10 Minute Pivots", value=user_prefs['pivot_settings'].get('show_10m', True), help="🟣 Pink lines")
+        show_15m = st.sidebar.checkbox("15 Minute Pivots", value=user_prefs['pivot_settings'].get('show_15m', True), help="🔵 Blue lines")
+        
+        pivot_settings = {
+            'show_3m': show_3m,
+            'show_5m': show_5m,
+            'show_10m': show_10m,
+            'show_15m': show_15m
+        }
+        
         st.sidebar.info("""
-        **Pivot Levels:**
-        🟢 3M (Green)
-        🔵 15M (Blue) 
-        🟣 4H (Purple)
-        🟠 12H (Orange)
+        **Pivot Levels Legend:**
+        🟢 3M (Green) - 3-minute timeframe
+        🟠 5M (Orange) - 5-minute timeframe  
+        🟣 10M (Pink) - 10-minute timeframe
+        🔵 15M (Blue) - 15-minute timeframe
         
         S = Support, R = Resistance
         """)
+    else:
+        pivot_settings = {
+            'show_3m': False, 'show_5m': False, 'show_10m': False, 'show_15m': False
+        }
     
     # Auto-refresh settings
     auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=user_prefs['auto_refresh'])
@@ -857,7 +907,7 @@ def main():
     
     # Save preferences
     if st.sidebar.button("💾 Save Preferences"):
-        db.save_user_preferences(user_id, interval, auto_refresh, days_back)
+        db.save_user_preferences(user_id, interval, auto_refresh, days_back, pivot_settings)
         st.sidebar.success("Preferences saved!")
     
     # Manual refresh button
@@ -931,7 +981,8 @@ def main():
                     df, 
                     f"Nifty 50 - {selected_timeframe} Chart {'with Pivot Levels' if show_pivots else ''}", 
                     interval,
-                    show_pivots=show_pivots
+                    show_pivots=show_pivots,
+                    pivot_settings=pivot_settings
                 )
                 st.plotly_chart(fig, use_container_width=True)
                 
@@ -954,9 +1005,9 @@ def main():
                     st.markdown("""
                     **Pivot Levels Legend:**
                     - 🟢 **3M Levels**: 3-minute timeframe support/resistance
-                    - 🔵 **15M Levels**: 15-minute timeframe swing points  
-                    - 🟣 **4H Levels**: 4-hour support/resistance zones
-                    - 🟠 **12H Levels**: 12-hour major support/resistance levels
+                    - 🟠 **5M Levels**: 5-minute timeframe swing points  
+                    - 🟣 **10M Levels**: 10-minute support/resistance zones
+                    - 🔵 **15M Levels**: 15-minute major support/resistance levels
                     
                     *R = Resistance (Price ceiling), S = Support (Price floor)*
                     """)
