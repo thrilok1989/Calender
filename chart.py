@@ -396,14 +396,14 @@ def create_candlestick_chart(df, title, interval, show_pivots=True):
     if df.empty:
         return go.Figure()
     
-    # Create subplots with proper row heights
+    # Create subplots with proper row heights - FIXED
     fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxis=True,
+        rows=2, 
+        cols=1,
+        shared_xaxes=True,
         vertical_spacing=0.05,
         row_heights=[0.7, 0.3],  # 70% for price, 30% for volume
-        specs=[[{"secondary_y": False}],
-               [{"secondary_y": False}]]
+        specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
     )
     
     # Candlestick chart
