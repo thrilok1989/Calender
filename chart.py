@@ -272,13 +272,13 @@ def create_candlestick_chart(df, title, interval):
     if df.empty:
         return go.Figure()
     
-    # Create subplots with secondary y-axis for volume
+    # Create subplots - simplified to avoid parameter conflicts
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxis=True,
         vertical_spacing=0.1,
-        subplot_titles=(f'Nifty 50 - {interval} min', 'Volume'),
-        row_heights=[0.7, 0.3]  # Fixed: was row_width, now row_heights
+        specs=[[{"secondary_y": False}],
+               [{"secondary_y": False}]]
     )
     
     # Candlestick chart
