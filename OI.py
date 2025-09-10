@@ -15,8 +15,6 @@ import numpy as np
 import math
 from scipy.stats import norm
 from pytz import timezone
-import asyncio
-import aiohttp
 
 # Page configuration
 st.set_page_config(
@@ -83,8 +81,8 @@ NIFTY_UNDERLYING_SCRIP = 13
 NIFTY_UNDERLYING_SEG = "IDX_I"
 
 # Telegram Functions
-async def send_telegram_message(message):
-    """Send message to Telegram"""
+def send_telegram_message_sync(message):
+    """Send message to Telegram synchronously"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     
@@ -96,21 +94,13 @@ async def send_telegram_message(message):
     }
     
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as response:
-                return await response.json()
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Telegram error: {response.status_code}")
     except Exception as e:
         st.error(f"Telegram notification error: {e}")
-
-def send_telegram_sync(message):
-    """Synchronous wrapper for Telegram message"""
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(send_telegram_message(message))
-        loop.close()
-    except Exception as e:
-        st.error(f"Telegram sync error: {e}")
 
 class SupabaseDB:
     def __init__(self, url, key):
@@ -503,7 +493,7 @@ class PivotIndicator:
 
 def check_trading_signals(df, pivot_settings, option_data, current_price):
     """Check for trading signal conditions and send Telegram notifications"""
-    if df.empty or not option_data or not current_price:
+    if df.empty or option_data is None or len(option_data) == 0 or not current_price:
         return
     
     # Get pivot levels
@@ -569,7 +559,7 @@ Please verify all conditions manually before trading.
                 
                 # Send notification
                 try:
-                    send_telegram_sync(message)
+                    send_telegram_message_sync(message)
                     st.success("Trading signal notification sent!")
                 except Exception as e:
                     st.error(f"Failed to send notification: {e}")
