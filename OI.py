@@ -15,6 +15,8 @@ import numpy as np
 import math
 from scipy.stats import norm
 from pytz import timezone
+import asyncio
+import aiohttp
 
 # Page configuration
 st.set_page_config(
@@ -64,14 +66,51 @@ try:
         
     supabase_url = st.secrets.get("supabase", {}).get("url", "")
     supabase_key = st.secrets.get("supabase", {}).get("anon_key", "")
+    
+    # Telegram Configuration
+    TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+    
 except Exception:
     DHAN_CLIENT_ID = ""
     DHAN_ACCESS_TOKEN = ""
     supabase_url = ""
     supabase_key = ""
+    TELEGRAM_BOT_TOKEN = ""
+    TELEGRAM_CHAT_ID = ""
 
 NIFTY_UNDERLYING_SCRIP = 13
 NIFTY_UNDERLYING_SEG = "IDX_I"
+
+# Telegram Functions
+async def send_telegram_message(message):
+    """Send message to Telegram"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as response:
+                return await response.json()
+    except Exception as e:
+        st.error(f"Telegram notification error: {e}")
+
+def send_telegram_sync(message):
+    """Synchronous wrapper for Telegram message"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(send_telegram_message(message))
+        loop.close()
+    except Exception as e:
+        st.error(f"Telegram sync error: {e}")
 
 class SupabaseDB:
     def __init__(self, url, key):
@@ -462,6 +501,79 @@ class PivotIndicator:
         
         return all_pivots
 
+def check_trading_signals(df, pivot_settings, option_data, current_price):
+    """Check for trading signal conditions and send Telegram notifications"""
+    if df.empty or not option_data or not current_price:
+        return
+    
+    # Get pivot levels
+    pivots = PivotIndicator.get_all_pivots(df, pivot_settings)
+    
+    # Check if price is within 5 points of any pivot level
+    near_pivot = False
+    pivot_level = None
+    
+    for pivot in pivots:
+        if pivot['timeframe'] in ['3M', '10M', '15M']:
+            if abs(current_price - pivot['value']) <= 5:
+                near_pivot = True
+                pivot_level = pivot
+                break
+    
+    if near_pivot and len(option_data) > 0:
+        # Check option chain bias conditions for ATM strike
+        atm_data = option_data[option_data['Zone'] == 'ATM']
+        
+        if not atm_data.empty:
+            row = atm_data.iloc[0]
+            
+            # Check all bullish conditions
+            conditions = {
+                'Support Level': row.get('Level') == 'Support',
+                'ChgOI Bias': row.get('ChgOI_Bias') == 'Bullish',
+                'Volume Bias': row.get('Volume_Bias') == 'Bullish',
+                'AskQty Bias': row.get('AskQty_Bias') == 'Bullish',
+                'BidQty Bias': row.get('BidQty_Bias') == 'Bullish',
+                'Pressure Bias': row.get('PressureBias') == 'Bullish'
+            }
+            
+            if all(conditions.values()):
+                # Calculate stop loss and target (example values)
+                atm_strike = row['Strike']
+                stop_loss_percent = 20
+                target_percent = 30  # Example target
+                
+                # Format conditions for message
+                conditions_text = "\n".join([f"✅ {k}" for k, v in conditions.items() if v])
+                
+                message = f"""
+🚨 <b>NIFTY CALL SIGNAL ALERT</b> 🚨
+
+📍 <b>Spot Price:</b> ₹{current_price:.2f}
+📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
+🎯 <b>ATM Strike:</b> {atm_strike}
+
+<b>✅ ALL CONDITIONS MET:</b>
+{conditions_text}
+
+📋 <b>SUGGESTED REVIEW:</b>
+• Strike: {atm_strike} CE
+• Stop Loss: {stop_loss_percent}%
+• Manual verification required
+
+⚠️ <b>DISCLAIMER:</b> This is for notification only. 
+Please verify all conditions manually before trading.
+
+🕐 Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+                """
+                
+                # Send notification
+                try:
+                    send_telegram_sync(message)
+                    st.success("Trading signal notification sent!")
+                except Exception as e:
+                    st.error(f"Failed to send notification: {e}")
+
 def calculate_greeks(option_type, S, K, T, r, sigma):
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -839,27 +951,28 @@ def analyze_option_chain():
     now = datetime.now(timezone("Asia/Kolkata"))
     current_day = now.weekday()
     current_time = now.time()
-    market_start = datetime.strptime("00:00", "%H:%M").time()
+    market_start = datetime.strptime("09:00", "%H:%M").time()
     market_end = datetime.strptime("15:40", "%H:%M").time()
     
-    if current_day >= 5 or not (market_start <= current_time <= market_end):
-        st.warning("Market Closed (Mon-Fri 9:00-15:40)")
-        return None
+    # Remove or comment this section to allow options data outside market hours
+    # if current_day >= 5 or not (market_start <= current_time <= market_end):
+    #     st.warning("Market Closed (Mon-Fri 9:00-15:40)")
+    #     return None, None
     
     expiry_data = get_dhan_expiry_list(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG)
     if not expiry_data or 'data' not in expiry_data:
         st.error("Failed to get expiry list from Dhan API")
-        return None
+        return None, None
     expiry_dates = expiry_data['data']
     if not expiry_dates:
         st.error("No expiry dates available")
-        return None
+        return None, None
     expiry = expiry_dates[0]
 
     option_chain_data = get_dhan_option_chain(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG, expiry)
     if not option_chain_data or 'data' not in option_chain_data:
         st.error("Failed to get option chain from Dhan API")
-        return None
+        return None, None
     data = option_chain_data['data']
     underlying = data['last_price']
 
@@ -973,7 +1086,7 @@ def analyze_option_chain():
     styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(color_pressure, subset=['BidAskPressure'])
     st.dataframe(styled_df, use_container_width=True)
 
-    return underlying
+    return underlying, df_summary
 
 def display_analytics_dashboard(db, symbol="NIFTY50"):
     """Display analytics dashboard"""
@@ -1070,6 +1183,8 @@ def main():
             ```
             DHAN_CLIENT_ID = "your_client_id"
             DHAN_ACCESS_TOKEN = "your_access_token"
+            TELEGRAM_BOT_TOKEN = "your_telegram_bot_token"
+            TELEGRAM_CHAT_ID = "your_telegram_chat_id"
             ```
             """)
             return
@@ -1083,6 +1198,12 @@ def main():
             st.info("The app will try to use the cleaned values automatically.")
         
         st.sidebar.success("API credentials processed")
+        
+        # Check Telegram configuration
+        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            st.sidebar.success("Telegram notifications enabled")
+        else:
+            st.sidebar.warning("Telegram notifications disabled - configure bot token and chat ID")
         
     except Exception as e:
         st.error(f"Credential validation error: {str(e)}")
@@ -1152,6 +1273,13 @@ def main():
             'show_3m': False, 'show_5m': False, 'show_10m': False, 'show_15m': False
         }
     
+    # Trading signal settings
+    st.sidebar.header("🔔 Trading Signals")
+    enable_signals = st.sidebar.checkbox("Enable Telegram Signals", value=True, help="Send notifications when conditions are met")
+    
+    if enable_signals:
+        st.sidebar.info("Signals sent when:\n• Price within 5pts of pivot\n• All option bias bullish\n• ATM at support level")
+    
     # Auto-refresh settings
     auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=user_prefs['auto_refresh'])
     
@@ -1184,6 +1312,7 @@ def main():
         
         # Data fetching strategy
         df = pd.DataFrame()
+        current_price = None
         
         if use_cache:
             df = db.get_candle_data("NIFTY50", "IDX_I", interval, hours_back=days_back*24)
@@ -1215,8 +1344,16 @@ def main():
                     df = process_candle_data(data, interval)
                     db.save_candle_data("NIFTY50", "IDX_I", interval, df)
         
-        # Get LTP data
+        # Get LTP data and current price
         ltp_data = api.get_ltp_data("13", "IDX_I")
+        if ltp_data and 'data' in ltp_data:
+            for exchange, data in ltp_data['data'].items():
+                for security_id, price_data in data.items():
+                    current_price = price_data.get('last_price', 0)
+                    break
+        
+        if current_price is None and not df.empty:
+            current_price = df['close'].iloc[-1]
         
         # Display metrics
         if not df.empty:
@@ -1264,10 +1401,14 @@ def main():
         st.header("📊 Options Analysis")
         
         # Options chain analysis
-        underlying_price = analyze_option_chain()
+        underlying_price, df_summary = analyze_option_chain()
         
         if underlying_price:
             st.info(f"**NIFTY SPOT:** {underlying_price:.2f}")
+            
+            # Check for trading signals if enabled
+            if enable_signals and not df.empty and df_summary is not None and len(df_summary) > 0:
+                check_trading_signals(df, pivot_settings, df_summary, underlying_price)
     
     # Analytics dashboard below
     if show_analytics:
@@ -1278,12 +1419,6 @@ def main():
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
     st.sidebar.info(f"Last Updated: {current_time}")
-    
-    # Auto-refresh logic - REMOVED to prevent error
-    # if auto_refresh:
-    #     st.sidebar.info("Auto-refresh enabled - page will refresh every 2 minutes")
-    #     time.sleep(120)
-    #     st.rerun()
 
 if __name__ == "__main__":
     main()
