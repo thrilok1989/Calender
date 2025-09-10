@@ -166,7 +166,14 @@ class SupabaseDB:
             data = {
                 'symbol': symbol,
                 'date': today.isoformat(),
-                **analytics_data
+                'day_high': analytics_data['day_high'],
+                'day_low': analytics_data['day_low'],
+                'day_open': analytics_data['day_open'],
+                'day_close': analytics_data['day_close'],
+                'total_volume': analytics_data['total_volume'],
+                'avg_price': analytics_data['avg_price'],
+                'price_change': analytics_data['price_change'],
+                'price_change_pct': analytics_data['price_change_pct']
             }
             
             self.client.table('market_analytics').upsert(
@@ -262,19 +269,21 @@ class DhanAPI:
             st.error(f"Error fetching LTP: {str(e)}")
             return None
 
-# === PIVOT INDICATOR CLASS - ADDED ===
+# === PIVOT INDICATOR CLASS - FIXED ===
 class PivotIndicator:
     """Higher Timeframe Pivot Support/Resistance Indicator"""
     
     @staticmethod
     def pivot_high(series, left, right):
         """Detect pivot highs"""
-        return series.shift(-right).rolling(left+right+1, center=True).max() == series.shift(-right)
+        max_values = series.rolling(window=left+right+1, center=True).max()
+        return series == max_values
     
     @staticmethod
     def pivot_low(series, left, right):
         """Detect pivot lows"""
-        return series.shift(-right).rolling(left+right+1, center=True).min() == series.shift(-right)
+        min_values = series.rolling(window=left+right+1, center=True).min()
+        return series == min_values
     
     @staticmethod
     def resample_ohlc(df, tf):
@@ -282,8 +291,8 @@ class PivotIndicator:
         rule_map = {
             "3": "3min",
             "15": "15min",
-            "240": "240min",
-            "720": "720min", 
+            "240": "4H",
+            "720": "12H", 
             "D": "1D",
             "W": "1W"
         }
@@ -315,7 +324,7 @@ class PivotIndicator:
         """Calculate pivot highs and lows for a given timeframe"""
         df_htf = PivotIndicator.resample_ohlc(df, tf)
         
-        if df_htf.empty:
+        if df_htf.empty or len(df_htf) < length * 2 + 1:
             return pd.Series(dtype=float), pd.Series(dtype=float)
         
         highs = df_htf['high']
@@ -333,8 +342,8 @@ class PivotIndicator:
     def get_all_pivots(df):
         """Get pivots for all configured timeframes"""
         configs = [
-            ("3", 4, "#00ff88", "3M"),    # 3 Minute - Green
-            ("15", 5, "#4444ff", "15M"),  # 15 Minute - Blue  
+            ("3", 3, "#00ff88", "3M"),    # 3 Minute - Green
+            ("15", 4, "#4444ff", "15M"),  # 15 Minute - Blue  
             ("240", 5, "#ff44ff", "4H"),  # 4 Hour - Purple
             ("720", 5, "#ff8800", "12H"), # 12 Hour - Orange
         ]
@@ -396,7 +405,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True):
     if df.empty:
         return go.Figure()
     
-    # Create subplots with proper row heights - FIXED
+    # Create subplots with proper row heights
     fig = make_subplots(
         rows=2, 
         cols=1,
@@ -436,9 +445,9 @@ def create_candlestick_chart(df, title, interval, show_pivots=True):
                     timeframes[tf] = {'highs': [], 'lows': [], 'color': pivot['color']}
                 
                 if pivot['type'] == 'high':
-                    timeframes[tf]['highs'].append(pivot['value'])
+                    timeframes[tf]['highs'].append((pivot['timestamp'], pivot['value']))
                 else:
-                    timeframes[tf]['lows'].append(pivot['value'])
+                    timeframes[tf]['lows'].append((pivot['timestamp'], pivot['value']))
             
             # Add horizontal lines for each timeframe
             x_start = df['datetime'].min()
@@ -448,7 +457,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True):
                 color = data['color']
                 
                 # Add resistance lines (pivot highs)
-                for high_value in data['highs'][-3:]:  # Show last 3 levels only
+                for timestamp, high_value in data['highs'][-3:]:  # Show last 3 levels only
                     fig.add_shape(
                         type="line",
                         x0=x_start, x1=x_end,
@@ -469,7 +478,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True):
                     )
                 
                 # Add support lines (pivot lows)
-                for low_value in data['lows'][-3:]:  # Show last 3 levels only
+                for timestamp, low_value in data['lows'][-3:]:  # Show last 3 levels only
                     fig.add_shape(
                         type="line", 
                         x0=x_start, x1=x_end,
@@ -492,7 +501,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True):
         except Exception as e:
             st.warning(f"Error adding pivot levels: {str(e)}")
     
-    # Volume bars - Fixed to show properly
+    # Volume bars
     volume_colors = ['#00ff88' if close >= open else '#ff4444' 
                     for close, open in zip(df['close'], df['open'])]
     
@@ -822,7 +831,7 @@ def main():
     
     interval = timeframes[selected_timeframe]
     
-    # === PIVOT INDICATOR CONTROLS - ADDED ===
+    # === PIVOT INDICATOR CONTROLS ===
     st.sidebar.header("📊 Pivot Indicator")
     show_pivots = st.sidebar.checkbox("Show Pivot Levels", value=True, help="Display Higher Timeframe Support/Resistance levels")
     
