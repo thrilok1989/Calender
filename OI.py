@@ -116,8 +116,8 @@ class SupabaseDB:
                 st.error(f"Error saving candle data: {str(e)}")
     
     def get_candle_data(self, symbol, exchange, timeframe, hours_back=24):
-    """Retrieve candle data from Supabase"""
-    try:
+       """Retrieve candle data from Supabase"""
+       try:
         cutoff_time = datetime.now(pytz.UTC) - timedelta(hours=hours_back)
         
         result = self.client.table('candle_data')\
