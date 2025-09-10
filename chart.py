@@ -258,6 +258,112 @@ class DhanAPI:
             st.error(f"Error fetching LTP: {str(e)}")
             return None
 
+class PivotIndicator:
+    """Higher Timeframe Pivot Support/Resistance Indicator"""
+    
+    @staticmethod
+    def pivot_high(series, left, right):
+        """Detect pivot highs"""
+        return series.shift(-right).rolling(left+right+1, center=True).max() == series.shift(-right)
+    
+    @staticmethod
+    def pivot_low(series, left, right):
+        """Detect pivot lows"""
+        return series.shift(-right).rolling(left+right+1, center=True).min() == series.shift(-right)
+    
+    @staticmethod
+    def resample_ohlc(df, tf):
+        """Resample OHLC data to higher timeframes"""
+        rule_map = {
+            "240": "240min",
+            "720": "720min", 
+            "D": "1D",
+            "W": "1W"
+        }
+        rule = rule_map.get(tf, tf)
+        
+        if df.empty or 'datetime' not in df.columns:
+            return pd.DataFrame()
+        
+        # Set datetime as index for resampling
+        df_temp = df.copy()
+        df_temp.set_index('datetime', inplace=True)
+        
+        try:
+            resampled = df_temp.resample(rule).agg({
+                "open": "first",
+                "high": "max", 
+                "low": "min",
+                "close": "last",
+                "volume": "sum"
+            }).dropna()
+            
+            return resampled
+        except Exception as e:
+            st.warning(f"Error resampling data for timeframe {tf}: {str(e)}")
+            return pd.DataFrame()
+    
+    @staticmethod
+    def get_pivots(df, tf="D", length=5):
+        """Calculate pivot highs and lows for a given timeframe"""
+        df_htf = PivotIndicator.resample_ohlc(df, tf)
+        
+        if df_htf.empty:
+            return pd.Series(dtype=float), pd.Series(dtype=float)
+        
+        highs = df_htf['high']
+        lows = df_htf['low']
+        
+        ph_mask = PivotIndicator.pivot_high(highs, length, length)
+        pl_mask = PivotIndicator.pivot_low(lows, length, length)
+        
+        pivot_highs = highs[ph_mask].dropna()
+        pivot_lows = lows[pl_mask].dropna()
+        
+        return pivot_highs, pivot_lows
+    
+    @staticmethod
+    def get_all_pivots(df):
+        """Get pivots for all configured timeframes"""
+        configs = [
+            ("240", 4, "#00ff88", "4H"),  # 4 Hour - Green
+            ("720", 5, "#4444ff", "12H"), # 12 Hour - Blue  
+            ("D", 5, "#ff44ff", "D"),     # Daily - Purple
+            ("W", 5, "#ff8800", "W"),     # Weekly - Orange
+        ]
+        
+        all_pivots = []
+        
+        for tf, length, color, label in configs:
+            try:
+                ph, pl = PivotIndicator.get_pivots(df, tf, length)
+                
+                # Add pivot highs
+                for timestamp, value in ph.items():
+                    all_pivots.append({
+                        'type': 'high',
+                        'timeframe': label,
+                        'timestamp': timestamp,
+                        'value': value,
+                        'color': color
+                    })
+                
+                # Add pivot lows  
+                for timestamp, value in pl.items():
+                    all_pivots.append({
+                        'type': 'low',
+                        'timeframe': label,
+                        'timestamp': timestamp,
+                        'value': value,
+                        'color': color
+                    })
+                    
+            except Exception as e:
+                st.warning(f"Error calculating pivots for {tf}: {str(e)}")
+                continue
+        
+        return all_pivots
+
 def process_candle_data(data, interval):
     """Process API response into DataFrame"""
     if not data or 'open' not in data:
@@ -278,47 +384,8 @@ def process_candle_data(data, interval):
     
     return df
 
-# === Pivot High/Low detection ===
-def pivot_high(series, left, right):
-    return series.shift(-right).rolling(left+right+1, center=True).max() == series.shift(-right)
-
-def pivot_low(series, left, right):
-    return series.shift(-right).rolling(left+right+1, center=True).min() == series.shift(-right)
-
-# === Higher Timeframe Resampling ===
-def resample_ohlc(df, tf):
-    rule_map = {
-        "240": "240min",
-        "720": "720min",
-        "D": "1D",
-        "W": "1W"
-    }
-    rule = rule_map.get(tf, tf)
-    return df.resample(rule).agg({
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum"
-    }).dropna()
-
-# === Pivot calculation ===
-def get_pivots(df, tf="D", length=5):
-    df_htf = resample_ohlc(df, tf)
-    
-    highs = df_htf['high']
-    lows = df_htf['low']
-    
-    ph_mask = pivot_high(highs, length, length)
-    pl_mask = pivot_low(lows, length, length)
-    
-    pivot_highs = highs[ph_mask].dropna()
-    pivot_lows = lows[pl_mask].dropna()
-    
-    return pivot_highs, pivot_lows
-
-def create_candlestick_chart(df, title, interval):
-    """Create TradingView-style candlestick chart with pivot indicators"""
+def create_candlestick_chart(df, title, interval, show_pivots=True):
+    """Create TradingView-style candlestick chart with pivot levels"""
     if df.empty:
         return go.Figure()
     
@@ -349,52 +416,74 @@ def create_candlestick_chart(df, title, interval):
         row=1, col=1
     )
     
-    # Add pivot indicators if we have enough data
-    if len(df) > 50:
-        # Set datetime as index for pivot calculations
-        df_indexed = df.set_index('datetime')
-        
-        # Calculate pivots for different timeframes
-        configs = [
-            ("240", 4, "green"),
-            ("720", 5, "blue"),
-            ("D",   5, "purple"),
-        ]
-        
-        for tf, length, color in configs:
-            try:
-                ph, pl = get_pivots(df_indexed, tf, length)
+    # Add pivot levels if enabled
+    if show_pivots and len(df) > 50:  # Only show pivots if we have enough data
+        try:
+            pivots = PivotIndicator.get_all_pivots(df)
+            
+            # Group pivots by timeframe for better visualization
+            timeframes = {}
+            for pivot in pivots:
+                tf = pivot['timeframe']
+                if tf not in timeframes:
+                    timeframes[tf] = {'highs': [], 'lows': [], 'color': pivot['color']}
                 
-                # Add pivot highs
-                for t, v in ph.items():
-                    fig.add_hline(
-                        y=v, 
-                        line_dash="dash", 
-                        line_color=color, 
-                        opacity=0.6,
-                        row=1, col=1,
-                        annotation_text=f"{tf} H {v:.1f}",
-                        annotation_position="right",
-                        annotation_font_size=10,
-                        annotation_font_color=color
+                if pivot['type'] == 'high':
+                    timeframes[tf]['highs'].append(pivot['value'])
+                else:
+                    timeframes[tf]['lows'].append(pivot['value'])
+            
+            # Add horizontal lines for each timeframe
+            x_start = df['datetime'].min()
+            x_end = df['datetime'].max()
+            
+            for tf, data in timeframes.items():
+                color = data['color']
+                
+                # Add resistance lines (pivot highs)
+                for high_value in data['highs'][-3:]:  # Show last 3 levels only
+                    fig.add_shape(
+                        type="line",
+                        x0=x_start, x1=x_end,
+                        y0=high_value, y1=high_value,
+                        line=dict(color=color, width=1, dash="dash"),
+                        row=1, col=1
+                    )
+                    
+                    # Add text annotation
+                    fig.add_annotation(
+                        x=x_end,
+                        y=high_value,
+                        text=f"{tf} R {high_value:.1f}",
+                        showarrow=False,
+                        font=dict(color=color, size=10),
+                        xanchor="left",
+                        row=1, col=1
                     )
                 
-                # Add pivot lows
-                for t, v in pl.items():
-                    fig.add_hline(
-                        y=v, 
-                        line_dash="dash", 
-                        line_color=color, 
-                        opacity=0.6,
-                        row=1, col=1,
-                        annotation_text=f"{tf} L {v:.1f}",
-                        annotation_position="right",
-                        annotation_font_size=10,
-                        annotation_font_color=color
+                # Add support lines (pivot lows)
+                for low_value in data['lows'][-3:]:  # Show last 3 levels only
+                    fig.add_shape(
+                        type="line", 
+                        x0=x_start, x1=x_end,
+                        y0=low_value, y1=low_value,
+                        line=dict(color=color, width=1, dash="dash"),
+                        row=1, col=1
                     )
-            except Exception as e:
-                # Skip if there's an error with this timeframe
-                continue
+                    
+                    # Add text annotation
+                    fig.add_annotation(
+                        x=x_end,
+                        y=low_value,
+                        text=f"{tf} S {low_value:.1f}",
+                        showarrow=False,
+                        font=dict(color=color, size=10),
+                        xanchor="left",
+                        row=1, col=1
+                    )
+        
+        except Exception as e:
+            st.warning(f"Error adding pivot levels: {str(e)}")
     
     # Volume bars
     colors = ['#00ff88' if close >= open else '#ff4444' 
@@ -654,7 +743,7 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
 
 def main():
     try:
-        st.title("📈 Nifty 50 Trading Chart with Database")
+        st.title("📈 Nifty 50 Trading Chart with Pivot Indicator")
         
         # Initialize Supabase
         try:
@@ -725,140 +814,14 @@ def main():
         
         interval = timeframes[selected_timeframe]
         
-        # Auto-refresh settings
-        auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=user_prefs['auto_refresh'])
-        
-        # Days back for data
-        days_back = st.sidebar.slider("Days of Historical Data", 1, 5, user_prefs['days_back'])
-        
-        # Data source preference
-        use_cache = st.sidebar.checkbox("Use Cached Data", value=True, help="Use database cache for faster loading")
-        
         # Pivot indicator settings
-        st.sidebar.subheader("Pivot Indicator Settings")
-        show_pivots = st.sidebar.checkbox("Show Pivot Levels", value=True)
-        pivot_tf = st.sidebar.selectbox(
-            "Pivot Timeframe",
-            ["240min (4H)", "720min (12H)", "Daily", "All"],
-            index=3
-        )
+        st.sidebar.header("📊 Pivot Indicator")
+        show_pivots = st.sidebar.checkbox("Show Pivot Levels", value=True, help="Display Higher Timeframe Support/Resistance levels")
         
-        # Save preferences
-        if st.sidebar.button("💾 Save Preferences"):
-            db.save_user_preferences(user_id, interval, auto_refresh, days_back)
-            st.sidebar.success("Preferences saved!")
-        
-        # Manual refresh button
-        if st.sidebar.button("🔄 Refresh Now"):
-            st.experimental_rerun()
-        
-        # Show analytics dashboard
-        show_analytics = st.sidebar.checkbox("Show Analytics Dashboard", value=False)
-        
-        # Initialize API
-        api = DhanAPI(access_token, client_id)
-        
-        # Create tabs
-        tab1, tab2 = st.tabs(["Live Chart", "Analytics"])
-        
-        with tab1:
-            # Create placeholder for chart
-            chart_container = st.container()
-            metrics_container = st.container()
-            
-            # Data fetching strategy
-            df = pd.DataFrame()
-            
-            if use_cache:
-                # Try to get recent data from database first
-                df = db.get_candle_data("NIFTY50", "IDX_I", interval, hours_back=days_back*24)
-                
-                # If no recent data or data is old, fetch from API
-                if df.empty or (datetime.now(pytz.UTC) - df['datetime'].max().tz_convert(pytz.UTC)).total_seconds() > 300:
-                    with st.spinner("Fetching latest data from API..."):
-                        data = api.get_intraday_data(
-                            security_id="13",
-                            exchange_segment="IDX_I", 
-                            instrument="INDEX",
-                            interval=interval,
-                            days_back=days_back
-                        )
-                        
-                        if data:
-                            df = process_candle_data(data, interval)
-                            # Save to database
-                            db.save_candle_data("NIFTY50", "IDX_I", interval, df)
-            else:
-                # Always fetch fresh data from API
-                with st.spinner("Fetching fresh data from API..."):
-                    data = api.get_intraday_data(
-                        security_id="13",
-                        exchange_segment="IDX_I", 
-                        instrument="INDEX",
-                        interval=interval,
-                        days_back=days_back
-                    )
-                    
-                    if data:
-                        df = process_candle_data(data, interval)
-                        # Save to database
-                        db.save_candle_data("NIFTY50", "IDX_I", interval, df)
-            
-            # Get LTP data
-            ltp_data = api.get_ltp_data("13", "IDX_I")
-            
-            # Display metrics
-            with metrics_container:
-                if not df.empty:
-                    display_metrics(ltp_data, df, db)
-            
-            # Create and display chart
-            with chart_container:
-                if not df.empty:
-                    fig = create_candlestick_chart(
-                        df, 
-                        f"Nifty 50 - {selected_timeframe} Chart", 
-                        interval
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Show data info
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.info(f"📊 Data Points: {len(df)}")
-                    with col2:
-                        latest_time = df['datetime'].max().strftime("%Y-%m-%d %H:%M:%S IST")
-                        st.info(f"🕐 Latest: {latest_time}")
-                    with col3:
-                        data_source = "Database Cache" if use_cache else "Live API"
-                        st.info(f"📡 Source: {data_source}")
-                else:
-                    st.error("No data available. Please check your API credentials and try again.")
-        
-        with tab2:
-            if show_analytics:
-                display_analytics_dashboard(db)
-            else:
-                st.info("Enable 'Show Analytics Dashboard' in the sidebar to view historical analytics.")
-        
-        # Show current time
-        ist = pytz.timezone('Asia/Kolkata')
-        current_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
-        st.sidebar.info(f"Last Updated: {current_time}")
-        
-        # Auto-refresh logic (simplified for stability)
-        if auto_refresh:
-            st.sidebar.info("Auto-refresh enabled - page will refresh every 2 minutes")
-            time.sleep(120)  # 2 minutes
-            st.experimental_rerun()
-    
-    except Exception as e:
-        st.error(f"Application error: {str(e)}")
-        st.info("Please check your credentials and try again.")
-        
-        # Add a button to reset the app
-        if st.button("Reset Application"):
-            st.experimental_rerun()
-
-if __name__ == "__main__":
-    main()
+        if show_pivots:
+            st.sidebar.info("""
+            **Pivot Levels:**
+            🟢 4H (Green)
+            🔵 12H (Blue) 
+            🟣 Daily (Purple)
+            🟠
