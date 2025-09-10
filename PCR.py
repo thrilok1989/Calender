@@ -86,6 +86,10 @@ if 'manual_resistance_2' not in st.session_state:
 if 'sr_alerts_sent' not in st.session_state:
     st.session_state.sr_alerts_sent = set()  # Track which alerts have been sent
 
+# Initialize ATM bid/ask pressure alert tracking
+if 'pressure_alerts_sent' not in st.session_state:
+    st.session_state.pressure_alerts_sent = set()
+
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
 TELEGRAM_CHAT_ID = "5704496584"
@@ -403,6 +407,33 @@ def send_telegram_message(message):
             st.warning("⚠️ Telegram message failed.")
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
+
+def check_atm_bid_ask_pressure(pressure, strike, spot_price):
+    """Check ATM bid/ask pressure and send Telegram alerts if threshold exceeded"""
+    if pressure > 10000 or pressure < -10000:
+        # Create a unique key for this alert (strike + pressure level + date)
+        alert_key = f"pressure_{strike}_{pressure}_{datetime.now().strftime('%Y%m%d%H')}"
+        
+        # Only send alert once per hour per strike and pressure level
+        if alert_key not in st.session_state.pressure_alerts_sent:
+            st.session_state.pressure_alerts_sent.add(alert_key)
+            
+            # Determine the direction
+            if pressure > 10000:
+                direction = "BULLISH"
+                emoji = "📈"
+            else:
+                direction = "BEARISH" 
+                emoji = "📉"
+            
+            message = f"🚨 ATM BID/ASK PRESSURE ALERT {emoji}\n"
+            message += f"Strike: {strike}\n"
+            message += f"Spot Price: {spot_price}\n"
+            message += f"Pressure: {pressure:,}\n"
+            message += f"Direction: {direction}\n"
+            message += f"Time: {datetime.now(timezone('Asia/Kolkata')).strftime('%H:%M:%S')}"
+            
+            send_telegram_message(message)
 
 # === Calculation and Analysis Functions ===
 def calculate_greeks(option_type, S, K, T, r, sigma):
@@ -907,6 +938,10 @@ def analyze():
                 row.get('bidQty_PE', 0), 
                 row.get('askQty_PE', 0)
             )
+            
+            # Check ATM bid/ask pressure for alerts
+            if row['strikePrice'] == atm_strike:
+                check_atm_bid_ask_pressure(bid_ask_pressure, atm_strike, underlying)
             
             score = 0
             row_data = {
