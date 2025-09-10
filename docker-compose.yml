@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  nifty-trading-chart:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      # Dhan API Configuration
+      - DHAN_ACCESS_TOKEN=${DHAN_ACCESS_TOKEN}
+      - DHAN_CLIENT_ID=${DHAN_CLIENT_ID}
+      
+      # Supabase Configuration
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      
+      # Streamlit Configuration
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+      
+    volumes:
+      # Mount local directory for development
+      - .:/app
+      # Persist streamlit cache
+      - streamlit_cache:/root/.streamlit
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  streamlit_cache:
+    driver: local
+
+# For production deployment, you might want to add:
+# networks:
+#   app-network:
+#     driver: bridge
+
+# For monitoring (optional):
+# services:
+#   monitoring:
+#     image: prom/prometheus
+#     ports:
+#       - "9090:9090"
+#     volumes:
+#       - ./prometheus.yml:/etc/prometheus/prometheus.yml
