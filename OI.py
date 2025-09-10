@@ -384,7 +384,7 @@ class PivotIndicator:
             return pd.DataFrame()
         
         df_temp = df.copy()
-        df_temp.set_index('datetime', inplace=True)
+        df_temp.set_index('datetime', in=True)
         
         try:
             resampled = df_temp.resample(rule).agg({
@@ -1168,7 +1168,7 @@ def main():
     
     # Manual refresh button
     if st.sidebar.button("🔄 Refresh Now"):
-        st.experimental_rerun()
+        st.rerun()
     
     # Show analytics dashboard
     show_analytics = st.sidebar.checkbox("Show Analytics Dashboard", value=False)
@@ -1283,7 +1283,7 @@ def main():
     if auto_refresh:
         st.sidebar.info("Auto-refresh enabled - page will refresh every 2 minutes")
         time.sleep(120)
-        st.experimental_rerun()
+        st.rerun()
 
 if __name__ == "__main__":
     main()
