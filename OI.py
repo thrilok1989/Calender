@@ -1,1357 +1,1289 @@
-# streamlit_app.py - Final Part 1: Imports and Configuration
 import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
+from streamlit_autorefresh import st_autorefresh
 import requests
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import datetime
+import pytz
 import time
 from datetime import datetime, timedelta
-from supabase import create_client, Client
-import os
-from typing import Dict, List, Optional
 import json
-import logging
-import asyncio
+from supabase import create_client, Client
+import hashlib
+import numpy as np
+import math
+from scipy.stats import norm
+from pytz import timezone
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Page config
+# Page configuration
 st.set_page_config(
-    page_title="SR Scanner Pro",
-    page_icon="📊",
+    page_title="Nifty Trading & Options Analyzer",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-# Final Part 2: Telegram Notifier Class
-class TelegramNotifier:
-    def __init__(self, bot_token: str = None, chat_id: str = None):
-        """Initialize Telegram notifier"""
-        self.bot_token = bot_token
-        self.chat_id = chat_id
-        self.base_url = f"https://api.telegram.org/bot{bot_token}" if bot_token else None
+
+# Auto-refresh every 80 seconds
+st_autorefresh(interval=80000, key="datarefresh")
+
+# Custom CSS for TradingView-like appearance
+st.markdown("""
+<style>
+    .main > div {
+        padding-top: 1rem;
+    }
+    .stSelectbox > div > div > select {
+        background-color: #1e1e1e;
+        color: white;
+    }
+    .metric-container {
+        background-color: #1e1e1e;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 5px;
+    }
+    .price-up {
+        color: #00ff88;
+    }
+    .price-down {
+        color: #ff4444;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# === API Configuration ===
+try:
+    DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
+    DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", "")
+    
+    if not DHAN_CLIENT_ID:
+        DHAN_CLIENT_ID = st.secrets.get("dhan", {}).get("client_id", "")
+    if not DHAN_ACCESS_TOKEN:
+        DHAN_ACCESS_TOKEN = st.secrets.get("dhan", {}).get("access_token", "")
         
-    def send_message(self, message: str) -> bool:
-        """Send message to Telegram"""
-        if not self.bot_token or not self.chat_id:
-            return False
-            
+    supabase_url = st.secrets.get("supabase", {}).get("url", "")
+    supabase_key = st.secrets.get("supabase", {}).get("anon_key", "")
+except Exception:
+    DHAN_CLIENT_ID = ""
+    DHAN_ACCESS_TOKEN = ""
+    supabase_url = ""
+    supabase_key = ""
+
+NIFTY_UNDERLYING_SCRIP = 13
+NIFTY_UNDERLYING_SEG = "IDX_I"
+
+class SupabaseDB:
+    def __init__(self, url, key):
+        self.client: Client = create_client(url, key)
+    
+    def create_tables(self):
+        """Create necessary tables if they don't exist"""
         try:
-            url = f"{self.base_url}/sendMessage"
-            data = {
-                "chat_id": self.chat_id,
-                "text": message,
-                "parse_mode": "HTML"
-            }
-            
-            response = requests.post(url, data=data, timeout=10)
-            return response.status_code == 200
-        except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
-            return False
+            self.client.table('candle_data').select('id').limit(1).execute()
+        except:
+            st.info("Database tables may need to be created. Please run the SQL setup first.")
     
-    def test_connection(self) -> bool:
-        """Test Telegram bot connection"""
-        if not self.bot_token:
-            return False
-            
-        try:
-            url = f"{self.base_url}/getMe"
-            response = requests.get(url, timeout=5)
-            return response.status_code == 200
-        except Exception as e:
-            logger.error(f"Telegram connection test failed: {e}")
-            return False
-    
-    def format_alert_message(self, alert_type: str, underlying: str, data: Dict) -> str:
-        """Format alert message for Telegram"""
-        strike = data['strike']
-        option_type = data['type']
-        
-        if alert_type == "FAST_TRANSITION":
-            emoji = "🚨"
-            title = "FAST TRANSITION ALERT"
-            message = f"""
-{emoji} <b>{title}</b> {emoji}
-
-<b>Underlying:</b> {underlying}
-<b>Strike:</b> {strike} {option_type}
-<b>Direction:</b> {data['transition_direction']}
-<b>Speed:</b> {data['transition_speed']}
-<b>SR Score:</b> {data['sr_score']:.1f}
-<b>Current State:</b> {data['current_state']}
-<b>Velocity:</b> {data['score_velocity']:.2f}
-
-<i>Time: {datetime.now().strftime('%H:%M:%S')}</i>
-"""
-        elif alert_type == "HIGH_VELOCITY":
-            emoji = "⚡"
-            title = "HIGH VELOCITY ALERT"
-            message = f"""
-{emoji} <b>{title}</b> {emoji}
-
-<b>Underlying:</b> {underlying}
-<b>Strike:</b> {strike} {option_type}
-<b>Velocity:</b> {data['score_velocity']:.2f}
-<b>Acceleration:</b> {data['score_acceleration']:.2f}
-<b>SR Score:</b> {data['sr_score']:.1f}
-<b>Direction:</b> {data['transition_direction']}
-
-<i>Time: {datetime.now().strftime('%H:%M:%S')}</i>
-"""
-        elif alert_type == "STRONG_LEVEL":
-            emoji = "🎯"
-            level_type = "SUPPORT" if data['sr_score'] > 0 else "RESISTANCE"
-            title = f"STRONG {level_type} LEVEL"
-            message = f"""
-{emoji} <b>{title}</b> {emoji}
-
-<b>Underlying:</b> {underlying}
-<b>Strike:</b> {strike} {option_type}
-<b>SR Score:</b> {data['sr_score']:.1f}
-<b>State:</b> {data['current_state']}
-<b>OI Change:</b> {data.get('oi_change_pct', 0):.2f}%
-<b>Bid/Ask Ratio:</b> {data.get('bid_ask_ratio', 0):.2f}
-
-<i>Time: {datetime.now().strftime('%H:%M:%S')}</i>
-"""
-        elif alert_type == "BREAKOUT":
-            emoji = "💥"
-            title = "POTENTIAL BREAKOUT"
-            message = f"""
-{emoji} <b>{title}</b> {emoji}
-
-<b>Underlying:</b> {underlying}
-<b>Strike:</b> {strike} {option_type}
-<b>Current State:</b> {data['current_state']}
-<b>Speed:</b> {data['transition_speed']}
-<b>Score:</b> {data['sr_score']:.1f}
-
-<i>Time: {datetime.now().strftime('%H:%M:%S')}</i>
-"""
-        else:
-            message = f"Alert: {underlying} {strike} {option_type} - {alert_type}"
-        
-        return message
-    
-    def send_batch_alerts(self, alerts: List[Dict]) -> bool:
-        """Send multiple alerts in batch"""
-        if not alerts:
-            return True
-            
-        # Send summary message first
-        summary_message = f"""
-📊 <b>MARKET ALERT SUMMARY</b> 📊
-<i>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>
-
-"""
-        
-        alert_counts = {}
-        for alert in alerts:
-            alert_type = alert['type']
-            alert_counts[alert_type] = alert_counts.get(alert_type, 0) + 1
-        
-        for alert_type, count in alert_counts.items():
-            summary_message += f"<b>{alert_type}:</b> {count} alerts\n"
-        
-        summary_message += f"\n<i>Total Alerts: {len(alerts)}</i>"
-        
-        success = self.send_message(summary_message)
-        
-        # Send individual alerts for critical ones
-        critical_alerts = [a for a in alerts if a['type'] in ['FAST_TRANSITION', 'BREAKOUT', 'HIGH_VELOCITY']]
-        for alert in critical_alerts[:5]:  # Limit to 5 detailed alerts
-            detailed_message = self.format_alert_message(
-                alert['type'], alert['underlying'], alert['data']
-            )
-            self.send_message(detailed_message)
-            time.sleep(0.5)  # Small delay between messages
-        
-        return success
-    
-    def send_startup_message(self, underlying: str) -> bool:
-        """Send startup notification"""
-        message = f"""
-🤖 <b>SR Scanner Started</b> 🤖
-
-<b>Underlying:</b> {underlying}
-<b>Status:</b> Monitoring Active
-<b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-Ready to send alerts for:
-• Fast Transitions
-• High Velocity Changes  
-• Strong S/R Levels
-• Potential Breakouts
-"""
-        return self.send_message(message)
-        # Final Part 3: SupabaseManager Class with Secrets
-class SupabaseManager:
-    def __init__(self):
-        """Initialize Supabase client using secrets"""
-        try:
-            self.url = st.secrets["database"]["SUPABASE_URL"]
-            self.key = st.secrets["database"]["SUPABASE_ANON_KEY"]
-            self.supabase: Client = create_client(self.url, self.key)
-            self.check_tables()
-        except KeyError as e:
-            st.error(f"Missing Supabase configuration in secrets: {e}")
-            self.supabase = None
-        except Exception as e:
-            st.error(f"Supabase connection failed: {e}")
-            self.supabase = None
-    
-    def check_tables(self):
-        """Check if tables exist and show setup instructions if not"""
-        if not self.supabase:
+    def save_candle_data(self, symbol, exchange, timeframe, df):
+        """Save candle data to Supabase"""
+        if df.empty:
             return
         
         try:
-            # Try to query the table to check if it exists
-            result = self.supabase.table('market_data').select("id").limit(1).execute()
+            records = []
+            for _, row in df.iterrows():
+                record = {
+                    'symbol': symbol,
+                    'exchange': exchange,
+                    'timeframe': timeframe,
+                    'timestamp': int(row['timestamp']),
+                    'datetime': row['datetime'].isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': int(row['volume'])
+                }
+                records.append(record)
             
-            # Check if we have the correct columns
-            if result.data is not None:
-                # Test a more complete query to verify column structure
-                test_result = self.supabase.table('market_data')\
-                    .select("strike,option_type,sr_score")\
-                    .limit(1)\
-                    .execute()
-                
+            self.client.table('candle_data').upsert(
+                records, 
+                on_conflict="symbol,exchange,timeframe,timestamp"
+            ).execute()
+            
         except Exception as e:
-            error_msg = str(e).lower()
-            if "does not exist" in error_msg or "column" in error_msg:
-                st.sidebar.error("""
-                Database Setup Required
-                
-                The database table doesn't exist or has incorrect structure.
-                Please run the corrected SQL setup script in your Supabase dashboard.
-                """)
-            else:
-                st.sidebar.warning(f"Database check failed: {e}")
+            if "23505" not in str(e) and "duplicate key" not in str(e).lower():
+                st.error(f"Error saving candle data: {str(e)}")
     
-    def save_market_data(self, data: List[Dict]) -> bool:
-        """Save market data to Supabase with error handling"""
-        if not self.supabase or not data:
-            return False
-        
+    def get_candle_data(self, symbol, exchange, timeframe, hours_back=24):
+        """Retrieve candle data from Supabase"""
         try:
-            # Validate data structure before inserting
-            required_fields = ['underlying', 'strike', 'option_type', 'sr_score', 
-                             'current_state', 'transition_direction', 'transition_speed']
+            cutoff_time = datetime.now(pytz.UTC) - timedelta(hours=hours_back)
             
-            for record in data:
-                for field in required_fields:
-                    if field not in record:
-                        st.error(f"Missing required field: {field}")
-                        return False
+            result = self.client.table('candle_data')\
+                .select('*')\
+                .eq('symbol', symbol)\
+                .eq('exchange', exchange)\
+                .eq('timeframe', timeframe)\
+                .gte('datetime', cutoff_time.isoformat())\
+                .order('timestamp', desc=False)\
+                .execute()
             
-            result = self.supabase.table('market_data').insert(data).execute()
-            return True
-            
-        except Exception as e:
-            error_msg = str(e)
-            if "column" in error_msg.lower() and "does not exist" in error_msg.lower():
-                st.error("Database column mismatch. Please run the corrected setup script.")
+            if result.data:
+                df = pd.DataFrame(result.data)
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                return df
             else:
-                st.error(f"Error saving data: {e}")
-            logger.error(f"Error saving data: {e}")
-            return False
-    
-    def get_historical_data(self, underlying: str, strike: float, option_type: str, 
-                           hours_back: int = 24) -> pd.DataFrame:
-        """Get historical data for analysis with error handling"""
-        if not self.supabase:
+                return pd.DataFrame()
+                
+        except Exception as e:
+            st.error(f"Error retrieving candle data: {str(e)}")
             return pd.DataFrame()
-        
+    
+    def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, pivot_settings):
+        """Save user preferences"""
         try:
-            since = datetime.now() - timedelta(hours=hours_back)
+            data = {
+                'user_id': user_id,
+                'timeframe': timeframe,
+                'auto_refresh': auto_refresh,
+                'days_back': days_back,
+                'pivot_settings': json.dumps(pivot_settings),
+                'updated_at': datetime.now(pytz.UTC).isoformat()
+            }
             
-            result = self.supabase.table('market_data')\
-                .select("*")\
-                .eq('underlying', underlying)\
-                .eq('strike', strike)\
-                .eq('option_type', option_type)\
-                .gte('timestamp', since.isoformat())\
-                .order('timestamp')\
+            self.client.table('user_preferences').upsert(
+                data, 
+                on_conflict="user_id"
+            ).execute()
+            
+        except Exception as e:
+            if "23505" not in str(e) and "duplicate key" not in str(e).lower():
+                st.error(f"Error saving preferences: {str(e)}")
+    
+    def get_user_preferences(self, user_id):
+        """Get user preferences"""
+        try:
+            result = self.client.table('user_preferences')\
+                .select('*')\
+                .eq('user_id', user_id)\
+                .execute()
+            
+            if result.data:
+                prefs = result.data[0]
+                if 'pivot_settings' in prefs and prefs['pivot_settings']:
+                    prefs['pivot_settings'] = json.loads(prefs['pivot_settings'])
+                else:
+                    prefs['pivot_settings'] = {
+                        'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
+                    }
+                return prefs
+            else:
+                return {
+                    'timeframe': '5',
+                    'auto_refresh': True,
+                    'days_back': 1,
+                    'pivot_settings': {
+                        'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
+                    }
+                }
+                
+        except Exception as e:
+            st.error(f"Error retrieving preferences: {str(e)}")
+            return {
+                'timeframe': '5', 
+                'auto_refresh': True, 
+                'days_back': 1,
+                'pivot_settings': {
+                    'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
+                }
+            }
+    
+    def save_market_analytics(self, symbol, analytics_data):
+        """Save daily market analytics"""
+        try:
+            today = datetime.now(pytz.timezone('Asia/Kolkata')).date()
+            
+            data = {
+                'symbol': symbol,
+                'date': today.isoformat(),
+                'day_high': analytics_data['day_high'],
+                'day_low': analytics_data['day_low'],
+                'day_open': analytics_data['day_open'],
+                'day_close': analytics_data['day_close'],
+                'total_volume': analytics_data['total_volume'],
+                'avg_price': analytics_data['avg_price'],
+                'price_change': analytics_data['price_change'],
+                'price_change_pct': analytics_data['price_change_pct']
+            }
+            
+            self.client.table('market_analytics').upsert(
+                data, 
+                on_conflict="symbol,date"
+            ).execute()
+            
+        except Exception as e:
+            if "23505" not in str(e) and "duplicate key" not in str(e).lower():
+                st.error(f"Error saving analytics: {str(e)}")
+    
+    def get_market_analytics(self, symbol, days_back=30):
+        """Get historical market analytics"""
+        try:
+            cutoff_date = datetime.now().date() - timedelta(days=days_back)
+            
+            result = self.client.table('market_analytics')\
+                .select('*')\
+                .eq('symbol', symbol)\
+                .gte('date', cutoff_date.isoformat())\
+                .order('date', desc=False)\
                 .execute()
             
             if result.data:
                 return pd.DataFrame(result.data)
-            return pd.DataFrame()
-            
-        except Exception as e:
-            if "column" in str(e).lower():
-                st.warning("Database structure mismatch. Historical data unavailable.")
             else:
-                logger.error(f"Error fetching historical data: {e}")
-            return pd.DataFrame()
-    
-    def get_latest_scan_data(self, underlying: str, minutes_back: int = 10) -> pd.DataFrame:
-        """Get latest scan data with error handling"""
-        if not self.supabase:
-            return pd.DataFrame()
-        
-        try:
-            since = datetime.now() - timedelta(minutes=minutes_back)
-            
-            result = self.supabase.table('market_data')\
-                .select("*")\
-                .eq('underlying', underlying)\
-                .gte('timestamp', since.isoformat())\
-                .order('timestamp', desc=True)\
-                .execute()
-            
-            df = pd.DataFrame(result.data) if result.data else pd.DataFrame()
-            
-            if not df.empty:
-                # Get latest record for each strike-type combination
-                df = df.groupby(['strike', 'option_type']).first().reset_index()
-            return df
-            
-        except Exception as e:
-            if "column" in str(e).lower():
-                st.warning("Database structure mismatch. Latest data unavailable.")
-            else:
-                logger.error(f"Error fetching latest data: {e}")
-            return pd.DataFrame()
-    
-    def get_previous_states(self, underlying: str, strikes: List[float], 
-                           minutes_back: int = 30) -> Dict:
-        """Get previous states for comparison with error handling"""
-        if not self.supabase:
-            return {}
-        
-        try:
-            since = datetime.now() - timedelta(minutes=minutes_back)
-            until = datetime.now() - timedelta(minutes=5)
-            
-            result = self.supabase.table('market_data')\
-                .select("strike,option_type,current_state,sr_score")\
-                .eq('underlying', underlying)\
-                .in_('strike', strikes)\
-                .gte('timestamp', since.isoformat())\
-                .lt('timestamp', until.isoformat())\
-                .order('timestamp', desc=True)\
-                .execute()
-            
-            df = pd.DataFrame(result.data) if result.data else pd.DataFrame()
-            
-            if not df.empty:
-                # Get most recent state for each strike-type
-                df = df.groupby(['strike', 'option_type']).first().reset_index()
+                return pd.DataFrame()
                 
-                previous_states = {}
-                for _, row in df.iterrows():
-                    key = f"{row['strike']}_{row['option_type']}"
-                    previous_states[key] = {
-                        'state': row['current_state'],
-                        'score': row['sr_score']
-                    }
-                return previous_states
-            
-            return {}
-            
         except Exception as e:
-            logger.error(f"Error fetching previous states: {e}")
-            return {}
-    
-    def save_alert_log(self, alert_data: Dict) -> bool:
-        """Save alert to database for tracking with error handling"""
-        if not self.supabase:
-            return False
-        
-        try:
-            alert_record = {
-                'underlying': alert_data['underlying'],
-                'strike': float(alert_data['data']['strike']),
-                'option_type': alert_data['data']['type'].lower(),
-                'alert_type': alert_data['type'],
-                'sr_score': float(alert_data['data']['sr_score']),
-                'transition_direction': alert_data['data']['transition_direction'],
-                'transition_speed': alert_data['data']['transition_speed'],
-                'score_velocity': float(alert_data['data']['score_velocity']),
-                'sent_to_telegram': True
-            }
-            
-            # Try to save to alert_logs table
-            result = self.supabase.table('alert_logs').insert(alert_record).execute()
-            return True
-            
-        except Exception as e:
-            # If alert_logs table doesn't exist, just log the error but don't fail
-            logger.warning(f"Could not save alert log: {e}")
-            return False
-    
-    def test_connection(self) -> bool:
-        """Test database connection"""
-        if not self.supabase:
-            return False
-        
-        try:
-            result = self.supabase.table('market_data').select("count").limit(1).execute()
-            return True
-        except Exception as e:
-            logger.error(f"Database connection test failed: {e}")
-            return False
-            # Final Part 4: DhanSRScanner Class - Initialization and API Methods
-class DhanSRScanner:
-    def __init__(self, access_token: str, client_id: str, db_manager: SupabaseManager):
-        """Initialize scanner with database integration"""
-        self.access_token = access_token
-        self.client_id = client_id
-        self.db_manager = db_manager
+            st.error(f"Error retrieving analytics: {str(e)}")
+            return pd.DataFrame()
+
+class DhanAPI:
+    def __init__(self, access_token, client_id):
+        self.access_token = access_token.strip() if access_token else ""
+        self.client_id = client_id.strip() if client_id else ""
         self.base_url = "https://api.dhan.co/v2"
         self.headers = {
-            "access-token": access_token,
-            "client-id": client_id,
-            "Content-Type": "application/json"
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'access-token': self.access_token,
+            'client-id': self.client_id
         }
         
-        # Underlying mapping for Dhan API
-        self.underlying_map = {
-            "NIFTY": {"scrip": 13, "segment": "IDX_I"},
-            "BANKNIFTY": {"scrip": 25, "segment": "IDX_I"},
-            "FINNIFTY": {"scrip": 27, "segment": "IDX_I"}
+    def get_intraday_data(self, security_id="13", exchange_segment="IDX_I", instrument="INDEX", interval="1", days_back=1):
+        """Get intraday historical data"""
+        url = f"{self.base_url}/charts/intraday"
+        
+        ist = pytz.timezone('Asia/Kolkata')
+        end_date = datetime.now(ist)
+        start_date = end_date - timedelta(days=days_back)
+        
+        payload = {
+            "securityId": security_id,
+            "exchangeSegment": exchange_segment,
+            "instrument": instrument,
+            "interval": interval,
+            "oi": False,
+            "fromDate": start_date.strftime("%Y-%m-%d %H:%M:%S"),
+            "toDate": end_date.strftime("%Y-%m-%d %H:%M:%S")
         }
         
-        # Store previous scan data for comparison
-        self.previous_scan_data = {}
-    
-    def get_expiry_list(self, underlying: str) -> List[str]:
-        """Get expiry list for underlying"""
         try:
-            url = f"{self.base_url}/optionchain/expirylist"
-            data = {
-                "UnderlyingScrip": self.underlying_map[underlying]["scrip"],
-                "UnderlyingSeg": self.underlying_map[underlying]["segment"]
-            }
-            
-            response = requests.post(url, headers=self.headers, json=data)
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get("status") == "success":
-                return result.get("data", [])
-            return []
-        except Exception as e:
-            logger.error(f"Error fetching expiry list: {e}")
-            return []
-    
-    def get_option_chain(self, underlying: str, expiry: str) -> Dict:
-        """Fetch option chain data from Dhan API"""
-        try:
-            url = f"{self.base_url}/optionchain"
-            data = {
-                "UnderlyingScrip": self.underlying_map[underlying]["scrip"],
-                "UnderlyingSeg": self.underlying_map[underlying]["segment"],
-                "Expiry": expiry
-            }
-            
-            response = requests.post(url, headers=self.headers, json=data)
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get("status") == "success":
-                return result.get("data", {})
-            return {}
-        except Exception as e:
-            logger.error(f"Error fetching option chain: {e}")
-            return {}
-    
-    def get_market_quotes(self, security_ids: List[str], exchange_segment: str = "NSE_FNO") -> Dict:
-        """Fetch market quotes for multiple securities"""
-        try:
-            url = f"{self.base_url}/marketfeed/quote"
-            data = {exchange_segment: security_ids}
-            
-            response = requests.post(url, headers=self.headers, json=data)
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get("status") == "success":
-                return result.get("data", {}).get(exchange_segment, {})
-            return {}
-        except Exception as e:
-            logger.error(f"Error fetching market quotes: {e}")
-            return {}
-    
-    def find_atm_strikes(self, spot_price: float, option_chain: Dict) -> List[float]:
-        """Find ATM and ATM±1 strike prices"""
-        if not option_chain or 'oc' not in option_chain:
-            return []
-        
-        strikes = [float(strike) for strike in option_chain['oc'].keys()]
-        strikes.sort()
-        
-        # Find closest strike to spot price (ATM)
-        atm_strike = min(strikes, key=lambda x: abs(x - spot_price))
-        atm_index = strikes.index(atm_strike)
-        
-        result_strikes = []
-        # Get ATM±1 strikes
-        if atm_index > 0:
-            result_strikes.append(strikes[atm_index - 1])  # ATM-1
-        result_strikes.append(atm_strike)  # ATM
-        if atm_index < len(strikes) - 1:
-            result_strikes.append(strikes[atm_index + 1])  # ATM+1
-        
-        return result_strikes
-        # Final Part 5: SR Score Calculation and Analysis Methods
-    def calculate_sr_score_with_history(self, strike: float, option_type: str, 
-                                       option_data: Dict, spot_price: float) -> Dict:
-        """Calculate SR score using current data and database history"""
-        
-        # Get historical data for this strike
-        historical_df = self.db_manager.get_historical_data(
-            "NIFTY", strike, option_type.lower(), hours_back=6
-        )
-        
-        score = 0
-        
-        # Current data from option chain
-        current_oi = option_data.get('oi', 0)
-        prev_oi = option_data.get('previous_oi', current_oi)
-        current_volume = option_data.get('volume', 0)
-        prev_volume = option_data.get('previous_volume', 0)
-        ltp = option_data.get('last_price', 0)
-        prev_close = option_data.get('previous_close_price', ltp)
-        
-        # Calculate changes
-        oi_change = current_oi - prev_oi
-        oi_change_pct = (oi_change / prev_oi * 100) if prev_oi > 0 else 0
-        price_change_pct = ((ltp - prev_close) / prev_close * 100) if prev_close > 0 else 0
-        volume_ratio = current_volume / prev_volume if prev_volume > 0 else 1
-        
-        # OI Analysis (40% weight)
-        if option_type.upper() == 'PE':
-            # For PE: Increasing OI = stronger support
-            score += min(oi_change_pct * 2, 40) if oi_change_pct > 0 else max(oi_change_pct * 2, -40)
-        else:
-            # For CE: Increasing OI = stronger resistance
-            score -= min(oi_change_pct * 2, 40) if oi_change_pct > 0 else max(oi_change_pct * 2, -40)
-        
-        # Order flow analysis (30% weight) - using bid/ask data
-        bid_qty = option_data.get('top_bid_quantity', 0)
-        ask_qty = option_data.get('top_ask_quantity', 0)
-        total_qty = bid_qty + ask_qty
-        
-        if total_qty > 0:
-            bid_ask_ratio = bid_qty / ask_qty if ask_qty > 0 else 10
-            
-            # Normalize ratio impact
-            if bid_ask_ratio > 1:
-                flow_score = min(np.log(bid_ask_ratio) * 15, 30)
+            response = requests.post(url, headers=self.headers, json=payload)
+            if response.status_code == 200:
+                return response.json()
             else:
-                flow_score = max(-np.log(1/bid_ask_ratio) * 15, -30)
-            
-            if option_type.upper() == 'PE':
-                score += flow_score  # Strong buying in PE = support
-            else:
-                score -= flow_score  # Strong buying in CE = resistance weakening
+                st.error(f"API Error: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            st.error(f"Error fetching data: {str(e)}")
+            return None
+    
+    def get_ltp_data(self, security_id="13", exchange_segment="IDX_I"):
+        """Get Last Traded Price"""
+        url = f"{self.base_url}/marketfeed/ltp"
         
-        # Price action analysis (20% weight)
-        distance_from_spot = abs(strike - spot_price) / spot_price
-        proximity_weight = max(0.5, 1 - distance_from_spot * 10)
-        
-        if option_type.upper() == 'PE':
-            # PE losing value = support weakening
-            score -= price_change_pct * proximity_weight
-        else:
-            # CE losing value = resistance holding
-            score -= price_change_pct * proximity_weight
-        
-        # Volume analysis (10% weight)
-        if current_volume > 0:
-            volume_score = min(np.log(current_volume + 1) * 2, 10)
-            if option_type.upper() == 'PE':
-                score += volume_score * 0.5
-            else:
-                score -= volume_score * 0.5
-        
-        # Historical velocity and acceleration from database
-        velocity = 0
-        acceleration = 0
-        if len(historical_df) >= 3:
-            scores = historical_df['sr_score'].tail(5).values
-            if len(scores) >= 2:
-                velocity = (scores[-1] - scores[0]) / len(scores) if len(scores) > 1 else 0
-            if len(scores) >= 4:
-                old_velocity = scores[-3] - scores[-4]
-                new_velocity = scores[-1] - scores[-2]
-                acceleration = new_velocity - old_velocity
-        
-        return {
-            'sr_score': max(-100, min(100, score)),
-            'oi_change': oi_change,
-            'oi_change_pct': oi_change_pct,
-            'price_change_pct': price_change_pct,
-            'velocity': velocity,
-            'acceleration': acceleration,
-            'historical_points': len(historical_df),
-            'bid_ask_ratio': bid_qty / ask_qty if ask_qty > 0 else 10
+        payload = {
+            exchange_segment: [int(security_id)]
         }
-    
-    def determine_transition_state(self, score_data: Dict, option_type: str) -> Dict:
-        """Determine transition state and speed"""
-        score = score_data['sr_score']
-        velocity = score_data['velocity']
-        acceleration = score_data['acceleration']
         
-        # State determination
-        if option_type.upper() == 'PE':
-            if score >= 60: state = "STRONG_SUPPORT"
-            elif score >= 30: state = "MODERATE_SUPPORT"
-            elif score >= 10: state = "WEAK_SUPPORT"
-            elif score >= -10: state = "NEUTRAL"
-            elif score >= -30: state = "WEAK_RESISTANCE"
-            elif score >= -60: state = "MODERATE_RESISTANCE"
-            else: state = "STRONG_RESISTANCE"
-        else:
-            if score <= -60: state = "STRONG_RESISTANCE"
-            elif score <= -30: state = "MODERATE_RESISTANCE"
-            elif score <= -10: state = "WEAK_RESISTANCE"
-            elif score <= 10: state = "NEUTRAL"
-            elif score <= 30: state = "WEAK_SUPPORT"
-            elif score <= 60: state = "MODERATE_SUPPORT"
-            else: state = "STRONG_SUPPORT"
-        
-        # Transition direction
-        if velocity > 5:
-            direction = 'SUPPORT_STRENGTHENING' if 'SUPPORT' in state else 'RESISTANCE_WEAKENING'
-        elif velocity < -5:
-            direction = 'RESISTANCE_STRENGTHENING' if 'RESISTANCE' in state else 'SUPPORT_WEAKENING'
-        else:
-            direction = 'STABLE'
-        
-        # Speed calculation
-        speed_magnitude = abs(velocity)
-        if speed_magnitude > 15:
-            speed = 'VERY_FAST' if abs(acceleration) > 3 else 'FAST'
-        elif speed_magnitude > 8:
-            speed = 'FAST' if abs(acceleration) > 2 else 'MODERATE'
-        elif speed_magnitude > 3:
-            speed = 'SLOW'
-        else:
-            speed = 'VERY_SLOW'
-        
-        return {
-            'current_state': state,
-            'transition_direction': direction,
-            'transition_speed': speed,
-            'score_velocity': velocity,
-            'score_acceleration': acceleration
-        }
-    
-    def check_and_send_alerts(self, df: pd.DataFrame, underlying: str, 
-                             telegram_notifier: TelegramNotifier, 
-                             alert_settings: Dict) -> List[Dict]:
-        """Check for alert conditions and send Telegram notifications"""
-        if df.empty or not telegram_notifier or not telegram_notifier.bot_token:
-            return []
-        
-        alerts = []
-        
-        # Check for fast transitions
-        if alert_settings.get('fast_transitions', True):
-            fast_transitions = df[df['transition_speed'].isin(['FAST', 'VERY_FAST'])]
-            for _, row in fast_transitions.iterrows():
-                alerts.append({
-                    'type': 'FAST_TRANSITION',
-                    'underlying': underlying,
-                    'data': row.to_dict()
-                })
-        
-        # Check for high velocity
-        if alert_settings.get('high_velocity', True):
-            high_velocity = df[abs(df['score_velocity']) > 10]
-            for _, row in high_velocity.iterrows():
-                alerts.append({
-                    'type': 'HIGH_VELOCITY', 
-                    'underlying': underlying,
-                    'data': row.to_dict()
-                })
-        
-        # Check for strong levels
-        if alert_settings.get('strong_levels', True):
-            strong_levels = df[abs(df['sr_score']) > 60]
-            for _, row in strong_levels.iterrows():
-                alerts.append({
-                    'type': 'STRONG_LEVEL',
-                    'underlying': underlying,
-                    'data': row.to_dict()
-                })
-        
-        # Check for potential breakouts
-        if alert_settings.get('breakouts', True):
-            potential_breakouts = df[
-                (abs(df['sr_score']) < 20) & 
-                (df['transition_speed'].isin(['FAST', 'VERY_FAST'])) &
-                (abs(df['score_velocity']) > 8)
-            ]
-            for _, row in potential_breakouts.iterrows():
-                alerts.append({
-                    'type': 'BREAKOUT',
-                    'underlying': underlying,
-                    'data': row.to_dict()
-                })
-        
-        # Send alerts if any found
-        if alerts:
-            success = telegram_notifier.send_batch_alerts(alerts)
-            if success:
-                # Save alert logs to database
-                for alert in alerts:
-                    self.db_manager.save_alert_log(alert)
-                logger.info(f"Sent {len(alerts)} alerts to Telegram")
-            return alerts
-        
-        return []
-             # Final Part 6: Main Scanning Function
-    def scan_and_save(self, underlying: str = "NIFTY", expiry: str = None, 
-                     telegram_notifier: TelegramNotifier = None, 
-                     alert_settings: Dict = None) -> pd.DataFrame:
-        """Main scan function with database integration and Telegram alerts"""
-        
-        # Default alert settings
-        if alert_settings is None:
-            alert_settings = {
-                'fast_transitions': True,
-                'high_velocity': True,
-                'strong_levels': True,
-                'breakouts': True,
-                'state_changes': True
-            }
-        
-        # Get expiry list if not provided
-        if not expiry:
-            expiry_list = self.get_expiry_list(underlying)
-            if not expiry_list:
-                st.error("Could not fetch expiry list")
-                return pd.DataFrame()
-            expiry = expiry_list[0]  # Use nearest expiry
-        
-        # Get option chain
-        option_chain = self.get_option_chain(underlying, expiry)
-        if not option_chain:
-            st.error("Could not fetch option chain")
-            return pd.DataFrame()
-        
-        spot_price = option_chain.get('last_price', 0)
-        
-        # Find ATM strikes
-        strikes = self.find_atm_strikes(spot_price, option_chain)
-        if not strikes:
-            st.error("Could not determine strikes")
-            return pd.DataFrame()
-        
-        results = []
-        db_records = []
-        
-        for strike in strikes:
-            strike_key = f"{strike:.6f}"
-            if strike_key in option_chain.get('oc', {}):
-                strike_data = option_chain['oc'][strike_key]
-                
-                for option_type in ['ce', 'pe']:
-                    if option_type in strike_data:
-                        option_data = strike_data[option_type]
-                        
-                        # Calculate SR analysis with database history
-                        score_data = self.calculate_sr_score_with_history(
-                            strike, option_type, option_data, spot_price
-                        )
-                        
-                        # Determine transition state
-                        transition_data = self.determine_transition_state(score_data, option_type)
-                        
-                        # Prepare result
-                        result = {
-                            'timestamp': datetime.now(),
-                            'strike': strike,
-                            'type': option_type.upper(),
-                            'spot_price': spot_price,
-                            'distance_pct': round(((strike - spot_price) / spot_price) * 100, 2),
-                            'ltp': option_data.get('last_price', 0),
-                            'change_pct': score_data['price_change_pct'],
-                            'volume': option_data.get('volume', 0),
-                            'oi': option_data.get('oi', 0),
-                            'oi_change': score_data['oi_change'],
-                            'oi_change_pct': round(score_data['oi_change_pct'], 2),
-                            'bid_qty': option_data.get('top_bid_quantity', 0),
-                            'ask_qty': option_data.get('top_ask_quantity', 0),
-                            'bid_ask_ratio': round(score_data['bid_ask_ratio'], 2),
-                            'sr_score': round(score_data['sr_score'], 1),
-                            'iv': round(option_data.get('implied_volatility', 0), 2),
-                            'delta': round(option_data.get('greeks', {}).get('delta', 0), 4),
-                            'theta': round(option_data.get('greeks', {}).get('theta', 0), 2),
-                            'gamma': round(option_data.get('greeks', {}).get('gamma', 0), 6),
-                            'vega': round(option_data.get('greeks', {}).get('vega', 0), 2),
-                            **transition_data
-                        }
-                        
-                        results.append(result)
-                        
-                        # Prepare database record
-                        db_record = {
-                            'underlying': underlying,
-                            'strike': float(strike),
-                            'option_type': option_type.lower(),
-                            'expiry': expiry,
-                            'spot_price': float(spot_price),
-                            'ltp': float(option_data.get('last_price', 0)),
-                            'change_pct': float(score_data['price_change_pct']),
-                            'volume': int(option_data.get('volume', 0)),
-                            'open_interest': int(option_data.get('oi', 0)),
-                            'oi_change': int(score_data['oi_change']),
-                            'oi_change_pct': float(score_data['oi_change_pct']),
-                            'bid_qty': int(option_data.get('top_bid_quantity', 0)),
-                            'ask_qty': int(option_data.get('top_ask_quantity', 0)),
-                            'bid_ask_ratio': float(score_data['bid_ask_ratio']),
-                            'sr_score': float(score_data['sr_score']),
-                            'current_state': transition_data['current_state'],
-                            'transition_direction': transition_data['transition_direction'],
-                            'transition_speed': transition_data['transition_speed'],
-                            'score_velocity': float(transition_data['score_velocity']),
-                            'score_acceleration': float(transition_data['score_acceleration']),
-                            'trend_strength': 0.0
-                        }
-                        
-                        db_records.append(db_record)
-        
-        # Create DataFrame
-        df = pd.DataFrame(results)
-        
-        # Save to database
-        if db_records:
-            success = self.db_manager.save_market_data(db_records)
-            if success:
-                st.success(f"Saved {len(db_records)} records to database")
+        try:
+            response = requests.post(url, headers=self.headers, json=payload)
+            if response.status_code == 200:
+                return response.json()
             else:
-                st.warning("Failed to save data to database")
-        
-        # Check for alerts and send notifications
-        if telegram_notifier and not df.empty:
-            alerts = self.check_and_send_alerts(df, underlying, telegram_notifier, alert_settings)
-            if alerts:
-                st.info(f"Sent {len(alerts)} alerts to Telegram")
-        
-        # Store current scan data for next comparison
-        self.previous_scan_data = df.copy()
-        
-        return df
-# Final Part 7: Chart Creation and Helper Functions
-def create_charts(df: pd.DataFrame, db_manager: SupabaseManager):
-    """Create interactive charts"""
-    if df.empty:
-        return None, None, None
-    
-    # SR Score Chart
-    fig_score = go.Figure()
-    
-    for option_type in ['CE', 'PE']:
-        data = df[df['type'] == option_type]
-        if not data.empty:
-            colors = ['red' if x < 0 else 'green' for x in data['sr_score']]
-            fig_score.add_trace(go.Scatter(
-                x=data['strike'],
-                y=data['sr_score'],
-                mode='markers+lines',
-                name=f'{option_type} Score',
-                text=[f"State: {state}<br>Direction: {direction}<br>Speed: {speed}<br>Velocity: {velocity:.2f}" 
-                      for state, direction, speed, velocity in zip(data['current_state'], 
-                                                        data['transition_direction'],
-                                                        data['transition_speed'],
-                                                        data['score_velocity'])],
-                hovertemplate='<b>%{x}</b><br>Score: %{y}<br>%{text}<extra></extra>',
-                marker=dict(
-                    size=abs(data['sr_score']).values * 0.3 + 8,
-                    color=colors,
-                    line=dict(width=2, color='white')
-                )
-            ))
-    
-    fig_score.update_layout(
-        title="Support Resistance Score by Strike",
-        xaxis_title="Strike Price",
-        yaxis_title="SR Score (-100 to +100)",
-        hovermode='closest',
-        height=500
-    )
-    
-    # Add horizontal lines for score levels
-    fig_score.add_hline(y=0, line_dash="dash", line_color="gray")
-    fig_score.add_hline(y=30, line_dash="dot", line_color="green", opacity=0.5)
-    fig_score.add_hline(y=-30, line_dash="dot", line_color="red", opacity=0.5)
-    fig_score.add_hline(y=60, line_dash="dot", line_color="darkgreen", opacity=0.5)
-    fig_score.add_hline(y=-60, line_dash="dot", line_color="darkred", opacity=0.5)
-    
-    # Historical Chart for ATM strike
-    fig_historical = None
-    if not df.empty:
-        atm_data = df[abs(df['distance_pct']) == abs(df['distance_pct']).min()].iloc[0]
-        historical_df = db_manager.get_historical_data(
-            "NIFTY", atm_data['strike'], atm_data['type'].lower(), hours_back=24
-        )
-        
-        if not historical_df.empty and len(historical_df) > 1:
-            fig_historical = go.Figure()
-            fig_historical.add_trace(go.Scatter(
-                x=pd.to_datetime(historical_df['timestamp']),
-                y=historical_df['sr_score'],
-                mode='lines+markers',
-                name='SR Score',
-                line=dict(color='blue', width=2)
-            ))
-            
-            fig_historical.update_layout(
-                title=f"Historical SR Score - {atm_data['strike']} {atm_data['type']}",
-                xaxis_title="Time",
-                yaxis_title="SR Score",
-                height=400
-            )
-    
-    # Velocity Chart
-    fig_velocity = go.Figure()
-    
-    for option_type in ['CE', 'PE']:
-        data = df[df['type'] == option_type]
-        if not data.empty:
-            fig_velocity.add_trace(go.Bar(
-                x=data['strike'],
-                y=data['score_velocity'],
-                name=f'{option_type} Velocity',
-                text=[f"{speed}<br>{vel:.2f}" for speed, vel in zip(data['transition_speed'], data['score_velocity'])],
-                textposition='auto',
-                marker_color='green' if option_type == 'PE' else 'red',
-                opacity=0.7
-            ))
-    
-    fig_velocity.update_layout(
-        title="Score Velocity by Strike",
-        xaxis_title="Strike Price", 
-        yaxis_title="Velocity",
-        height=400,
-        barmode='group'
-    )
-    
-    # Add velocity threshold lines
-    fig_velocity.add_hline(y=10, line_dash="dash", line_color="orange", 
-                          annotation_text="High Velocity Threshold")
-    fig_velocity.add_hline(y=-10, line_dash="dash", line_color="orange")
-    
-    return fig_score, fig_historical, fig_velocity
+                st.error(f"LTP API Error: {response.status_code}")
+                return None
+        except Exception as e:
+            st.error(f"Error fetching LTP: {str(e)}")
+            return None
 
-def display_setup_instructions():
-    """Display setup instructions for new users"""
-    with st.expander("Setup Instructions", expanded=False):
-        st.markdown("""
-        ### Database Setup (One-time)
-        
-        ```
-        """)
-
-def get_transition_emoji(direction: str, speed: str) -> str:
-    """Get visual indicators for transitions"""
-    direction_map = {
-        'SUPPORT_STRENGTHENING': '⬆️',
-        'SUPPORT_WEAKENING': '⬇️', 
-        'RESISTANCE_STRENGTHENING': '⬆️',
-        'RESISTANCE_WEAKENING': '⬇️',
-        'STABLE': '➡️'
+def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: str):
+    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
+        st.error("Dhan API credentials not configured")
+        return None
+    url = "https://api.dhan.co/v2/optionchain"
+    headers = {
+        'access-token': DHAN_ACCESS_TOKEN,
+        'client-id': DHAN_CLIENT_ID,
+        'Content-Type': 'application/json'
     }
-    
-    speed_map = {
-        'VERY_FAST': '⚡⚡',
-        'FAST': '⚡',
-        'MODERATE': '🔄',
-        'SLOW': '🐌',
-        'VERY_SLOW': '🐌🐌'
+    payload = {
+        "UnderlyingScrip": underlying_scrip,
+        "UnderlyingSeg": underlying_seg,
+        "Expiry": expiry
     }
-    
-    return f"{direction_map.get(direction, '❓')} {speed_map.get(speed, '❓')}"
-    # Final Part 8: Main Streamlit UI with Secrets Configuration
-def main():
-    """Main Streamlit app with secrets-based configuration"""
-    st.title("Support Resistance Scanner Pro")
-    st.markdown("*Real-time Options Flow Analysis with Cloud Database & Telegram Alerts*")
-    
-    # Setup instructions
-    display_setup_instructions()
-    
-    # Load configuration from secrets
     try:
-        # Database configuration
-        supabase_url = st.secrets["database"]["SUPABASE_URL"]
-        supabase_key = st.secrets["database"]["SUPABASE_ANON_KEY"]
-        
-        # Dhan API configuration
-        access_token = st.secrets["dhan_api"]["ACCESS_TOKEN"]
-        client_id = st.secrets["dhan_api"]["CLIENT_ID"]
-        
-        # Telegram configuration
-        telegram_bot_token = st.secrets["telegram"]["BOT_TOKEN"]
-        telegram_chat_id = st.secrets["telegram"]["CHAT_ID"]
-        
-        st.sidebar.success("All credentials loaded from secrets")
-        
-    except KeyError as e:
-        st.error(f"Missing configuration in secrets.toml: {e}")
-        st.info("Please ensure all required credentials are in your secrets.toml file")
-        return
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching Dhan option chain: {e}")
+        return None
+
+def get_dhan_expiry_list(underlying_scrip: int, underlying_seg: str):
+    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
+        st.error("Dhan API credentials not configured")
+        return None
+    url = "https://api.dhan.co/v2/optionchain/expirylist"
+    headers = {
+        'access-token': DHAN_ACCESS_TOKEN,
+        'client-id': DHAN_CLIENT_ID,
+        'Content-Type': 'application/json'
+    }
+    payload = {
+        "UnderlyingScrip": underlying_scrip,
+        "UnderlyingSeg": underlying_seg
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching Dhan expiry list: {e}")
+        return None
+
+class PivotIndicator:
+    """Higher Timeframe Pivot Support/Resistance Indicator"""
     
-    # Sidebar configuration
-    st.sidebar.header("Configuration")
+    @staticmethod
+    def pivot_high(series, left, right):
+        """Detect pivot highs"""
+        max_values = series.rolling(window=left+right+1, center=True).max()
+        return series == max_values
     
-    # Scan settings
-    underlying = st.sidebar.selectbox("Underlying", ["NIFTY", "BANKNIFTY", "FINNIFTY"])
+    @staticmethod
+    def pivot_low(series, left, right):
+        """Detect pivot lows"""
+        min_values = series.rolling(window=left+right+1, center=True).min()
+        return series == min_values
     
-    # Telegram settings
-    st.sidebar.header("Telegram Notifications")
-    telegram_enabled = st.sidebar.checkbox("Enable Telegram Alerts", value=True)
-    
-    if telegram_enabled:
-        # Test connection button
-        if st.sidebar.button("Test Telegram Connection"):
-            test_notifier = TelegramNotifier(telegram_bot_token, telegram_chat_id)
-            if test_notifier.test_connection():
-                test_msg = test_notifier.send_message("Test message from SR Scanner!")
-                if test_msg:
-                    st.sidebar.success("Telegram connection successful!")
-                else:
-                    st.sidebar.error("Failed to send test message")
-            else:
-                st.sidebar.error("Telegram connection failed")
-        
-        # Alert settings
-        st.sidebar.subheader("Alert Settings")
-        alert_settings = {
-            'fast_transitions': st.sidebar.checkbox("Fast Transitions", value=True),
-            'high_velocity': st.sidebar.checkbox("High Velocity Changes", value=True),
-            'strong_levels': st.sidebar.checkbox("Strong S/R Levels", value=True),
-            'breakouts': st.sidebar.checkbox("Potential Breakouts", value=True),
-            'state_changes': st.sidebar.checkbox("State Changes", value=False)
+    @staticmethod
+    def resample_ohlc(df, tf):
+        """Resample OHLC data to higher timeframes"""
+        rule_map = {
+            "3": "3min",
+            "5": "5min",
+            "10": "10min",
+            "15": "15min",
+            "D": "1D",
+            "W": "1W"
         }
+        rule = rule_map.get(tf, tf)
         
-        # Alert thresholds
-        st.sidebar.subheader("Alert Thresholds")
-        velocity_threshold = st.sidebar.slider("Velocity Threshold", 5, 20, 10)
-        score_threshold = st.sidebar.slider("Strong Level Threshold", 30, 80, 60)
-    else:
-        alert_settings = {}
+        if df.empty or 'datetime' not in df.columns:
+            return pd.DataFrame()
+        
+        df_temp = df.copy()
+        df_temp.set_index('datetime', inplace=True)
+        
+        try:
+            resampled = df_temp.resample(rule).agg({
+                "open": "first",
+                "high": "max", 
+                "low": "min",
+                "close": "last",
+                "volume": "sum"
+            }).dropna()
+            
+            return resampled
+        except Exception as e:
+            st.warning(f"Error resampling data for timeframe {tf}: {str(e)}")
+            return pd.DataFrame()
     
-    # Initialize database with secrets
-    if 'db_manager' not in st.session_state:
-        st.session_state.db_manager = SupabaseManager()
+    @staticmethod
+    def get_pivots(df, tf="D", length=5):
+        """Calculate pivot highs and lows for a given timeframe"""
+        df_htf = PivotIndicator.resample_ohlc(df, tf)
+        
+        if df_htf.empty or len(df_htf) < length * 2 + 1:
+            return pd.Series(dtype=float), pd.Series(dtype=float)
+        
+        highs = df_htf['high']
+        lows = df_htf['low']
+        
+        ph_mask = PivotIndicator.pivot_high(highs, length, length)
+        pl_mask = PivotIndicator.pivot_low(lows, length, length)
+        
+        pivot_highs = highs[ph_mask].dropna()
+        pivot_lows = lows[pl_mask].dropna()
+        
+        return pivot_highs, pivot_lows
     
-    db_manager = st.session_state.db_manager
-    
-    # Initialize scanner
-    scanner = DhanSRScanner(access_token, client_id, db_manager)
-    
-    # Initialize Telegram notifier
-    telegram_notifier = None
-    if telegram_enabled:
-        telegram_notifier = TelegramNotifier(telegram_bot_token, telegram_chat_id)
-    
-    # Display credentials status
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Status")
-    st.sidebar.success("Dhan API: Connected")
-    
-    if telegram_enabled and telegram_notifier:
-        if telegram_notifier.test_connection():
-            st.sidebar.success("Telegram: Connected")
-        else:
-            st.sidebar.error("Telegram: Failed")
-    else:
-        st.sidebar.info("Telegram: Disabled")
-    
-    if db_manager and db_manager.test_connection():
-        st.sidebar.success("Database: Connected")
-    else:
-        st.sidebar.error("Database: Failed")
-    
-    # Control buttons
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
-    with col1:
-        if st.button("Scan Now", type="primary"):
-            with st.spinner("Scanning market data..."):
-                try:
-                    df = scanner.scan_and_save(
-                        underlying, None, telegram_notifier, alert_settings
-                    )
-                    st.session_state.current_data = df
-                    st.session_state.last_scan_time = datetime.now()
-                    
-                    # Send startup notification if first scan
-                    if telegram_notifier and 'first_scan' not in st.session_state:
-                        telegram_notifier.send_startup_message(underlying)
-                        st.session_state.first_scan = True
-                        
-                except Exception as e:
-                    st.error(f"Scan failed: {e}")
-    
-    with col2:
-        if st.button("Load Latest"):
-            try:
-                latest_df = db_manager.get_latest_scan_data(underlying)
-                if not latest_df.empty:
-                    st.session_state.current_data = latest_df
-                    st.success(f"Loaded {len(latest_df)} records from database")
-                else:
-                    st.warning("No recent data found")
-            except Exception as e:
-                st.error(f"Load failed: {e}")
-    
-    with col3:
-        auto_refresh_enabled = st.session_state.get('auto_refresh', False)
-        if st.button(f"Auto {'ON' if auto_refresh_enabled else 'OFF'}"):
-            st.session_state.auto_refresh = not auto_refresh_enabled
-            if st.session_state.auto_refresh:
-                st.success("Auto refresh enabled (60s interval)")
-            else:
-                st.info("Auto refresh disabled")
-    
-    with col4:
-        if st.button("Clear Cache"):
-            keys_to_clear = ['current_data', 'last_scan_time', 'auto_refresh', 'first_scan']
-            for key in keys_to_clear:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.success("Cache cleared")
-    
-    with col5:
-        if telegram_notifier and st.button("Test Alert"):
-            test_alert = {
-                'type': 'FAST_TRANSITION',
-                'underlying': underlying,
-                'data': {
-                    'strike': 24000,
-                    'type': 'PE',
-                    'sr_score': 45.2,
-                    'transition_direction': 'SUPPORT_STRENGTHENING',
-                    'transition_speed': 'FAST',
-                    'score_velocity': 12.5,
-                    'current_state': 'MODERATE_SUPPORT'
-                }
-            }
-            telegram_notifier.send_batch_alerts([test_alert])
-            st.success("Test alert sent!")
-    
-    # Auto refresh logic
-    if st.session_state.get('auto_refresh', False):
-        if 'last_scan_time' not in st.session_state or \
-           (datetime.now() - st.session_state.last_scan_time).seconds > 60:
-            time.sleep(1)
-            st.rerun()
-              # Final Part 9: Data Display and Final Components
-    # Display data
-    if 'current_data' in st.session_state and not st.session_state.current_data.empty:
-        df = st.session_state.current_data
-        
-        # Key metrics
-        st.subheader("Key Metrics")
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
-        
-        with col1:
-            fast_transitions = len(df[df['transition_speed'].isin(['FAST', 'VERY_FAST'])])
-            st.metric("Fast Transitions", fast_transitions)
-        
-        with col2:
-            high_velocity = len(df[abs(df['score_velocity']) > 10])
-            st.metric("High Velocity", high_velocity)
-        
-        with col3:
-            strong_levels = len(df[abs(df['sr_score']) > 50])
-            st.metric("Strong S/R Levels", strong_levels)
-        
-        with col4:
-            avg_score = df['sr_score'].mean()
-            st.metric("Avg Score", f"{avg_score:.1f}")
-        
-        with col5:
-            if 'last_scan_time' in st.session_state:
-                time_ago = (datetime.now() - st.session_state.last_scan_time).seconds
-                st.metric("Last Scan", f"{time_ago}s ago")
-        
-        with col6:
-            telegram_status = "Connected" if telegram_enabled and telegram_notifier else "Disabled"
-            st.metric("Telegram", telegram_status)
-        
-        # Charts
-        st.subheader("Visual Analysis")
-        fig_score, fig_historical, fig_velocity = create_charts(df, db_manager)
-        
-        if fig_score:
-            st.plotly_chart(fig_score, use_container_width=True)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if fig_historical:
-                st.plotly_chart(fig_historical, use_container_width=True)
-        
-        with col2:
-            if fig_velocity:
-                st.plotly_chart(fig_velocity, use_container_width=True)
-        
-        # Data table
-        st.subheader("Detailed Analysis")
-        
-        # Filter options
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            state_filter = st.multiselect(
-                "Filter by State",
-                options=df['current_state'].unique(),
-                default=df['current_state'].unique()
-            )
-        
-        with col2:
-            speed_filter = st.multiselect(
-                "Filter by Speed", 
-                options=df['transition_speed'].unique(),
-                default=df['transition_speed'].unique()
-            )
-        
-        with col3:
-            direction_filter = st.multiselect(
-                "Filter by Direction",
-                options=df['transition_direction'].unique(),
-                default=df['transition_direction'].unique()
-            )
-        
-        with col4:
-            score_range = st.slider(
-                "SR Score Range",
-                min_value=int(df['sr_score'].min()),
-                max_value=int(df['sr_score'].max()),
-                value=(int(df['sr_score'].min()), int(df['sr_score'].max()))
-            )
-        
-        # Apply filters
-        filtered_df = df[
-            (df['current_state'].isin(state_filter)) &
-            (df['transition_speed'].isin(speed_filter)) &
-            (df['transition_direction'].isin(direction_filter)) &
-            (df['sr_score'] >= score_range[0]) &
-            (df['sr_score'] <= score_range[1])
+    @staticmethod
+    def get_all_pivots(df, pivot_settings):
+        """Get pivots for all configured timeframes"""
+        configs = [
+            ("3", 3, "#00ff88", "3M", pivot_settings.get('show_3m', True)),
+            ("5", 4, "#ff9900", "5M", pivot_settings.get('show_5m', True)),
+            ("10", 4, "#ff44ff", "10M", pivot_settings.get('show_10m', True)),
+            ("15", 4, "#4444ff", "15M", pivot_settings.get('show_15m', True)),
         ]
         
-        # Display table with enhanced formatting
-        if not filtered_df.empty:
-            # Add visual indicators
-            filtered_df['visual'] = filtered_df.apply(
-                lambda row: get_transition_emoji(row['transition_direction'], row['transition_speed']), 
-                axis=1
-            )
-            
-            display_columns = [
-                'visual', 'strike', 'type', 'distance_pct', 'current_state', 'sr_score',
-                'transition_direction', 'transition_speed', 'score_velocity',
-                'oi_change_pct', 'bid_ask_ratio', 'iv', 'delta'
-            ]
-            
-            # Color-code rows based on SR score and alerts
-            def color_rows(row):
-                if row['sr_score'] > 60:
-                    return ['background-color: rgba(0, 255, 0, 0.2)'] * len(row)
-                elif row['sr_score'] < -60:
-                    return ['background-color: rgba(255, 0, 0, 0.2)'] * len(row)
-                elif row['transition_speed'] in ['FAST', 'VERY_FAST']:
-                    return ['background-color: rgba(255, 255, 0, 0.2)'] * len(row)
-                elif abs(row['score_velocity']) > 10:
-                    return ['background-color: rgba(255, 165, 0, 0.2)'] * len(row)
-                else:
-                    return [''] * len(row)
-            
-            styled_df = filtered_df[display_columns].style.format({
-                'distance_pct': '{:.2f}%',
-                'sr_score': '{:.1f}',
-                'score_velocity': '{:.2f}',
-                'oi_change_pct': '{:.2f}%',
-                'bid_ask_ratio': '{:.2f}',
-                'iv': '{:.2f}%',
-                'delta': '{:.4f}'
-            }).apply(color_rows, axis=1)
-            
-            st.dataframe(styled_df, use_container_width=True)
-            
-            # Export data
-            csv = filtered_df.to_csv(index=False)
-            st.download_button(
-                "Download CSV",
-                csv,
-                f"sr_analysis_{underlying}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                "text/csv"
-            )
-            
-            # Alerts section
-            st.subheader("Alert Conditions")
-            
-            alert_cols = st.columns(4)
-            
-            with alert_cols[0]:
-                fast_df = filtered_df[filtered_df['transition_speed'].isin(['FAST', 'VERY_FAST'])]
-                if not fast_df.empty:
-                    st.warning(f"Fast Transitions Detected ({len(fast_df)})")
-                    for _, row in fast_df.iterrows():
-                        st.write(f"• {row['strike']} {row['type']}: {row['transition_direction']} at {row['transition_speed']} speed")
-            
-            with alert_cols[1]:
-                high_vel_df = filtered_df[abs(filtered_df['score_velocity']) > 10]
-                if not high_vel_df.empty:
-                    st.error(f"High Velocity Changes ({len(high_vel_df)})")
-                    for _, row in high_vel_df.iterrows():
-                        st.write(f"• {row['strike']} {row['type']}: Velocity {row['score_velocity']:.2f}")
-            
-            with alert_cols[2]:
-                strong_df = filtered_df[abs(filtered_df['sr_score']) > 60]
-                if not strong_df.empty:
-                    st.success(f"Strong Support/Resistance Levels ({len(strong_df)})")
-                    for _, row in strong_df.iterrows():
-                        level_type = "Support" if row['sr_score'] > 0 else "Resistance"
-                        st.write(f"• {row['strike']} {row['type']}: Strong {level_type} (Score: {row['sr_score']:.1f})")
-            
-            with alert_cols[3]:
-                breakout_df = filtered_df[
-                    (abs(filtered_df['sr_score']) < 20) & 
-                    (filtered_df['transition_speed'].isin(['FAST', 'VERY_FAST']))
-                ]
-                if not breakout_df.empty:
-                    st.info(f"Potential Breakouts ({len(breakout_df)})")
-                    for _, row in breakout_df.iterrows():
-                        st.write(f"• {row['strike']} {row['type']}: {row['current_state']} at {row['transition_speed']} speed")
+        all_pivots = []
         
-        else:
-            st.warning("No data matches the selected filters")
-    
+        for tf, length, color, label, enabled in configs:
+            if not enabled:
+                continue
+                
+            try:
+                ph, pl = PivotIndicator.get_pivots(df, tf, length)
+                
+                for timestamp, value in ph.items():
+                    all_pivots.append({
+                        'type': 'high',
+                        'timeframe': label,
+                        'timestamp': timestamp,
+                        'value': value,
+                        'color': color
+                    })
+                
+                for timestamp, value in pl.items():
+                    all_pivots.append({
+                        'type': 'low',
+                        'timeframe': label,
+                        'timestamp': timestamp,
+                        'value': value,
+                        'color': color
+                    })
+                    
+            except Exception as e:
+                st.warning(f"Error calculating pivots for {tf}: {str(e)}")
+                continue
+        
+        return all_pivots
+
+def calculate_greeks(option_type, S, K, T, r, sigma):
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        delta = norm.cdf(d1) if option_type == 'CE' else -norm.cdf(-d1)
+        gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
+        vega = S * norm.pdf(d1) * math.sqrt(T) / 100
+        theta = (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365 if option_type == 'CE' else (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
+        rho = (K * T * math.exp(-r * T) * norm.cdf(d2)) / 100 if option_type == 'CE' else (-K * T * math.exp(-r * T) * norm.cdf(-d2)) / 100
+        return round(delta, 4), round(gamma, 4), round(vega, 4), round(theta, 4), round(rho, 4)
+    except:
+        return 0, 0, 0, 0, 0
+
+def final_verdict(score):
+    if score >= 4:
+        return "Strong Bullish"
+    elif score >= 2:
+        return "Bullish"
+    elif score <= -4:
+        return "Strong Bearish"
+    elif score <= -2:
+        return "Bearish"
     else:
-        st.info("Click 'Scan Now' to start analysis or 'Load Latest' to view recent data.")
-        
-        # Show sample data structure
-        with st.expander("Expected Data Structure"):
-            sample_data = {
-                'Strike': [24000, 24050, 24100],
-                'Type': ['PE', 'CE', 'PE'],
-                'SR Score': [45.2, -22.1, 12.5],
-                'State': ['MODERATE_SUPPORT', 'WEAK_RESISTANCE', 'WEAK_SUPPORT'],
-                'Direction': ['SUPPORT_STRENGTHENING', 'RESISTANCE_WEAKENING', 'STABLE'],
-                'Speed': ['FAST', 'MODERATE', 'SLOW'],
-                'Velocity': [8.3, -5.1, 1.2]
-            }
-            st.dataframe(pd.DataFrame(sample_data))
+        return "Neutral"
+
+def delta_volume_bias(price, volume, chg_oi):
+    if price > 0 and volume > 0 and chg_oi > 0:
+        return "Bullish"
+    elif price < 0 and volume > 0 and chg_oi > 0:
+        return "Bearish"
+    elif price > 0 and volume > 0 and chg_oi < 0:
+        return "Bullish"
+    elif price < 0 and volume > 0 and chg_oi < 0:
+        return "Bearish"
+    else:
+        return "Neutral"
+
+def calculate_bid_ask_pressure(call_bid_qty, call_ask_qty, put_bid_qty, put_ask_qty):
+    pressure = (call_bid_qty - call_ask_qty) + (put_ask_qty - put_bid_qty)
+    if pressure > 500:
+        bias = "Bullish"
+    elif pressure < -500:
+        bias = "Bearish"
+    else:
+        bias = "Neutral"
+    return pressure, bias
+
+weights = {
+    "ChgOI_Bias": 2,
+    "Volume_Bias": 1,
+    "AskQty_Bias": 1,
+    "BidQty_Bias": 1,
+    "DVP_Bias": 1,
+    "PressureBias": 1,
+}
+
+def determine_level(row):
+    ce_oi = row.get('openInterest_CE', 0)
+    pe_oi = row.get('openInterest_PE', 0)
+    if pe_oi > 1.12 * ce_oi:
+        return "Support"
+    elif ce_oi > 1.12 * pe_oi:
+        return "Resistance"
+    else:
+        return "Neutral"
+
+def color_pressure(val):
+    if val > 500:
+        return 'background-color: #90EE90; color: black'
+    elif val < -500:
+        return 'background-color: #FFB6C1; color: black'
+    else:
+        return 'background-color: #FFFFE0; color: black'
+
+def color_pcr(val):
+    if val > 1.2:
+        return 'background-color: #90EE90; color: black'
+    elif val < 0.7:
+        return 'background-color: #FFB6C1; color: black'
+    else:
+        return 'background-color: #FFFFE0; color: black'
+
+def process_candle_data(data, interval):
+    """Process API response into DataFrame"""
+    if not data or 'open' not in data:
+        return pd.DataFrame()
     
-    # Footer
-    st.markdown("---")
-    st.markdown("*Powered by Dhan API, Streamlit, Supabase & Telegram*")
-    # Final Part 10: Main Function Call
+    df = pd.DataFrame({
+        'timestamp': data['timestamp'],
+        'open': data['open'],
+        'high': data['high'],
+        'low': data['low'],
+        'close': data['close'],
+        'volume': data['volume']
+    })
+    
+    ist = pytz.timezone('Asia/Kolkata')
+    df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
+    
+    return df
+
+def create_candlestick_chart(df, title, interval, show_pivots=True, pivot_settings=None):
+    """Create TradingView-style candlestick chart with optional pivot levels"""
+    if df.empty:
+        return go.Figure()
+    
+    fig = make_subplots(
+        rows=2, 
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        row_heights=[0.7, 0.3],
+        specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
+    )
+    
+    fig.add_trace(
+        go.Candlestick(
+            x=df['datetime'],
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name='Nifty 50',
+            increasing_line_color='#00ff88',
+            decreasing_line_color='#ff4444',
+            increasing_fillcolor='#00ff88',
+            decreasing_fillcolor='#ff4444'
+        ),
+        row=1, col=1
+    )
+    
+    if show_pivots and len(df) > 50:
+        try:
+            pivots = PivotIndicator.get_all_pivots(df, pivot_settings or {})
+            
+            timeframes = {}
+            for pivot in pivots:
+                tf = pivot['timeframe']
+                if tf not in timeframes:
+                    timeframes[tf] = {'highs': [], 'lows': [], 'color': pivot['color']}
+                
+                if pivot['type'] == 'high':
+                    timeframes[tf]['highs'].append((pivot['timestamp'], pivot['value']))
+                else:
+                    timeframes[tf]['lows'].append((pivot['timestamp'], pivot['value']))
+            
+            x_start = df['datetime'].min()
+            x_end = df['datetime'].max()
+            
+            for tf, data in timeframes.items():
+                color = data['color']
+                
+                for timestamp, high_value in data['highs'][-3:]:
+                    fig.add_shape(
+                        type="line",
+                        x0=x_start, x1=x_end,
+                        y0=high_value, y1=high_value,
+                        line=dict(color=color, width=1, dash="dash"),
+                        row=1, col=1
+                    )
+                    
+                    fig.add_annotation(
+                        x=x_end,
+                        y=high_value,
+                        text=f"{tf} R {high_value:.1f}",
+                        showarrow=False,
+                        font=dict(color=color, size=10),
+                        xanchor="left",
+                        row=1, col=1
+                    )
+                
+                for timestamp, low_value in data['lows'][-3:]:
+                    fig.add_shape(
+                        type="line", 
+                        x0=x_start, x1=x_end,
+                        y0=low_value, y1=low_value,
+                        line=dict(color=color, width=1, dash="dash"),
+                        row=1, col=1
+                    )
+                    
+                    fig.add_annotation(
+                        x=x_end,
+                        y=low_value,
+                        text=f"{tf} S {low_value:.1f}",
+                        showarrow=False,
+                        font=dict(color=color, size=10),
+                        xanchor="left",
+                        row=1, col=1
+                    )
+        
+        except Exception as e:
+            st.warning(f"Error adding pivot levels: {str(e)}")
+    
+    volume_colors = ['#00ff88' if close >= open else '#ff4444' 
+                    for close, open in zip(df['close'], df['open'])]
+    
+    fig.add_trace(
+        go.Bar(
+            x=df['datetime'],
+            y=df['volume'],
+            name='Volume',
+            marker_color=volume_colors,
+            opacity=0.7,
+            showlegend=False
+        ),
+        row=2, col=1
+    )
+    
+    fig.update_layout(
+        title=title,
+        template='plotly_dark',
+        xaxis_rangeslider_visible=False,
+        height=700,
+        showlegend=False,
+        margin=dict(l=0, r=0, t=40, b=0),
+        font=dict(color='white'),
+        plot_bgcolor='#1e1e1e',
+        paper_bgcolor='#1e1e1e'
+    )
+    
+    fig.update_xaxes(
+        title_text="Time (IST)",
+        showgrid=True,
+        gridwidth=1,
+        gridcolor='#333333',
+        type='date',
+        row=2, col=1
+    )
+    
+    fig.update_xaxes(
+        showgrid=True,
+        gridwidth=1,
+        gridcolor='#333333',
+        type='date',
+        row=1, col=1
+    )
+    
+    fig.update_yaxes(
+        title_text="Price (₹)",
+        showgrid=True,
+        gridwidth=1,
+        gridcolor='#333333',
+        side='left',
+        row=1, col=1
+    )
+    
+    fig.update_yaxes(
+        title_text="Volume",
+        showgrid=True,
+        gridwidth=1,
+        gridcolor='#333333',
+        side='left',
+        row=2, col=1
+    )
+    
+    return fig
+
+def display_metrics(ltp_data, df, db, symbol="NIFTY50"):
+    """Display price metrics and save analytics"""
+    if ltp_data and 'data' in ltp_data and not df.empty:
+        current_price = None
+        for exchange, data in ltp_data['data'].items():
+            for security_id, price_data in data.items():
+                current_price = price_data.get('last_price', 0)
+                break
+        
+        if current_price is None and not df.empty:
+            current_price = df['close'].iloc[-1]
+        
+        if not df.empty and len(df) > 1:
+            prev_close = df['close'].iloc[-2]
+            change = current_price - prev_close
+            change_pct = (change / prev_close) * 100
+            
+            day_high = df['high'].max()
+            day_low = df['low'].min()
+            day_open = df['open'].iloc[0]
+            volume = df['volume'].sum()
+            avg_price = df['close'].mean()
+            
+            analytics_data = {
+                'day_high': float(day_high),
+                'day_low': float(day_low),
+                'day_open': float(day_open),
+                'day_close': float(current_price),
+                'total_volume': int(volume),
+                'avg_price': float(avg_price),
+                'price_change': float(change),
+                'price_change_pct': float(change_pct)
+            }
+            db.save_market_analytics(symbol, analytics_data)
+            
+            col1, col2, col3, col4, col5 = st.columns(5)
+            
+            with col1:
+                color = "price-up" if change >= 0 else "price-down"
+                st.markdown(f"""
+                <div class="metric-container">
+                    <h4>Current Price</h4>
+                    <h2 class="{color}">₹{current_price:,.2f}</h2>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                color = "price-up" if change >= 0 else "price-down"
+                sign = "+" if change >= 0 else ""
+                st.markdown(f"""
+                <div class="metric-container">
+                    <h4>Change</h4>
+                    <h3 class="{color}">{sign}{change:.2f} ({sign}{change_pct:.2f}%)</h3>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                st.markdown(f"""
+                <div class="metric-container">
+                    <h4>Day High</h4>
+                    <h3>₹{day_high:,.2f}</h3>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col4:
+                st.markdown(f"""
+                <div class="metric-container">
+                    <h4>Day Low</h4>
+                    <h3>₹{day_low:,.2f}</h3>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col5:
+                st.markdown(f"""
+                <div class="metric-container">
+                    <h4>Volume</h4>
+                    <h3>{volume:,}</h3>
+                </div>
+                """, unsafe_allow_html=True)
+
+def validate_credentials(access_token, client_id):
+    """Validate and clean API credentials"""
+    issues = []
+    
+    clean_token = access_token.strip() if access_token else ""
+    clean_client_id = client_id.strip() if client_id else ""
+    
+    if not clean_token:
+        issues.append("Access token is empty")
+    elif len(clean_token) < 50:
+        issues.append("Access token seems too short")
+    elif clean_token != access_token:
+        issues.append("Access token has leading/trailing whitespace")
+    
+    if not clean_client_id:
+        issues.append("Client ID is empty")
+    elif len(clean_client_id) < 5:
+        issues.append("Client ID seems too short")
+    elif clean_client_id != client_id:
+        issues.append("Client ID has leading/trailing whitespace")
+    
+    if any(ord(c) < 32 or ord(c) > 126 for c in clean_token):
+        issues.append("Access token contains invalid characters")
+    
+    if any(ord(c) < 32 or ord(c) > 126 for c in clean_client_id):
+        issues.append("Client ID contains invalid characters")
+    
+    return clean_token, clean_client_id, issues
+
+def get_user_id():
+    """Generate a simple user ID based on session"""
+    if 'user_id' not in st.session_state:
+        st.session_state.user_id = hashlib.md5(str(datetime.now()).encode()).hexdigest()[:12]
+    return st.session_state.user_id
+
+def analyze_option_chain():
+    """Options chain analysis function"""
+    now = datetime.now(timezone("Asia/Kolkata"))
+    current_day = now.weekday()
+    current_time = now.time()
+    market_start = datetime.strptime("09:00", "%H:%M").time()
+    market_end = datetime.strptime("15:40", "%H:%M").time()
+    
+    if current_day >= 5 or not (market_start <= current_time <= market_end):
+        st.warning("Market Closed (Mon-Fri 9:00-15:40)")
+        return None
+    
+    expiry_data = get_dhan_expiry_list(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG)
+    if not expiry_data or 'data' not in expiry_data:
+        st.error("Failed to get expiry list from Dhan API")
+        return None
+    expiry_dates = expiry_data['data']
+    if not expiry_dates:
+        st.error("No expiry dates available")
+        return None
+    expiry = expiry_dates[0]
+
+    option_chain_data = get_dhan_option_chain(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG, expiry)
+    if not option_chain_data or 'data' not in option_chain_data:
+        st.error("Failed to get option chain from Dhan API")
+        return None
+    data = option_chain_data['data']
+    underlying = data['last_price']
+
+    oc_data = data['oc']
+    calls, puts = [], []
+    for strike, strike_data in oc_data.items():
+        if 'ce' in strike_data:
+            ce_data = strike_data['ce']
+            ce_data['strikePrice'] = float(strike)
+            calls.append(ce_data)
+        if 'pe' in strike_data:
+            pe_data = strike_data['pe']
+            pe_data['strikePrice'] = float(strike)
+            puts.append(pe_data)
+    df_ce = pd.DataFrame(calls)
+    df_pe = pd.DataFrame(puts)
+    df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
+
+    column_mapping = {
+        'last_price': 'lastPrice',
+        'oi': 'openInterest',
+        'previous_oi': 'previousOpenInterest',
+        'top_ask_quantity': 'askQty',
+        'top_bid_quantity': 'bidQty',
+        'volume': 'totalTradedVolume'
+    }
+    for old_col, new_col in column_mapping.items():
+        if f"{old_col}_CE" in df.columns:
+            df.rename(columns={f"{old_col}_CE": f"{new_col}_CE"}, inplace=True)
+        if f"{old_col}_PE" in df.columns:
+            df.rename(columns={f"{old_col}_PE": f"{new_col}_PE"}, inplace=True)
+    df['changeinOpenInterest_CE'] = df['openInterest_CE'] - df['previousOpenInterest_CE']
+    df['changeinOpenInterest_PE'] = df['openInterest_PE'] - df['previousOpenInterest_PE']
+
+    expiry_date = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone("Asia/Kolkata"))
+    T = max((expiry_date - now).days, 1) / 365
+    r = 0.06
+    for idx, row in df.iterrows():
+        strike = row['strikePrice']
+        iv_ce = row.get('impliedVolatility_CE', 15) or 15
+        iv_pe = row.get('impliedVolatility_PE', 15) or 15
+        greeks_ce = calculate_greeks('CE', underlying, strike, T, r, iv_ce / 100)
+        greeks_pe = calculate_greeks('PE', underlying, strike, T, r, iv_pe / 100)
+        df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks_ce
+        df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks_pe
+
+    atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
+    df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
+    df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
+    df['Level'] = df.apply(determine_level, axis=1)
+
+    total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000
+    total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
+    
+    st.markdown("## Open Interest Change (in Lakhs)")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("CALL ΔOI", f"{total_ce_change:+.1f}L", delta_color="inverse")
+    with col2:
+        st.metric("PUT ΔOI", f"{total_pe_change:+.1f}L", delta_color="normal")
+
+    bias_results = []
+    for _, row in df.iterrows():
+        if abs(row['strikePrice'] - atm_strike) > 50:
+            continue
+        bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
+            row.get('bidQty_CE', 0), row.get('askQty_CE', 0),
+            row.get('bidQty_PE', 0), row.get('askQty_PE', 0)
+        )
+        score = 0
+        row_data = {
+            "Strike": row['strikePrice'],
+            "Zone": row['Zone'],
+            "Level": row['Level'],
+            "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
+            "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
+            "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
+            "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
+            "DVP_Bias": delta_volume_bias(
+                row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
+                row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
+                row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)
+            ),
+            "BidAskPressure": bid_ask_pressure,
+            "PressureBias": pressure_bias
+        }
+        for k in row_data:
+            if "_Bias" in k:
+                bias = row_data[k]
+                score += weights.get(k, 1) if bias == "Bullish" else -weights.get(k, 1)
+        row_data["BiasScore"] = score
+        row_data["Verdict"] = final_verdict(score)
+        bias_results.append(row_data)
+
+    df_summary = pd.DataFrame(bias_results)
+    df_summary = pd.merge(
+        df_summary,
+        df[['strikePrice', 'openInterest_CE', 'openInterest_PE']],
+        left_on='Strike', right_on='strikePrice', how='left'
+    )
+
+    df_summary['PCR'] = df_summary['openInterest_PE'] / df_summary['openInterest_CE']
+    df_summary['PCR'] = np.where(df_summary['openInterest_CE'] == 0, 0, df_summary['PCR'])
+    df_summary['PCR'] = df_summary['PCR'].round(2)
+    df_summary['PCR_Signal'] = np.where(
+        df_summary['PCR'] > 1.2, "Bullish",
+        np.where(df_summary['PCR'] < 0.7, "Bearish", "Neutral")
+    )
+
+    st.markdown("## Option Chain Bias Summary")
+    styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(color_pressure, subset=['BidAskPressure'])
+    st.dataframe(styled_df, use_container_width=True)
+
+    return underlying
+
+def display_analytics_dashboard(db, symbol="NIFTY50"):
+    """Display analytics dashboard"""
+    st.subheader("Market Analytics Dashboard")
+    
+    analytics_df = db.get_market_analytics(symbol, days_back=30)
+    
+    if not analytics_df.empty:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig_price = go.Figure()
+            fig_price.add_trace(go.Scatter(
+                x=pd.to_datetime(analytics_df['date']),
+                y=analytics_df['day_close'],
+                mode='lines+markers',
+                name='Close Price',
+                line=dict(color='#00ff88', width=2)
+            ))
+            
+            fig_price.update_layout(
+                title="30-Day Price Trend",
+                template='plotly_dark',
+                height=300,
+                margin=dict(l=0, r=0, t=30, b=0)
+            )
+            st.plotly_chart(fig_price, use_container_width=True)
+        
+        with col2:
+            fig_volume = go.Figure()
+            fig_volume.add_trace(go.Bar(
+                x=pd.to_datetime(analytics_df['date']),
+                y=analytics_df['total_volume'],
+                name='Volume',
+                marker_color='#4444ff'
+            ))
+            
+            fig_volume.update_layout(
+                title="30-Day Volume Trend",
+                template='plotly_dark',
+                height=300,
+                margin=dict(l=0, r=0, t=30, b=0)
+            )
+            st.plotly_chart(fig_volume, use_container_width=True)
+        
+        st.subheader("30-Day Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            avg_price = analytics_df['day_close'].mean()
+            st.metric("Average Price", f"₹{avg_price:,.2f}")
+        
+        with col2:
+            volatility = analytics_df['price_change_pct'].std()
+            st.metric("Volatility (σ)", f"{volatility:.2f}%")
+        
+        with col3:
+            max_gain = analytics_df['price_change_pct'].max()
+            st.metric("Max Daily Gain", f"{max_gain:.2f}%")
+        
+        with col4:
+            max_loss = analytics_df['price_change_pct'].min()
+            st.metric("Max Daily Loss", f"{max_loss:.2f}%")
+
+def main():
+    st.title("📈 Nifty Trading & Options Analyzer")
+    
+    # Initialize Supabase
+    try:
+        if not supabase_url or not supabase_key:
+            st.error("Please configure your Supabase credentials in Streamlit secrets")
+            st.info("""
+            Add the following to your Streamlit secrets:
+            ```
+            [supabase]
+            url = "your_supabase_url"
+            anon_key = "your_supabase_anon_key"
+            ```
+            """)
+            return
+        
+        db = SupabaseDB(supabase_url, supabase_key)
+        db.create_tables()
+    except Exception as e:
+        st.error(f"Database connection error: {str(e)}")
+        return
+    
+    # Initialize API credentials
+    try:
+        if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
+            st.error("Please configure your Dhan API credentials in Streamlit secrets")
+            st.info("""
+            Add the following to your Streamlit secrets:
+            ```
+            DHAN_CLIENT_ID = "your_client_id"
+            DHAN_ACCESS_TOKEN = "your_access_token"
+            ```
+            """)
+            return
+        
+        access_token, client_id, issues = validate_credentials(DHAN_ACCESS_TOKEN, DHAN_CLIENT_ID)
+        
+        if issues:
+            st.error("Issues found with API credentials:")
+            for issue in issues:
+                st.error(f"• {issue}")
+            st.info("The app will try to use the cleaned values automatically.")
+        
+        st.sidebar.success("API credentials processed")
+        
+    except Exception as e:
+        st.error(f"Credential validation error: {str(e)}")
+        return
+    
+    # Get user ID and preferences
+    user_id = get_user_id()
+    user_prefs = db.get_user_preferences(user_id)
+    
+    # Sidebar for configuration
+    st.sidebar.header("Configuration")
+    
+    # Timeframe selection
+    timeframes = {
+        "1 min": "1",
+        "3 min": "3", 
+        "5 min": "5",
+        "10 min": "10",
+        "15 min": "15"
+    }
+    
+    default_timeframe = next((k for k, v in timeframes.items() if v == user_prefs['timeframe']), "5 min")
+    selected_timeframe = st.sidebar.selectbox(
+        "Select Timeframe",
+        list(timeframes.keys()),
+        index=list(timeframes.keys()).index(default_timeframe)
+    )
+    
+    interval = timeframes[selected_timeframe]
+    
+    # Pivot indicator controls
+    st.sidebar.header("📊 Pivot Indicator Settings")
+    
+    show_pivots = st.sidebar.checkbox("Show Pivot Levels", value=True, help="Display Higher Timeframe Support/Resistance levels")
+    
+    if show_pivots:
+        st.sidebar.subheader("Toggle Individual Pivot Levels")
+        
+        if 'pivot_settings' not in user_prefs:
+            user_prefs['pivot_settings'] = {
+                'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
+            }
+        
+        show_3m = st.sidebar.checkbox("3 Minute Pivots", value=user_prefs['pivot_settings'].get('show_3m', True), help="🟢 Green lines")
+        show_5m = st.sidebar.checkbox("5 Minute Pivots", value=user_prefs['pivot_settings'].get('show_5m', True), help="🟠 Orange lines")
+        show_10m = st.sidebar.checkbox("10 Minute Pivots", value=user_prefs['pivot_settings'].get('show_10m', True), help="🟣 Pink lines")
+        show_15m = st.sidebar.checkbox("15 Minute Pivots", value=user_prefs['pivot_settings'].get('show_15m', True), help="🔵 Blue lines")
+        
+        pivot_settings = {
+            'show_3m': show_3m,
+            'show_5m': show_5m,
+            'show_10m': show_10m,
+            'show_15m': show_15m
+        }
+        
+        st.sidebar.info("""
+        **Pivot Levels Legend:**
+        🟢 3M (Green) - 3-minute timeframe
+        🟠 5M (Orange) - 5-minute timeframe  
+        🟣 10M (Pink) - 10-minute timeframe
+        🔵 15M (Blue) - 15-minute timeframe
+        
+        S = Support, R = Resistance
+        """)
+    else:
+        pivot_settings = {
+            'show_3m': False, 'show_5m': False, 'show_10m': False, 'show_15m': False
+        }
+    
+    # Auto-refresh settings
+    auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=user_prefs['auto_refresh'])
+    
+    # Days back for data
+    days_back = st.sidebar.slider("Days of Historical Data", 1, 5, user_prefs['days_back'])
+    
+    # Data source preference
+    use_cache = st.sidebar.checkbox("Use Cached Data", value=True, help="Use database cache for faster loading")
+    
+    # Save preferences
+    if st.sidebar.button("💾 Save Preferences"):
+        db.save_user_preferences(user_id, interval, auto_refresh, days_back, pivot_settings)
+        st.sidebar.success("Preferences saved!")
+    
+    # Manual refresh button
+    if st.sidebar.button("🔄 Refresh Now"):
+        st.experimental_rerun()
+    
+    # Show analytics dashboard
+    show_analytics = st.sidebar.checkbox("Show Analytics Dashboard", value=False)
+    
+    # Initialize API
+    api = DhanAPI(access_token, client_id)
+    
+    # Main layout - Trading chart and Options analysis side by side
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.header("📈 Trading Chart")
+        
+        # Data fetching strategy
+        df = pd.DataFrame()
+        
+        if use_cache:
+            df = db.get_candle_data("NIFTY50", "IDX_I", interval, hours_back=days_back*24)
+            
+            if df.empty or (datetime.now(pytz.UTC) - df['datetime'].max().tz_convert(pytz.UTC)).total_seconds() > 300:
+                with st.spinner("Fetching latest data from API..."):
+                    data = api.get_intraday_data(
+                        security_id="13",
+                        exchange_segment="IDX_I", 
+                        instrument="INDEX",
+                        interval=interval,
+                        days_back=days_back
+                    )
+                    
+                    if data:
+                        df = process_candle_data(data, interval)
+                        db.save_candle_data("NIFTY50", "IDX_I", interval, df)
+        else:
+            with st.spinner("Fetching fresh data from API..."):
+                data = api.get_intraday_data(
+                    security_id="13",
+                    exchange_segment="IDX_I", 
+                    instrument="INDEX",
+                    interval=interval,
+                    days_back=days_back
+                )
+                
+                if data:
+                    df = process_candle_data(data, interval)
+                    db.save_candle_data("NIFTY50", "IDX_I", interval, df)
+        
+        # Get LTP data
+        ltp_data = api.get_ltp_data("13", "IDX_I")
+        
+        # Display metrics
+        if not df.empty:
+            display_metrics(ltp_data, df, db)
+        
+        # Create and display chart
+        if not df.empty:
+            fig = create_candlestick_chart(
+                df, 
+                f"Nifty 50 - {selected_timeframe} Chart {'with Pivot Levels' if show_pivots else ''}", 
+                interval,
+                show_pivots=show_pivots,
+                pivot_settings=pivot_settings
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Show data info
+            col1_info, col2_info, col3_info, col4_info = st.columns(4)
+            with col1_info:
+                st.info(f"📊 Data Points: {len(df)}")
+            with col2_info:
+                latest_time = df['datetime'].max().strftime("%Y-%m-%d %H:%M:%S IST")
+                st.info(f"🕐 Latest: {latest_time}")
+            with col3_info:
+                data_source = "Database Cache" if use_cache else "Live API"
+                st.info(f"📡 Source: {data_source}")
+            with col4_info:
+                pivot_status = "✅ Enabled" if show_pivots else "❌ Disabled"
+                st.info(f"📈 Pivots: {pivot_status}")
+            
+            if show_pivots and len(df) > 50:
+                st.markdown("""
+                **Pivot Levels Legend:**
+                - 🟢 **3M Levels**: 3-minute timeframe support/resistance
+                - 🟠 **5M Levels**: 5-minute timeframe swing points  
+                - 🟣 **10M Levels**: 10-minute support/resistance zones
+                - 🔵 **15M Levels**: 15-minute major support/resistance levels
+                
+                *R = Resistance (Price ceiling), S = Support (Price floor)*
+                """)
+        else:
+            st.error("No data available. Please check your API credentials and try again.")
+    
+    with col2:
+        st.header("📊 Options Analysis")
+        
+        # Options chain analysis
+        underlying_price = analyze_option_chain()
+        
+        if underlying_price:
+            st.info(f"**NIFTY SPOT:** {underlying_price:.2f}")
+    
+    # Analytics dashboard below
+    if show_analytics:
+        st.markdown("---")
+        display_analytics_dashboard(db)
+    
+    # Show current time
+    ist = pytz.timezone('Asia/Kolkata')
+    current_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+    st.sidebar.info(f"Last Updated: {current_time}")
+    
+    # Auto-refresh logic
+    if auto_refresh:
+        st.sidebar.info("Auto-refresh enabled - page will refresh every 2 minutes")
+        time.sleep(120)
+        st.experimental_rerun()
+
 if __name__ == "__main__":
     main()
-
-
-
