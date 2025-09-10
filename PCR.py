@@ -1018,37 +1018,42 @@ def analyze():
 
                 atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
                 atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
+                atm_bidqty_bias = atm_row['BidQty_Bias'] if atm_row is not None else None
                 pcr_signal = df_summary[df_summary['Strike'] == row['Strike']]['PCR_Signal'].values[0]
 
                 # Signal logic
                 if st.session_state.use_pcr_filter:
                     # Support + Bullish conditions with PCR confirmation
-                    if (row['Level'] == "Support" and total_score >= 4 
+                    if (row['Level'] == "Support" and total_score >= 0 
                         and "Bullish" in market_view
                         and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
                         and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
+                        and (atm_bidqty_bias == "Bullish" or atm_askqty_bias is None)
                         and pcr_signal == "Bullish"):
                         option_type = 'CE'
                     # Resistance + Bearish conditions with PCR confirmation
-                    elif (row['Level'] == "Resistance" and total_score <= -4 
+                    elif (row['Level'] == "Resistance" and total_score <= 0 
                           and "Bearish" in market_view
                           and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
                           and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
+                          and (atm_bidqty_bias == "Bearish" or atm_askqty_bias is None)
                           and pcr_signal == "Bearish"):
                         option_type = 'PE'
                     else:
                         continue
                 else:
                     # Original signal logic without PCR confirmation
-                    if (row['Level'] == "Support" and total_score >= 4 
+                    if (row['Level'] == "Support" and total_score >= 0 
                         and "Bullish" in market_view
                         and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
-                        and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)):
+                        and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
+                        and (atm_bidqty_bias == "Bullish" or atm_askqty_bias is None)):
                         option_type = 'CE'
-                    elif (row['Level'] == "Resistance" and total_score <= -4 
+                    elif (row['Level'] == "Resistance" and total_score <= 0 
                           and "Bearish" in market_view
                           and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
-                          and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)):
+                          and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
+                          and (atm_bidqty_bias == "Bearish" or atm_askqty_bias is None)):
                         option_type = 'PE'
                     else:
                         continue
