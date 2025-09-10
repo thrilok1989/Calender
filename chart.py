@@ -51,61 +51,10 @@ class SupabaseDB:
     def create_tables(self):
         """Create necessary tables if they don't exist"""
         try:
-            # Create candle_data table
+            # Test connection by trying to select from candle_data
             self.client.table('candle_data').select('id').limit(1).execute()
         except:
-            st.info("Setting up database tables...")
-            # Note: In production, create tables via Supabase SQL editor:
-            """
-            CREATE TABLE IF NOT EXISTS candle_data (
-                id SERIAL PRIMARY KEY,
-                symbol VARCHAR(20) NOT NULL,
-                exchange VARCHAR(20) NOT NULL,
-                timeframe VARCHAR(10) NOT NULL,
-                timestamp BIGINT NOT NULL,
-                datetime TIMESTAMPTZ NOT NULL,
-                open DECIMAL(10,2) NOT NULL,
-                high DECIMAL(10,2) NOT NULL,
-                low DECIMAL(10,2) NOT NULL,
-                close DECIMAL(10,2) NOT NULL,
-                volume BIGINT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                UNIQUE(symbol, exchange, timeframe, timestamp)
-            );
-            
-            CREATE TABLE IF NOT EXISTS user_preferences (
-                id SERIAL PRIMARY KEY,
-                user_id VARCHAR(100) NOT NULL,
-                timeframe VARCHAR(10) DEFAULT '5',
-                auto_refresh BOOLEAN DEFAULT true,
-                days_back INTEGER DEFAULT 1,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW(),
-                UNIQUE(user_id)
-            );
-            
-            CREATE TABLE IF NOT EXISTS market_analytics (
-                id SERIAL PRIMARY KEY,
-                symbol VARCHAR(20) NOT NULL,
-                date DATE NOT NULL,
-                day_high DECIMAL(10,2),
-                day_low DECIMAL(10,2),
-                day_open DECIMAL(10,2),
-                day_close DECIMAL(10,2),
-                total_volume BIGINT,
-                avg_price DECIMAL(10,2),
-                price_change DECIMAL(10,2),
-                price_change_pct DECIMAL(5,2),
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                UNIQUE(symbol, date)
-            );
-            
-            CREATE INDEX idx_candle_data_symbol_timeframe_timestamp 
-            ON candle_data(symbol, timeframe, timestamp);
-            
-            CREATE INDEX idx_candle_data_datetime 
-            ON candle_data(datetime);
-            """
+            st.info("Database tables may need to be created. Please run the SQL setup first.")
     
     def save_candle_data(self, symbol, exchange, timeframe, df):
         """Save candle data to Supabase"""
@@ -238,8 +187,9 @@ class SupabaseDB:
 
 class DhanAPI:
     def __init__(self, access_token, client_id):
-        self.access_token = access_token
-        self.client_id = client_id
+        # Clean the tokens by stripping whitespace
+        self.access_token = access_token.strip() if access_token else ""
+        self.client_id = client_id.strip() if client_id else ""
         self.base_url = "https://api.dhan.co/v2"
         self.headers = {
             'Accept': 'application/json',
@@ -328,7 +278,7 @@ def create_candlestick_chart(df, title, interval):
         shared_xaxis=True,
         vertical_spacing=0.1,
         subplot_titles=(f'Nifty 50 - {interval} min', 'Volume'),
-        row_width=[0.7, 0.3]
+        row_heights=[0.7, 0.3]  # Fixed: was row_width, now row_heights
     )
     
     # Candlestick chart
@@ -488,6 +438,38 @@ def display_metrics(ltp_data, df, db, symbol="NIFTY50"):
                 </div>
                 """, unsafe_allow_html=True)
 
+def validate_credentials(access_token, client_id):
+    """Validate and clean API credentials"""
+    issues = []
+    
+    # Clean tokens
+    clean_token = access_token.strip() if access_token else ""
+    clean_client_id = client_id.strip() if client_id else ""
+    
+    # Check for common issues
+    if not clean_token:
+        issues.append("Access token is empty")
+    elif len(clean_token) < 50:
+        issues.append("Access token seems too short")
+    elif clean_token != access_token:
+        issues.append("Access token has leading/trailing whitespace")
+    
+    if not clean_client_id:
+        issues.append("Client ID is empty")
+    elif len(clean_client_id) < 5:
+        issues.append("Client ID seems too short")
+    elif clean_client_id != client_id:
+        issues.append("Client ID has leading/trailing whitespace")
+    
+    # Check for invalid characters
+    if any(ord(c) < 32 or ord(c) > 126 for c in clean_token):
+        issues.append("Access token contains invalid characters")
+    
+    if any(ord(c) < 32 or ord(c) > 126 for c in clean_client_id):
+        issues.append("Client ID contains invalid characters")
+    
+    return clean_token, clean_client_id, issues
+
 def get_user_id():
     """Generate a simple user ID based on session"""
     if 'user_id' not in st.session_state:
@@ -562,7 +544,7 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
             st.metric("Max Daily Loss", f"{max_loss:.2f}%")
 
 def main():
-    st.title("Nifty 50 Trading Chart with Database")
+    st.title("📈 Nifty 50 Trading Chart with Database")
     
     # Initialize Supabase
     try:
@@ -584,10 +566,28 @@ def main():
     
     # Initialize API credentials
     try:
-        access_token = st.secrets["dhan"]["access_token"]
-        client_id = st.secrets["dhan"]["client_id"]
-    except:
+        raw_access_token = st.secrets["dhan"]["access_token"]
+        raw_client_id = st.secrets["dhan"]["client_id"]
+        
+        # Validate and clean credentials
+        access_token, client_id, issues = validate_credentials(raw_access_token, raw_client_id)
+        
+        if issues:
+            st.error("Issues found with API credentials:")
+            for issue in issues:
+                st.error(f"• {issue}")
+            
+            # Show the raw vs cleaned values for debugging
+            st.info("Raw values vs cleaned values:")
+            st.code(f"Access token: '{raw_access_token}' -> '{access_token}'")
+            st.code(f"Client ID: '{raw_client_id}' -> '{client_id}'")
+            st.info("The app will try to use the cleaned values automatically.")
+        
+        st.sidebar.success("API credentials processed")
+        
+    except Exception as e:
         st.error("Please configure your Dhan API credentials in Streamlit secrets")
+        st.error(f"Error: {str(e)}")
         return
     
     # Get user ID and preferences
@@ -722,8 +722,14 @@ def main():
         else:
             st.info("Enable 'Show Analytics Dashboard' in the sidebar to view historical analytics.")
     
-    # Auto-refresh logic
-    if auto_refresh and not show_analytics:
+    # Show current time
+    ist = pytz.timezone('Asia/Kolkata')
+    current_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+    st.sidebar.info(f"Last Updated: {current_time}")
+    
+    # Auto-refresh logic (simplified for stability)
+    if auto_refresh:
+        st.sidebar.info("Auto-refresh enabled - page will refresh every 2 minutes")
         time.sleep(120)  # 2 minutes
         st.experimental_rerun()
 
