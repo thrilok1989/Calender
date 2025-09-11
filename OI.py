@@ -26,8 +26,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Auto-refresh every 80 seconds
-st_autorefresh(interval=80000, key="datarefresh")
+# Auto-refresh every 2 minutes (120 seconds)
+st_autorefresh(interval=120000, key="datarefresh")
+
+# Initialize session state for refresh tracking
+if 'last_refresh' not in st.session_state:
+    st.session_state.last_refresh = datetime.now()
+if 'auto_refresh_enabled' not in st.session_state:
+    st.session_state.auto_refresh_enabled = True
 
 # Custom CSS for TradingView-like appearance + ATM highlighting
 st.markdown("""
@@ -593,7 +599,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
     price_relation = None  # 'above' or 'below' pivot level
     
     for pivot in pivots:
-        if pivot['timeframe'] in ['5M', '10M', '15M']:
+        if pivot['timeframe'] in ['10M', '15M']:
             price_diff = current_price - pivot['value']
             if abs(price_diff) <= pivot_proximity:
                 near_pivot = True
@@ -1357,6 +1363,10 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
 def main():
     st.title("📈 Nifty Trading & Options Analyzer")
     
+    # Check if we need to refresh based on auto-refresh setting
+    current_time = datetime.now()
+    refresh_interval = timedelta(minutes=2)
+    
     # Initialize Supabase
     try:
         if not supabase_url or not supabase_key:
@@ -1511,8 +1521,9 @@ def main():
         )
         selected_expiry = expiry_dates[selected_expiry_idx]
     
-    # Auto-refresh settings
+    # Auto-refresh settings - update session state
     auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=user_prefs['auto_refresh'])
+    st.session_state.auto_refresh_enabled = auto_refresh
     
     # Days back for data
     days_back = st.sidebar.slider("Days of Historical Data", 1, 5, user_prefs['days_back'])
@@ -1550,6 +1561,17 @@ def main():
     
     # Manual refresh button
     if st.sidebar.button("🔄 Refresh Now"):
+        st.session_state.last_refresh = datetime.now()
+        st.rerun()
+    
+    # Show refresh status
+    time_since_refresh = (current_time - st.session_state.last_refresh).total_seconds()
+    st.sidebar.info(f"Last refresh: {int(time_since_refresh)} seconds ago")
+    
+    # Auto-refresh logic
+    if st.session_state.auto_refresh_enabled and time_since_refresh >= 120:
+        st.sidebar.info("🔄 Auto-refreshing data...")
+        st.session_state.last_refresh = current_time
         st.rerun()
     
     # Show analytics dashboard
@@ -1679,7 +1701,7 @@ def main():
     # Show current time
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
-    st.sidebar.info(f"Last Updated: {current_time}")
+    st.sidebar.info(f"Current Time: {current_time}")
 
 if __name__ == "__main__":
     main()
