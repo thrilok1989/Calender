@@ -1,3 +1,7 @@
+Pivot Proximity (Points)
+
+is only showing + points i want -+points for exaample it shows only defult +5 points i want -+5 points Pivot Proximity (Points)
+
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import requests
@@ -16,6 +20,7 @@ import math
 from scipy.stats import norm
 from pytz import timezone
 import io
+import os
 
 # Page configuration
 st.set_page_config(
@@ -70,9 +75,33 @@ try:
     supabase_url = st.secrets.get("supabase", {}).get("url", "")
     supabase_key = st.secrets.get("supabase", {}).get("anon_key", "")
     
-    # Telegram Configuration
-    TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+    # Enhanced Telegram Configuration with better error handling
+    try:
+        # Try multiple ways to get the credentials
+        TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+        TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+        
+        # If still empty, try alternative approaches
+        if not TELEGRAM_BOT_TOKEN:
+            try:
+                TELEGRAM_BOT_TOKEN = st.secrets.TELEGRAM_BOT_TOKEN
+            except:
+                pass
+        
+        if not TELEGRAM_CHAT_ID:
+            try:
+                TELEGRAM_CHAT_ID = st.secrets.TELEGRAM_CHAT_ID
+            except:
+                pass
+        
+        # Convert chat ID to string if it's numeric
+        if TELEGRAM_CHAT_ID and isinstance(TELEGRAM_CHAT_ID, (int, float)):
+            TELEGRAM_CHAT_ID = str(int(TELEGRAM_CHAT_ID))
+            
+    except Exception as e:
+        st.error(f"Telegram config error: {e}")
+        TELEGRAM_BOT_TOKEN = ""
+        TELEGRAM_CHAT_ID = ""
     
 except Exception:
     DHAN_CLIENT_ID = ""
@@ -121,6 +150,23 @@ def send_telegram_message_sync(message):
             st.error(f"Telegram error: {response.status_code}")
     except Exception as e:
         st.error(f"Telegram notification error: {e}")
+
+def test_telegram_connection():
+    """Test if Telegram is properly configured"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False, "Credentials not configured"
+    
+    try:
+        test_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
+        response = requests.get(test_url, timeout=10)
+        
+        if response.status_code == 200:
+            return True, "✅ Telegram bot is active and connected"
+        else:
+            return False, f"❌ Telegram API error: {response.status_code}"
+            
+    except Exception as e:
+        return False, f"❌ Telegram connection failed: {str(e)}"
 
 class SupabaseDB:
     def __init__(self, url, key):
@@ -1433,12 +1479,17 @@ def main():
     st.sidebar.header("🔔 Trading Signals")
     enable_signals = st.sidebar.checkbox("Enable Telegram Signals", value=True, help="Send notifications when conditions are met")
     
-    # Configurable pivot proximity
-    pivot_proximity = st.sidebar.slider("Pivot Proximity (Points)", 1, 20, user_prefs.get('pivot_proximity', 5), 
-                                       help="Distance from pivot levels to trigger signals")
+    # Configurable pivot proximity with both positive and negative values
+    pivot_proximity = st.sidebar.slider(
+        "Pivot Proximity (± Points)", 
+        min_value=1, 
+        max_value=20, 
+        value=user_prefs.get('pivot_proximity', 5),
+        help="Distance from pivot levels to trigger signals (both above and below)"
+    )
     
     if enable_signals:
-        st.sidebar.info(f"Signals sent when:\n• Price within {pivot_proximity}pts of pivot\n• All option bias aligned\n• ATM at support/resistance")
+        st.sidebar.info(f"Signals sent when:\n• Price within ±{pivot_proximity}pts of pivot\n• All option bias aligned\n• ATM at support/resistance")
     
     # Options expiry selection
     st.sidebar.header("📅 Options Settings")
@@ -1476,6 +1527,21 @@ def main():
         deleted_count = db.clear_old_candle_data(cleanup_days)
         st.sidebar.success(f"Deleted {deleted_count} old records")
     
+    # Connection Test Section
+    st.sidebar.header("🔧 Connection Test")
+    
+    if st.sidebar.button("Test Telegram Connection"):
+        success, message = test_telegram_connection()
+        if success:
+            st.sidebar.success(message)
+            
+            # Send a test message
+            test_msg = "🔔 Nifty Analyzer - Test message successful! ✅"
+            send_telegram_message_sync(test_msg)
+            st.sidebar.success("Test message sent to Telegram!")
+        else:
+            st.sidebar.error(message)
+    
     # Save preferences
     if st.sidebar.button("💾 Save Preferences"):
         db.save_user_preferences(user_id, interval, auto_refresh, days_back, pivot_settings, pivot_proximity)
@@ -1487,6 +1553,13 @@ def main():
     
     # Show analytics dashboard
     show_analytics = st.sidebar.checkbox("Show Analytics Dashboard", value=False)
+    
+    # Debug info
+    st.sidebar.subheader("🔧 Debug Info")
+    st.sidebar.write(f"Telegram Bot Token: {'✅ Set' if TELEGRAM_BOT_TOKEN else '❌ Missing'}")
+    st.sidebar.write(f"Telegram Chat ID: {'✅ Set' if TELEGRAM_CHAT_ID else '❌ Missing'}")
+    st.sidebar.write(f"Token length: {len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0}")
+    st.sidebar.write(f"Chat ID: {TELEGRAM_CHAT_ID}")
     
     # Initialize API
     api = DhanAPI(access_token, client_id)
