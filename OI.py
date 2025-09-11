@@ -590,12 +590,15 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
     # Check if price is within configured proximity of any pivot level
     near_pivot = False
     pivot_level = None
+    price_relation = None  # 'above' or 'below' pivot level
     
     for pivot in pivots:
         if pivot['timeframe'] in ['10M', '15M']:
-            if abs(current_price - pivot['value']) <= pivot_proximity:
+            price_diff = current_price - pivot['value']
+            if abs(price_diff) <= pivot_proximity:
                 near_pivot = True
                 pivot_level = pivot
+                price_relation = 'above' if price_diff > 0 else 'below'
                 break
     
     if near_pivot and len(option_data) > 0:
@@ -628,14 +631,15 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
             atm_strike = row['Strike']
             stop_loss_percent = 20
             
-            # Check for bullish signal
-            if all(bullish_conditions.values()):
+            # Check for bullish signal - Price must be ABOVE pivot (within +5 points range)
+            if all(bullish_conditions.values()) and price_relation == 'above' and 0 < (current_price - pivot_level['value']) <= pivot_proximity:
                 conditions_text = "\n".join([f"✅ {k}" for k, v in bullish_conditions.items() if v])
+                price_diff = current_price - pivot_level['value']
                 
                 message = f"""
 🚨 <b>NIFTY CALL SIGNAL ALERT</b> 🚨
 
-📍 <b>Spot Price:</b> ₹{current_price:.2f}
+📍 <b>Spot Price:</b> ₹{current_price:.2f} (ABOVE Pivot by +{price_diff:.2f} points)
 📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
 🎯 <b>ATM Strike:</b> {atm_strike}
 
@@ -659,14 +663,15 @@ Please verify all conditions manually before trading.
                 except Exception as e:
                     st.error(f"Failed to send notification: {e}")
             
-            # Check for bearish signal
-            elif all(bearish_conditions.values()):
+            # Check for bearish signal - Price must be BELOW pivot (within -5 points range)
+            elif all(bearish_conditions.values()) and price_relation == 'below' and -pivot_proximity <= (current_price - pivot_level['value']) < 0:
                 conditions_text = "\n".join([f"🔴 {k}" for k, v in bearish_conditions.items() if v])
+                price_diff = current_price - pivot_level['value']
                 
                 message = f"""
 🔴 <b>NIFTY PUT SIGNAL ALERT</b> 🔴
 
-📍 <b>Spot Price:</b> ₹{current_price:.2f}
+📍 <b>Spot Price:</b> ₹{current_price:.2f} (BELOW Pivot by {price_diff:+.2f} points)
 📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
 🎯 <b>ATM Strike:</b> {atm_strike}
 
