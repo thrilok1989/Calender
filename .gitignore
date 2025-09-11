@@ -1,0 +1,111 @@
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Jupyter
+.ipynb_checkpoints/
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Temporary files
+temp/
+tmp/
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Cache
+.cache/
+.pytest_cache/
+.mypy_cache/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Profiling
+.profile
+
+# Package files
+*.tar.gz
+*.whl
+
+# MacOS
+*.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# Project specific
+data/
+downloads/
+uploads/
