@@ -26,14 +26,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Auto-refresh every 2 minutes (120 seconds)
-st_autorefresh(interval=120000, key="datarefresh")
-
-# Initialize session state for refresh tracking
-if 'last_refresh' not in st.session_state:
-    st.session_state.last_refresh = datetime.now()
-if 'auto_refresh_enabled' not in st.session_state:
-    st.session_state.auto_refresh_enabled = True
+# Auto-refresh every 60 seconds (reduced from 80 for better performance)
+st_autorefresh(interval=60000, key="datarefresh")
 
 # Custom CSS for TradingView-like appearance + ATM highlighting
 st.markdown("""
@@ -63,7 +57,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
 # === API Configuration ===
 try:
     DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
@@ -116,20 +109,33 @@ except Exception:
 NIFTY_UNDERLYING_SCRIP = 13
 NIFTY_UNDERLYING_SEG = "IDX_I"
 
-# Cached functions for performance
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+# Cached functions for performance (reduced TTL for live trading)
+@st.cache_data(ttl=60)  # Reduced from 300 to 60 seconds
 def cached_pivot_calculation(df_json, pivot_settings):
     """Cache pivot calculations to improve performance"""
     df = pd.read_json(df_json)
     return PivotIndicator.get_all_pivots(df, pivot_settings)
 
-@st.cache_data(ttl=60)  # Cache for 1 minute
+@st.cache_data(ttl=30)  # Reduced from 60 to 30 seconds for IV
 def cached_iv_average(option_data_json):
     """Cache IV average calculation"""
     df = pd.read_json(option_data_json)
     iv_ce_avg = df['impliedVolatility_CE'].mean()
     iv_pe_avg = df['impliedVolatility_PE'].mean()
     return iv_ce_avg, iv_pe_avg
+
+@st.cache_data(ttl=120)  # Cache expiry list for 2 minutes instead of 5
+def get_dhan_expiry_list_cached(underlying_scrip: int, underlying_seg: str):
+    return get_dhan_expiry_list(underlying_scrip, underlying_seg)
+
+# Market hours detection function
+def is_market_hours():
+    """Check if current time is during market hours"""
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    market_start = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_end = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return market_start <= now <= market_end and now.weekday() < 5
 
 # Telegram Functions
 def send_telegram_message_sync(message):
@@ -251,8 +257,8 @@ class SupabaseDB:
         except Exception as e:
             st.error(f"Error clearing old data: {str(e)}")
             return 0
-    
-    def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, pivot_settings, pivot_proximity=5):
+
+def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, pivot_settings, pivot_proximity=5):
         """Save user preferences"""
         try:
             data = {
@@ -422,10 +428,6 @@ class DhanAPI:
             st.error(f"Error fetching LTP: {str(e)}")
             return None
 
-@st.cache_data(ttl=300)  # Cache expiry list for 5 minutes
-def get_dhan_expiry_list_cached(underlying_scrip: int, underlying_seg: str):
-    return get_dhan_expiry_list(underlying_scrip, underlying_seg)
-
 def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: str):
     if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
         st.error("Dhan API credentials not configured")
@@ -582,7 +584,7 @@ class PivotIndicator:
         return all_pivots
 
 def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_proximity=5):
-    """Enhanced trading signal detection with both bullish and bearish signals"""
+    """Enhanced trading signal detection with both bullish and bearish signals - CORRECTED VERSION"""
     if df.empty or option_data is None or len(option_data) == 0 or not current_price:
         return
     
@@ -596,15 +598,12 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
     # Check if price is within configured proximity of any pivot level
     near_pivot = False
     pivot_level = None
-    price_relation = None  # 'above' or 'below' pivot level
     
     for pivot in pivots:
         if pivot['timeframe'] in ['10M', '15M']:
-            price_diff = current_price - pivot['value']
-            if abs(price_diff) <= pivot_proximity:
+            if abs(current_price - pivot['value']) <= pivot_proximity:
                 near_pivot = True
                 pivot_level = pivot
-                price_relation = 'above' if price_diff > 0 else 'below'
                 break
     
     if near_pivot and len(option_data) > 0:
@@ -637,24 +636,28 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
             atm_strike = row['Strike']
             stop_loss_percent = 20
             
-            # Check for bullish signal - Price must be ABOVE pivot (within +5 points range)
-            if all(bullish_conditions.values()) and price_relation == 'above' and 0 < (current_price - pivot_level['value']) <= pivot_proximity:
+            # Check for bullish signal
+            if all(bullish_conditions.values()):
                 conditions_text = "\n".join([f"✅ {k}" for k, v in bullish_conditions.items() if v])
-                price_diff = current_price - pivot_level['value']
+                
+                # Get CE LTP and calculate stop loss
+                ce_ltp = row.get('lastPrice_CE', 0)
+                stop_loss_price = ce_ltp * 0.8  # 20% stop loss
                 
                 message = f"""
 🚨 <b>NIFTY CALL SIGNAL ALERT</b> 🚨
 
-📍 <b>Spot Price:</b> ₹{current_price:.2f} (ABOVE Pivot by +{price_diff:.2f} points)
+📍 <b>Spot Price:</b> ₹{current_price:.2f}
 📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
-🎯 <b>ATM Strike:</b> {atm_strike}
+🎯 <b>ATM Strike:</b> {atm_strike} CE
+💰 <b>CE LTP:</b> ₹{ce_ltp:.1f}
 
 <b>✅ ALL BULLISH CONDITIONS MET:</b>
 {conditions_text}
 
-📋 <b>SUGGESTED REVIEW:</b>
-• Strike: {atm_strike} CE
-• Stop Loss: {stop_loss_percent}%
+📋 <b>TRADE SUGGESTION:</b>
+• BUY {atm_strike} CE at ₹{ce_ltp:.1f}
+• Stop Loss: ₹{stop_loss_price:.1f} (20% below LTP)
 • Manual verification required
 
 ⚠️ <b>DISCLAIMER:</b> This is for notification only. 
@@ -669,24 +672,28 @@ Please verify all conditions manually before trading.
                 except Exception as e:
                     st.error(f"Failed to send notification: {e}")
             
-            # Check for bearish signal - Price must be BELOW pivot (within -5 points range)
-            elif all(bearish_conditions.values()) and price_relation == 'below' and -pivot_proximity <= (current_price - pivot_level['value']) < 0:
+            # Check for bearish signal
+            elif all(bearish_conditions.values()):
                 conditions_text = "\n".join([f"🔴 {k}" for k, v in bearish_conditions.items() if v])
-                price_diff = current_price - pivot_level['value']
+                
+                # Get PE LTP and calculate stop loss
+                pe_ltp = row.get('lastPrice_PE', 0)
+                stop_loss_price = pe_ltp * 0.8  # 20% stop loss
                 
                 message = f"""
 🔴 <b>NIFTY PUT SIGNAL ALERT</b> 🔴
 
-📍 <b>Spot Price:</b> ₹{current_price:.2f} (BELOW Pivot by {price_diff:+.2f} points)
+📍 <b>Spot Price:</b> ₹{current_price:.2f}
 📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
-🎯 <b>ATM Strike:</b> {atm_strike}
+🎯 <b>ATM Strike:</b> {atm_strike} PE
+💰 <b>PE LTP:</b> ₹{pe_ltp:.1f}
 
 <b>🔴 ALL BEARISH CONDITIONS MET:</b>
 {conditions_text}
 
-📋 <b>SUGGESTED REVIEW:</b>
-• Strike: {atm_strike} PE
-• Stop Loss: {stop_loss_percent}%
+📋 <b>TRADE SUGGESTION:</b>
+• BUY {atm_strike} PE at ₹{pe_ltp:.1f}
+• Stop Loss: ₹{stop_loss_price:.1f} (20% below LTP)
 • Manual verification required
 
 ⚠️ <b>DISCLAIMER:</b> This is for notification only. 
@@ -1127,9 +1134,8 @@ def create_csv_download(df_summary):
     df_summary.to_csv(output, index=False)
     return output.getvalue()
 
-
 def analyze_option_chain(selected_expiry=None):
-    """Enhanced options chain analysis with expiry selection"""
+    """Enhanced options chain analysis with expiry selection - CORRECTED VERSION"""
     now = datetime.now(timezone("Asia/Kolkata"))
     
     # Get expiry list - use cached version for performance
@@ -1230,7 +1236,7 @@ def analyze_option_chain(selected_expiry=None):
     with col2:
         st.metric("PUT ΔOI", f"{total_pe_change:+.1f}L", delta_color="normal")
 
-    bias_results = []
+bias_results = []
     for _, row in df.iterrows():
         bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
             row.get('bidQty_CE', 0), row.get('askQty_CE', 0),
@@ -1262,13 +1268,16 @@ def analyze_option_chain(selected_expiry=None):
         bias_results.append(row_data)
 
     df_summary = pd.DataFrame(bias_results)
+    
+    # CORRECTED: Include LTP data in the merge for signal detection
     df_summary = pd.merge(
         df_summary,
-        df[['strikePrice', 'openInterest_CE', 'openInterest_PE']],
+        df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 'lastPrice_CE', 'lastPrice_PE']],
         left_on='Strike', right_on='strikePrice', how='left'
     )
 
     df_summary['PCR'] = df_summary['openInterest_PE'] / df_summary['openInterest_CE']
+    df_summary = df_summary.fillna(0)
     df_summary['PCR'] = np.where(df_summary['openInterest_CE'] == 0, 0, df_summary['PCR'])
     df_summary['PCR'] = df_summary['PCR'].round(2)
     df_summary['PCR_Signal'] = np.where(
@@ -1363,9 +1372,16 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
 def main():
     st.title("📈 Nifty Trading & Options Analyzer")
     
-    # Check if we need to refresh based on auto-refresh setting
-    current_time = datetime.now()
-    refresh_interval = timedelta(minutes=2)
+    # Add session state for auto-refresh tracking
+    if 'last_refresh' not in st.session_state:
+        st.session_state.last_refresh = datetime.now()
+
+    # Force refresh every 2 minutes during market hours
+    if is_market_hours():
+        time_since_refresh = (datetime.now() - st.session_state.last_refresh).total_seconds()
+        if time_since_refresh > 120:  # 2 minutes
+            st.session_state.last_refresh = datetime.now()
+            st.rerun()
     
     # Initialize Supabase
     try:
@@ -1521,15 +1537,19 @@ def main():
         )
         selected_expiry = expiry_dates[selected_expiry_idx]
     
-    # Auto-refresh settings - update session state
-    auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=user_prefs['auto_refresh'])
-    st.session_state.auto_refresh_enabled = auto_refresh
+    # Auto-refresh settings
+    auto_refresh = st.sidebar.checkbox("Auto Refresh (1 min)", value=user_prefs['auto_refresh'])
     
     # Days back for data
     days_back = st.sidebar.slider("Days of Historical Data", 1, 5, user_prefs['days_back'])
     
-    # Data source preference
-    use_cache = st.sidebar.checkbox("Use Cached Data", value=True, help="Use database cache for faster loading")
+    # Data source preference - improved logic for market hours
+    if is_market_hours():
+        use_cache = st.sidebar.checkbox("Use Cached Data", value=False, help="During market hours: Use fresh data for better accuracy")
+        st.sidebar.info("🔴 Market Hours: Using fresh data recommended")
+    else:
+        use_cache = st.sidebar.checkbox("Use Cached Data", value=True, help="Outside market hours: Cache is fine")
+        st.sidebar.info("🟢 Market Closed: Cache mode enabled")
     
     # Database management
     st.sidebar.header("🗑️ Database Management")
@@ -1561,28 +1581,22 @@ def main():
     
     # Manual refresh button
     if st.sidebar.button("🔄 Refresh Now"):
-        st.session_state.last_refresh = datetime.now()
-        st.rerun()
-    
-    # Show refresh status
-    time_since_refresh = (current_time - st.session_state.last_refresh).total_seconds()
-    st.sidebar.info(f"Last refresh: {int(time_since_refresh)} seconds ago")
-    
-    # Auto-refresh logic
-    if st.session_state.auto_refresh_enabled and time_since_refresh >= 120:
-        st.sidebar.info("🔄 Auto-refreshing data...")
-        st.session_state.last_refresh = current_time
         st.rerun()
     
     # Show analytics dashboard
     show_analytics = st.sidebar.checkbox("Show Analytics Dashboard", value=False)
     
-    # Debug info
+    # CORRECTED Debug info - Security fix for Chat ID
     st.sidebar.subheader("🔧 Debug Info")
     st.sidebar.write(f"Telegram Bot Token: {'✅ Set' if TELEGRAM_BOT_TOKEN else '❌ Missing'}")
     st.sidebar.write(f"Telegram Chat ID: {'✅ Set' if TELEGRAM_CHAT_ID else '❌ Missing'}")
     st.sidebar.write(f"Token length: {len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0}")
-    st.sidebar.write(f"Chat ID: {TELEGRAM_CHAT_ID}")
+    # SECURITY FIX: Don't display actual Chat ID
+    if TELEGRAM_CHAT_ID:
+        masked_chat_id = f"***{TELEGRAM_CHAT_ID[-4:]}" if len(TELEGRAM_CHAT_ID) > 4 else "****"
+        st.sidebar.write(f"Chat ID: {masked_chat_id}")
+    else:
+        st.sidebar.write("Chat ID: Not set")
     
     # Initialize API
     api = DhanAPI(access_token, client_id)
@@ -1593,14 +1607,15 @@ def main():
     with col1:
         st.header("📈 Trading Chart")
         
-        # Data fetching strategy
+        # Enhanced data fetching strategy with market hours consideration
         df = pd.DataFrame()
         current_price = None
         
-        if use_cache:
+        if use_cache and not is_market_hours():
+            # Use cache only outside market hours
             df = db.get_candle_data("NIFTY50", "IDX_I", interval, hours_back=days_back*24)
             
-            if df.empty or (datetime.now(pytz.UTC) - df['datetime'].max().tz_convert(pytz.UTC)).total_seconds() > 300:
+            if df.empty or (datetime.now(pytz.UTC) - df['datetime'].max().tz_convert(pytz.UTC)).total_seconds() > 180:
                 with st.spinner("Fetching latest data from API..."):
                     data = api.get_intraday_data(
                         security_id="13",
@@ -1614,6 +1629,7 @@ def main():
                         df = process_candle_data(data, interval)
                         db.save_candle_data("NIFTY50", "IDX_I", interval, df)
         else:
+            # Always fetch fresh data during market hours or when cache disabled
             with st.spinner("Fetching fresh data from API..."):
                 data = api.get_intraday_data(
                     security_id="13",
@@ -1661,7 +1677,7 @@ def main():
                 latest_time = df['datetime'].max().strftime("%Y-%m-%d %H:%M:%S IST")
                 st.info(f"🕐 Latest: {latest_time}")
             with col3_info:
-                data_source = "Database Cache" if use_cache else "Live API"
+                data_source = "Database Cache" if (use_cache and not is_market_hours()) else "Live API"
                 st.info(f"📡 Source: {data_source}")
             with col4_info:
                 pivot_status = "✅ Enabled" if show_pivots else "❌ Disabled"
@@ -1701,7 +1717,7 @@ def main():
     # Show current time
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
-    st.sidebar.info(f"Current Time: {current_time}")
+    st.sidebar.info(f"Last Updated: {current_time}")
 
 if __name__ == "__main__":
     main()
