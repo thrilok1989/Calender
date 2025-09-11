@@ -1434,8 +1434,13 @@ def main():
     enable_signals = st.sidebar.checkbox("Enable Telegram Signals", value=True, help="Send notifications when conditions are met")
     
     # Configurable pivot proximity
-    pivot_proximity = st.sidebar.slider("Pivot Proximity (Points)", 1, 20, user_prefs.get('pivot_proximity', 5), 
-                                       help="Distance from pivot levels to trigger signals")
+    pivot_proximity = st.sidebar.slider(
+    "Pivot Proximity (± Points)", 
+    min_value=1, 
+    max_value=20, 
+    value=user_prefs.get('pivot_proximity', 5),
+    help="Distance from pivot levels to trigger signals (both above and below)"
+)
     
     if enable_signals:
         st.sidebar.info(f"Signals sent when:\n• Price within ±{pivot_proximity}pts of pivot\n• All option bias aligned\n• ATM at support/resistance")
