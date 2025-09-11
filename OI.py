@@ -1438,7 +1438,7 @@ def main():
                                        help="Distance from pivot levels to trigger signals")
     
     if enable_signals:
-        st.sidebar.info(f"Signals sent when:\n• Price within {pivot_proximity}pts of pivot\n• All option bias aligned\n• ATM at support/resistance")
+        st.sidebar.info(f"Signals sent when:\n• Price within ±{pivot_proximity}pts of pivot\n• All option bias aligned\n• ATM at support/resistance")
     
     # Options expiry selection
     st.sidebar.header("📅 Options Settings")
