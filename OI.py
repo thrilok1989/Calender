@@ -788,7 +788,7 @@ def calculate_greeks(option_type, S, K, T, r, sigma):
         delta = norm.cdf(d1) if option_type == 'CE' else -norm.cdf(-d1)
         gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
         vega = S * norm.pdf(d1) * math.sqrt(T) / 100
-                theta = (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365 if option_type == 'CE' else (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
+        theta = (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365 if option_type == 'CE' else (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
         rho = (K * T * math.exp(-r * T) * norm.cdf(d2)) / 100 if option_type == 'CE' else (-K * T * math.exp(-r * T) * norm.cdf(-d2)) / 100
         return round(delta, 4), round(gamma, 4), round(vega, 4), round(theta, 4), round(rho, 4)
     except:
