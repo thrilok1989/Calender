@@ -51,7 +51,7 @@ st.markdown("""
         color: #ff4444;
     }
     .atm-row {
-        background-color: #2d2d2d !important;
+        background-color: #FFD700 !important;
         font-weight: bold !important;
     }
 </style>
