@@ -16,7 +16,6 @@ import math
 from scipy.stats import norm
 from pytz import timezone
 import io
-import os
 
 # Page configuration
 st.set_page_config(
@@ -58,15 +57,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize all configuration variables at the top level
-DHAN_CLIENT_ID = ""
-DHAN_ACCESS_TOKEN = ""
-supabase_url = ""
-supabase_key = ""
-TELEGRAM_BOT_TOKEN = ""
-TELEGRAM_CHAT_ID = ""
-
-# === Enhanced API Configuration ===
+# === API Configuration ===
 try:
     DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
     DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", "")
@@ -79,63 +70,29 @@ try:
     supabase_url = st.secrets.get("supabase", {}).get("url", "")
     supabase_key = st.secrets.get("supabase", {}).get("anon_key", "")
     
-    # === Enhanced Telegram Configuration ===
-    try:
-        # Method 1: Direct access
-        try:
-            TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
-            TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
-        except:
-            # Method 2: Get with default
-            TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-            TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
-        
-        # Method 3: Try alternative naming
-        if not TELEGRAM_BOT_TOKEN:
-            try:
-                TELEGRAM_BOT_TOKEN = st.secrets.get("telegram", {}).get("bot_token", "")
-            except:
-                pass
-        
-        if not TELEGRAM_CHAT_ID:
-            try:
-                TELEGRAM_CHAT_ID = st.secrets.get("telegram", {}).get("chat_id", "")
-            except:
-                pass
-        
-        # Method 4: Environment variables as fallback
-        if not TELEGRAM_BOT_TOKEN:
-            TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        if not TELEGRAM_CHAT_ID:
-            TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-        
-        # Ensure chat ID is string (not integer)
-        if TELEGRAM_CHAT_ID:
-            if isinstance(TELEGRAM_CHAT_ID, (int, float)):
-                TELEGRAM_CHAT_ID = str(int(TELEGRAM_CHAT_ID))
-            elif isinstance(TELEGRAM_CHAT_ID, str) and TELEGRAM_CHAT_ID.isdigit():
-                TELEGRAM_CHAT_ID = TELEGRAM_CHAT_ID  # Already good
-                
-    except Exception as e:
-        st.error(f"Telegram configuration error: {str(e)}")
-        TELEGRAM_BOT_TOKEN = ""
-        TELEGRAM_CHAT_ID = ""
+    # Telegram Configuration
+    TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
     
 except Exception:
-    # Variables are already initialized with empty strings at the top level
-    pass
+    DHAN_CLIENT_ID = ""
+    DHAN_ACCESS_TOKEN = ""
+    supabase_url = ""
+    supabase_key = ""
+    TELEGRAM_BOT_TOKEN = ""
+    TELEGRAM_CHAT_ID = ""
 
 NIFTY_UNDERLYING_SCRIP = 13
 NIFTY_UNDERLYING_SEG = "IDX_I"
 
 # Cached functions for performance
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def cached_pivot_calculation(df_json, pivot_settings):
     """Cache pivot calculations to improve performance"""
     df = pd.read_json(df_json)
     return PivotIndicator.get_all_pivots(df, pivot_settings)
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=60)  # Cache for 1 minute
 def cached_iv_average(option_data_json):
     """Cache IV average calculation"""
     df = pd.read_json(option_data_json)
@@ -147,8 +104,7 @@ def cached_iv_average(option_data_json):
 def send_telegram_message_sync(message):
     """Send message to Telegram synchronously"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        st.error("Telegram credentials not configured - cannot send message")
-        return None
+        return
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -162,56 +118,9 @@ def send_telegram_message_sync(message):
         if response.status_code == 200:
             return response.json()
         else:
-            st.error(f"Telegram API error: {response.status_code} - {response.text}")
-            return None
+            st.error(f"Telegram error: {response.status_code}")
     except Exception as e:
         st.error(f"Telegram notification error: {e}")
-        return None
-
-def test_telegram_connection():
-    """Test if Telegram is properly configured"""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return False, "Credentials not configured"
-    
-    try:
-        test_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
-        response = requests.get(test_url, timeout=10)
-        
-        if response.status_code == 200:
-            return True, "✅ Telegram bot is active and connected"
-        else:
-            return False, f"❌ Telegram API error: {response.status_code}"
-            
-    except Exception as e:
-        return False, f"❌ Telegram connection failed: {str(e)}"
-
-def debug_secrets():
-    """Debug function to see what secrets are available"""
-    st.sidebar.subheader("🔍 Secrets Debug")
-    
-    try:
-        # Show all available secrets
-        all_secrets = dict(st.secrets)
-        secret_keys = list(all_secrets.keys())
-        st.sidebar.write("Available secrets:", secret_keys)
-        
-        # Test Telegram access
-        try:
-            token_test = st.secrets["TELEGRAM_BOT_TOKEN"]
-            st.sidebar.success("✅ TELEGRAM_BOT_TOKEN accessible")
-            st.sidebar.write(f"Token: {token_test[:10]}...{token_test[-5:]}")
-        except:
-            st.sidebar.error("❌ TELEGRAM_BOT_TOKEN not accessible")
-            
-        try:
-            chat_test = st.secrets["TELEGRAM_CHAT_ID"]
-            st.sidebar.success("✅ TELEGRAM_CHAT_ID accessible")
-            st.sidebar.write(f"Chat ID: {chat_test}")
-        except:
-            st.sidebar.error("❌ TELEGRAM_CHAT_ID not accessible")
-            
-    except Exception as e:
-        st.sidebar.error(f"Secrets access error: {e}")
 
 class SupabaseDB:
     def __init__(self, url, key):
@@ -465,7 +374,7 @@ class DhanAPI:
             st.error(f"Error fetching LTP: {str(e)}")
             return None
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300)  # Cache expiry list for 5 minutes
 def get_dhan_expiry_list_cached(underlying_scrip: int, underlying_seg: str):
     return get_dhan_expiry_list(underlying_scrip, underlying_seg)
 
@@ -642,7 +551,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
     
     for pivot in pivots:
         if pivot['timeframe'] in ['3M', '10M', '15M']:
-        if abs(current_price - pivot['value']) <= pivot_proximity:
+            if abs(current_price - pivot['value']) <= pivot_proximity:
                 near_pivot = True
                 pivot_level = pivot
                 break
@@ -703,11 +612,8 @@ Please verify all conditions manually before trading.
                 """
                 
                 try:
-                    result = send_telegram_message_sync(message)
-                    if result:
-                        st.success("🟢 Bullish signal notification sent!")
-                    else:
-                        st.warning("⚠️ Bullish signal detected but Telegram notification failed")
+                    send_telegram_message_sync(message)
+                    st.success("🟢 Bullish signal notification sent!")
                 except Exception as e:
                     st.error(f"Failed to send notification: {e}")
             
@@ -737,18 +643,15 @@ Please verify all conditions manually before trading.
                 """
                 
                 try:
-                    result = send_telegram_message_sync(message)
-                    if result:
-                        st.success("🔴 Bearish signal notification sent!")
-                    else:
-                        st.warning("⚠️ Bearish signal detected but Telegram notification failed")
+                    send_telegram_message_sync(message)
+                    st.success("🔴 Bearish signal notification sent!")
                 except Exception as e:
                     st.error(f"Failed to send notification: {e}")
 
 def calculate_exact_time_to_expiry(expiry_date_str):
     """Calculate exact time to expiry in years (days + hours)"""
     try:
-                expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").replace(hour=15, minute=30)
+        expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").replace(hour=15, minute=30)
         expiry_date = expiry_date.replace(tzinfo=pytz.timezone('Asia/Kolkata'))
         
         now = datetime.now(pytz.timezone('Asia/Kolkata'))
@@ -1089,7 +992,7 @@ def display_metrics(ltp_data, df, db, symbol="NIFTY50"):
             
             with col1:
                 color = "price-up" if change >= 0 else "price-down"
-                                st.markdown(f"""
+                st.markdown(f"""
                 <div class="metric-container">
                     <h4>Current Price</h4>
                     <h2 class="{color}">₹{current_price:,.2f}</h2>
@@ -1170,6 +1073,7 @@ def create_csv_download(df_summary):
     output = io.StringIO()
     df_summary.to_csv(output, index=False)
     return output.getvalue()
+
 
 def analyze_option_chain(selected_expiry=None):
     """Enhanced options chain analysis with expiry selection"""
@@ -1406,18 +1310,6 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
 def main():
     st.title("📈 Nifty Trading & Options Analyzer")
     
-    # DEBUG: Check Telegram configuration - Now these variables are defined
-    st.sidebar.subheader("🔍 Telegram Debug")
-    st.sidebar.write(f"TELEGRAM_BOT_TOKEN: {'✅ SET' if TELEGRAM_BOT_TOKEN else '❌ MISSING'}")
-    st.sidebar.write(f"TELEGRAM_CHAT_ID: {'✅ SET' if TELEGRAM_CHAT_ID else '❌ MISSING'}")
-    
-    if TELEGRAM_BOT_TOKEN:
-        st.sidebar.write(f"Token length: {len(TELEGRAM_BOT_TOKEN)}")
-        st.sidebar.write(f"Token starts with: {TELEGRAM_BOT_TOKEN[:10]}...")
-    
-    if TELEGRAM_CHAT_ID:
-        st.sidebar.write(f"Chat ID: {TELEGRAM_CHAT_ID} (type: {type(TELEGRAM_CHAT_ID)})")
-    
     # Initialize Supabase
     try:
         if not supabase_url or not supabase_key:
@@ -1472,9 +1364,6 @@ def main():
     except Exception as e:
         st.error(f"Credential validation error: {str(e)}")
         return
-    
-    # Debug secrets
-    debug_secrets()
     
     # Get user ID and preferences
     user_id = get_user_id()
@@ -1544,17 +1433,12 @@ def main():
     st.sidebar.header("🔔 Trading Signals")
     enable_signals = st.sidebar.checkbox("Enable Telegram Signals", value=True, help="Send notifications when conditions are met")
     
-    # Configurable pivot proximity with both positive and negative values
-    pivot_proximity = st.sidebar.slider(
-        "Pivot Proximity (± Points)", 
-        min_value=1, 
-        max_value=20, 
-        value=user_prefs.get('pivot_proximity', 5),
-        help="Distance from pivot levels to trigger signals (both above and below)"
-    )
+    # Configurable pivot proximity
+    pivot_proximity = st.sidebar.slider("Pivot Proximity (Points)", 1, 20, user_prefs.get('pivot_proximity', 5), 
+                                       help="Distance from pivot levels to trigger signals")
     
     if enable_signals:
-        st.sidebar.info(f"Signals sent when:\n• Price within ±{pivot_proximity}pts of pivot\n• All option bias aligned\n• ATM at support/resistance")
+        st.sidebar.info(f"Signals sent when:\n• Price within {pivot_proximity}pts of pivot\n• All option bias aligned\n• ATM at support/resistance")
     
     # Options expiry selection
     st.sidebar.header("📅 Options Settings")
@@ -1591,36 +1475,6 @@ def main():
     if st.sidebar.button("🗑 Clear History"):
         deleted_count = db.clear_old_candle_data(cleanup_days)
         st.sidebar.success(f"Deleted {deleted_count} old records")
-    
-    # Connection Test Section
-    st.sidebar.header("🔧 Connection Test")
-    
-    if st.sidebar.button("Test Telegram Connection"):
-        success, message = test_telegram_connection()
-        if success:
-            st.sidebar.success(message)
-            
-            # Send a test message
-            test_msg = "🔔 Nifty Analyzer - Test message successful! ✅"
-            result = send_telegram_message_sync(test_msg)
-            if result:
-                st.sidebar.success("Test message sent to Telegram!")
-            else:
-                st.sidebar.warning("Test message failed to send")
-        else:
-            st.sidebar.error(message)
-    
-    # Manual override in sidebar
-    st.sidebar.header("🛠️ Manual Telegram Setup")
-    
-    if st.sidebar.checkbox("Manual Telegram Setup", help="Use if secrets aren't loading"):
-        manual_token = st.sidebar.text_input("Bot Token", value=TELEGRAM_BOT_TOKEN or "")
-        manual_chat_id = st.sidebar.text_input("Chat ID", value=TELEGRAM_CHAT_ID or "")
-        
-        if manual_token and manual_chat_id:
-            TELEGRAM_BOT_TOKEN = manual_token
-            TELEGRAM_CHAT_ID = manual_chat_id
-            st.sidebar.success("Using manual credentials!")
     
     # Save preferences
     if st.sidebar.button("💾 Save Preferences"):
@@ -1709,7 +1563,7 @@ def main():
                 st.info(f"📊 Data Points: {len(df)}")
             with col2_info:
                 latest_time = df['datetime'].max().strftime("%Y-%m-%d %H:%M:%S IST")
-                                st.info(f"🕐 Latest: {latest_time}")
+                st.info(f"🕐 Latest: {latest_time}")
             with col3_info:
                 data_source = "Database Cache" if use_cache else "Live API"
                 st.info(f"📡 Source: {data_source}")
