@@ -280,7 +280,7 @@ def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, piv
             if "23505" not in str(e) and "duplicate key" not in str(e).lower():
                 st.error(f"Error saving preferences: {str(e)}")
     
-    def get_user_preferences(self, user_id):
+def get_user_preferences(self, user_id):
         """Get user preferences"""
         try:
             result = self.client.table('user_preferences')\
@@ -320,7 +320,7 @@ def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, piv
                 }
             }
     
-    def save_market_analytics(self, symbol, analytics_data):
+def save_market_analytics(self, symbol, analytics_data):
         """Save daily market analytics"""
         try:
             today = datetime.now(pytz.timezone('Asia/Kolkata')).date()
@@ -347,7 +347,7 @@ def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, piv
             if "23505" not in str(e) and "duplicate key" not in str(e).lower():
                 st.error(f"Error saving analytics: {str(e)}")
     
-    def get_market_analytics(self, symbol, days_back=30):
+def get_market_analytics(self, symbol, days_back=30):
         """Get historical market analytics"""
         try:
             cutoff_date = datetime.now().date() - timedelta(days=days_back)
@@ -380,7 +380,7 @@ class DhanAPI:
             'client-id': self.client_id
         }
         
-    def get_intraday_data(self, security_id="13", exchange_segment="IDX_I", instrument="INDEX", interval="1", days_back=1):
+def get_intraday_data(self, security_id="13", exchange_segment="IDX_I", instrument="INDEX", interval="1", days_back=1):
         """Get intraday historical data"""
         url = f"{self.base_url}/charts/intraday"
         
@@ -409,7 +409,7 @@ class DhanAPI:
             st.error(f"Error fetching data: {str(e)}")
             return None
     
-    def get_ltp_data(self, security_id="13", exchange_segment="IDX_I"):
+ def get_ltp_data(self, security_id="13", exchange_segment="IDX_I"):
         """Get Last Traded Price"""
         url = f"{self.base_url}/marketfeed/ltp"
         
@@ -489,7 +489,7 @@ class PivotIndicator:
         return series == min_values
     
     @staticmethod
-    def resample_ohlc(df, tf):
+ def resample_ohlc(df, tf):
         """Resample OHLC data to higher timeframes"""
         rule_map = {
             "3": "3min",
@@ -522,7 +522,7 @@ class PivotIndicator:
             return pd.DataFrame()
     
     @staticmethod
-    def get_pivots(df, tf="D", length=5):
+def get_pivots(df, tf="D", length=5):
         """Calculate pivot highs and lows for a given timeframe"""
         df_htf = PivotIndicator.resample_ohlc(df, tf)
         
@@ -541,7 +541,7 @@ class PivotIndicator:
         return pivot_highs, pivot_lows
     
     @staticmethod
-    def get_all_pivots(df, pivot_settings):
+def get_all_pivots(df, pivot_settings):
         """Get pivots for all configured timeframes"""
         configs = [
             ("3", 3, "#00ff88", "3M", pivot_settings.get('show_3m', True)),
