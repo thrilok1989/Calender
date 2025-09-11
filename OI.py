@@ -58,6 +58,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Initialize all configuration variables at the top level
+DHAN_CLIENT_ID = ""
+DHAN_ACCESS_TOKEN = ""
+supabase_url = ""
+supabase_key = ""
+TELEGRAM_BOT_TOKEN = ""
+TELEGRAM_CHAT_ID = ""
+
 # === Enhanced API Configuration ===
 try:
     DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
@@ -114,12 +122,8 @@ try:
         TELEGRAM_CHAT_ID = ""
     
 except Exception:
-    DHAN_CLIENT_ID = ""
-    DHAN_ACCESS_TOKEN = ""
-    supabase_url = ""
-    supabase_key = ""
-    TELEGRAM_BOT_TOKEN = ""
-    TELEGRAM_CHAT_ID = ""
+    # Variables are already initialized with empty strings at the top level
+    pass
 
 NIFTY_UNDERLYING_SCRIP = 13
 NIFTY_UNDERLYING_SEG = "IDX_I"
@@ -638,7 +642,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
     
     for pivot in pivots:
         if pivot['timeframe'] in ['3M', '10M', '15M']:
-            if abs(current_price - pivot['value']) <= pivot_proximity:
+                        if abs(current_price - pivot['value']) <= pivot_proximity:
                 near_pivot = True
                 pivot_level = pivot
                 break
@@ -744,7 +748,7 @@ Please verify all conditions manually before trading.
 def calculate_exact_time_to_expiry(expiry_date_str):
     """Calculate exact time to expiry in years (days + hours)"""
     try:
-        expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").replace(hour=15, minute=30)
+                expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").replace(hour=15, minute=30)
         expiry_date = expiry_date.replace(tzinfo=pytz.timezone('Asia/Kolkata'))
         
         now = datetime.now(pytz.timezone('Asia/Kolkata'))
@@ -1014,7 +1018,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True, pivot_settin
         showgrid=True,
         gridwidth=1,
         gridcolor='#333333',
-        type="date",
+        type='date',
         row=2, col=1
     )
     
@@ -1085,7 +1089,7 @@ def display_metrics(ltp_data, df, db, symbol="NIFTY50"):
             
             with col1:
                 color = "price-up" if change >= 0 else "price-down"
-                st.markdown(f"""
+                                st.markdown(f"""
                 <div class="metric-container">
                     <h4>Current Price</h4>
                     <h2 class="{color}">₹{current_price:,.2f}</h2>
@@ -1402,7 +1406,7 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
 def main():
     st.title("📈 Nifty Trading & Options Analyzer")
     
-    # DEBUG: Check Telegram configuration
+    # DEBUG: Check Telegram configuration - Now these variables are defined
     st.sidebar.subheader("🔍 Telegram Debug")
     st.sidebar.write(f"TELEGRAM_BOT_TOKEN: {'✅ SET' if TELEGRAM_BOT_TOKEN else '❌ MISSING'}")
     st.sidebar.write(f"TELEGRAM_CHAT_ID: {'✅ SET' if TELEGRAM_CHAT_ID else '❌ MISSING'}")
@@ -1705,7 +1709,7 @@ def main():
                 st.info(f"📊 Data Points: {len(df)}")
             with col2_info:
                 latest_time = df['datetime'].max().strftime("%Y-%m-%d %H:%M:%S IST")
-                st.info(f"🕐 Latest: {latest_time}")
+                                st.info(f"🕐 Latest: {latest_time}")
             with col3_info:
                 data_source = "Database Cache" if use_cache else "Live API"
                 st.info(f"📡 Source: {data_source}")
