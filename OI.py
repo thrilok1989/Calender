@@ -773,7 +773,7 @@ def color_pcr(val):
 def highlight_atm_row(row):
     """Highlight ATM row in the dataframe"""
     if row['Zone'] == 'ATM':
-        return ['background-color: #2d2d2d; font-weight: bold'] * len(row)
+        return ['background-color: #FFD700; font-weight: bold'] * len(row)
     return [''] * len(row)
 
 def process_candle_data(data, interval):
