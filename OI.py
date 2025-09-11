@@ -1,7 +1,3 @@
-Pivot Proximity (Points)
-
-is only showing + points i want -+points for exaample it shows only defult +5 points i want -+5 points Pivot Proximity (Points)
-
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import requests
