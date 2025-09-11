@@ -642,7 +642,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
     
     for pivot in pivots:
         if pivot['timeframe'] in ['3M', '10M', '15M']:
-                        if abs(current_price - pivot['value']) <= pivot_proximity:
+        if abs(current_price - pivot['value']) <= pivot_proximity:
                 near_pivot = True
                 pivot_level = pivot
                 break
