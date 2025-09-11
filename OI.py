@@ -1014,7 +1014,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True, pivot_settin
         showgrid=True,
         gridwidth=1,
         gridcolor='#333333',
-        type='date",
+        type="date",
         row=2, col=1
     )
     
