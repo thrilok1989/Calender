@@ -46,7 +46,7 @@ def dhan_api(endpoint, payload):
 
 def is_market_open():
     now = datetime.now(timezone("Asia/Kolkata"))
-    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("19:30", "%H:%M").time()
+    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("15:30", "%H:%M").time()
 
 def calculate_rsi(prices, period=7):
     """Calculate RSI using Wilder's smoothing (TradingView method)"""
@@ -72,39 +72,52 @@ def calculate_rsi(prices, period=7):
     rs = avg_gain / avg_loss
     return round(100 - (100 / (1 + rs)), 2)
 
-def get_rsi():
-    """Get NIFTY intraday data and calculate RSI-7"""
+def get_current_ltp():
+    """Get current NIFTY LTP from market quote"""
     try:
-        now = datetime.now(timezone("Asia/Kolkata"))
-        from_date = now.strftime("%Y-%m-%d 09:15:00")
-        to_date = now.strftime("%Y-%m-%d %H:%M:%S")
-        
-        payload = {
-            "securityId": "13",
-            "exchangeSegment": "IDX_I", 
-            "instrument": "INDEX",
-            "interval": "1",
-            "fromDate": from_date,
-            "toDate": to_date
-        }
-        
-        data = dhan_api("/charts/intraday", payload)
-        if data and 'close' in data and len(data['close']) >= 8:
-            prices = data['close']
-            st.session_state.rsi_prices = prices
-            
-            rsi = calculate_rsi(prices, 7)
-            if rsi is not None:
-                if rsi > 70:
-                    level = "Overbought"
-                elif rsi < 30:
-                    level = "Oversold"
-                else:
-                    level = "Neutral"
-                return rsi, level
-        return None, "N/A"
+        payload = {"IDX_I": [13]}
+        data = dhan_api("/marketfeed/ltp", payload)
+        if data and 'data' in data and 'IDX_I' in data['data'] and '13' in data['data']['IDX_I']:
+            return data['data']['IDX_I']['13']['last_price']
+        return None
     except:
+        return None
+
+def update_rsi_prices():
+    """Update price history and calculate RSI"""
+    current_ltp = get_current_ltp()
+    if current_ltp is None:
         return None, "N/A"
+    
+    # Add current price to history
+    if 'rsi_prices' not in st.session_state:
+        st.session_state.rsi_prices = []
+    
+    # Only add if price is different from last price (avoid duplicates)
+    if not st.session_state.rsi_prices or st.session_state.rsi_prices[-1] != current_ltp:
+        st.session_state.rsi_prices.append(current_ltp)
+        
+        # Keep only last 50 prices for efficiency
+        if len(st.session_state.rsi_prices) > 50:
+            st.session_state.rsi_prices = st.session_state.rsi_prices[-50:]
+    
+    # Calculate RSI if we have enough data points
+    if len(st.session_state.rsi_prices) >= 8:
+        rsi = calculate_rsi(st.session_state.rsi_prices, 7)
+        if rsi is not None:
+            if rsi > 70:
+                level = "Overbought"
+            elif rsi < 30:
+                level = "Oversold"
+            else:
+                level = "Neutral"
+            return rsi, level
+    
+    return None, "N/A"
+
+def get_rsi():
+    """Get RSI using live market data"""
+    return update_rsi_prices()
 
 def analyze_atm(df, spot):
     atm = min(df['strikePrice'], key=lambda x: abs(x - spot))
