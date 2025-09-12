@@ -50,7 +50,7 @@ def dhan_api(endpoint, payload):
 
 def is_market_open():
     now = datetime.now(timezone("Asia/Kolkata"))
-    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("18:30", "%H:%M").time()
+    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("15:30", "%H:%M").time()
 
 def calculate_rsi(prices, period=7):
     """Calculate RSI with given period"""
@@ -86,12 +86,14 @@ def get_rsi_data():
     """Fetch intraday data and calculate RSI-7"""
     try:
         now = datetime.now(timezone("Asia/Kolkata"))
+        # Get data from market open to now
         from_date = now.strftime("%Y-%m-%d 09:15:00")
         to_date = now.strftime("%Y-%m-%d %H:%M:%S")
         
+        # Try NIFTY 50 Index - Security ID 13
         payload = {
             "securityId": "13",
-            "exchangeSegment": "IDX_I",
+            "exchangeSegment": "IDX_I", 
             "instrument": "INDEX",
             "interval": "1",
             "fromDate": from_date,
@@ -99,20 +101,31 @@ def get_rsi_data():
         }
         
         data = dhan_api("/charts/intraday", payload)
-        if data and 'close' in data and len(data['close']) >= 8:
-            prices = data['close'][-15:]  # Last 15 data points
-            rsi = calculate_rsi(prices, 7)
+        
+        # Debug: Print data length for troubleshooting
+        if data and 'close' in data:
+            st.write(f"Debug: Got {len(data['close'])} data points")  # Remove this after testing
             
-            if rsi is not None:
-                if rsi > 70:
-                    level = "Overbought"
-                elif rsi < 30:
-                    level = "Oversold"
-                else:
-                    level = "Neutral"
-                return rsi, level
+            if len(data['close']) >= 14:  # Need minimum 14 points for RSI-7
+                prices = data['close']
+                rsi = calculate_rsi(prices, 7)
+                
+                if rsi is not None:
+                    if rsi > 70:
+                        level = "Overbought"
+                    elif rsi < 30:
+                        level = "Oversold"
+                    else:
+                        level = "Neutral"
+                    return rsi, level
+            else:
+                st.write(f"Debug: Insufficient data - need 14, got {len(data['close'])}")
+        else:
+            st.write("Debug: No data received from API")
+            
         return None, "N/A"
-    except:
+    except Exception as e:
+        st.write(f"Debug RSI Error: {e}")  # Remove this after testing
         return None, "N/A"
 
 def analyze_atm(df, spot):
