@@ -8,7 +8,7 @@ import time
 import os
 
 # Configuration
-st.set_page_config(page_title="Dhan Options Bot", layout="wide")
+st.set_page_config(page_title="Dual Signal Dhan Bot", layout="wide")
 DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", os.getenv("DHAN_CLIENT_ID", ""))
 DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", os.getenv("DHAN_ACCESS_TOKEN", ""))
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
@@ -19,8 +19,8 @@ if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
     st.stop()
 
 # Session state
-if 'last_signal_time' not in st.session_state:
-    st.session_state.last_signal_time = {}
+if 'cooldowns' not in st.session_state:
+    st.session_state.cooldowns = {}
 
 # Auto-refresh
 st_autorefresh(interval=30000, key="refresh")
@@ -49,12 +49,14 @@ def dhan_api(endpoint, payload):
 
 def is_market_open():
     now = datetime.now(timezone("Asia/Kolkata"))
-    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("18:30", "%H:%M").time()
+    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("15:30", "%H:%M").time()
 
 def analyze_atm(df, spot):
     atm = min(df['strikePrice'], key=lambda x: abs(x - spot))
     row = df[df['strikePrice'] == atm].iloc[0]
     
+    ce_oi = row.get('openInterest_CE', 0)
+    pe_oi = row.get('openInterest_PE', 0)
     ce_oi_chg = row.get('changeinOpenInterest_CE', 0)
     pe_oi_chg = row.get('changeinOpenInterest_PE', 0)
     
@@ -69,27 +71,46 @@ def analyze_atm(df, spot):
     
     all_bullish = all(b == "Bullish" for b in biases.values())
     all_bearish = all(b == "Bearish" for b in biases.values())
-    pe_1_5x_ce = abs(pe_oi_chg) > 1.5 * abs(ce_oi_chg) if ce_oi_chg != 0 else abs(pe_oi_chg) > 1000
-    ce_1_5x_pe = abs(ce_oi_chg) > 1.5 * abs(pe_oi_chg) if pe_oi_chg != 0 else abs(ce_oi_chg) > 1000
+    
+    # Primary signal conditions (OI Change ratios)
+    pe_chg_1_5x_ce = abs(pe_oi_chg) > 1.5 * abs(ce_oi_chg) if ce_oi_chg != 0 else abs(pe_oi_chg) > 1000
+    ce_chg_1_5x_pe = abs(ce_oi_chg) > 1.5 * abs(pe_oi_chg) if pe_oi_chg != 0 else abs(ce_oi_chg) > 1000
+    
+    # Secondary signal conditions (Absolute OI ratios)
+    pe_oi_1_3x_ce = pe_oi > 1.3 * ce_oi if ce_oi > 0 else False
+    ce_oi_1_3x_pe = ce_oi > 1.3 * pe_oi if pe_oi > 0 else False
     
     return {
         'atm': atm, 'spot': spot, 'biases': biases, 'all_bullish': all_bullish, 'all_bearish': all_bearish,
-        'pe_1_5x_ce': pe_1_5x_ce, 'ce_1_5x_pe': ce_1_5x_pe, 'ce_ltp': row.get('lastPrice_CE', 0),
-        'pe_ltp': row.get('lastPrice_PE', 0), 'ce_oi_chg': ce_oi_chg, 'pe_oi_chg': pe_oi_chg
+        'pe_chg_1_5x_ce': pe_chg_1_5x_ce, 'ce_chg_1_5x_pe': ce_chg_1_5x_pe,
+        'pe_oi_1_3x_ce': pe_oi_1_3x_ce, 'ce_oi_1_3x_pe': ce_oi_1_3x_pe,
+        'ce_ltp': row.get('lastPrice_CE', 0), 'pe_ltp': row.get('lastPrice_PE', 0),
+        'ce_oi_chg': ce_oi_chg, 'pe_oi_chg': pe_oi_chg, 'ce_oi': ce_oi, 'pe_oi': pe_oi
     }
 
-def check_signal(data):
+def check_signals(data):
     current_time = time.time()
     cooldown = 300
+    signals = []
     
-    if data['pe_1_5x_ce'] and data['all_bullish'] and current_time - st.session_state.last_signal_time.get('bullish', 0) > cooldown:
-        return "BULLISH"
-    elif data['ce_1_5x_pe'] and data['all_bearish'] and current_time - st.session_state.last_signal_time.get('bearish', 0) > cooldown:
-        return "BEARISH"
-    return None
+    # Primary signals (OI Change based)
+    if data['pe_chg_1_5x_ce'] and data['all_bullish'] and current_time - st.session_state.cooldowns.get('p_bull', 0) > cooldown:
+        signals.append(('PRIMARY_BULLISH', 'p_bull'))
+    
+    if data['ce_chg_1_5x_pe'] and data['all_bearish'] and current_time - st.session_state.cooldowns.get('p_bear', 0) > cooldown:
+        signals.append(('PRIMARY_BEARISH', 'p_bear'))
+    
+    # Secondary signals (Absolute OI based)
+    if data['pe_oi_1_3x_ce'] and data['all_bullish'] and current_time - st.session_state.cooldowns.get('s_bull', 0) > cooldown:
+        signals.append(('SECONDARY_BULLISH', 's_bull'))
+    
+    if data['ce_oi_1_3x_pe'] and data['all_bearish'] and current_time - st.session_state.cooldowns.get('s_bear', 0) > cooldown:
+        signals.append(('SECONDARY_BEARISH', 's_bear'))
+    
+    return signals
 
 def main():
-    st.title("Dhan Options Trading Bot")
+    st.title("Dual Signal Dhan Options Bot")
     
     if not is_market_open():
         st.warning("Market Closed")
@@ -101,8 +122,13 @@ def main():
         st.write(f"Client: {DHAN_CLIENT_ID[:8]}...")
         st.write(f"Telegram: {'✅' if TELEGRAM_BOT_TOKEN else '❌'}")
         
-        if TELEGRAM_BOT_TOKEN and st.button("Test Telegram"):
-            if send_telegram("🧪 Test from Dhan Bot"):
+        st.subheader("Signals")
+        st.write("**Primary:** OI Change > 1.5x")
+        st.write("**Secondary:** Absolute OI > 1.3x")
+        
+        if TELEGRAM_BOT_TOKEN and st.button("Test Telegram", use_container_width=True):
+            test_msg = f"🧪 Test from Dual Signal Bot\nTime: {datetime.now().strftime('%H:%M:%S')}"
+            if send_telegram(test_msg):
                 st.success("✅ Working!")
             else:
                 st.error("❌ Failed!")
@@ -142,7 +168,7 @@ def main():
     
     # Analysis
     analysis = analyze_atm(df, spot)
-    signal = check_signal(analysis)
+    signals = check_signals(analysis)
     
     # Display
     col1, col2, col3 = st.columns(3)
@@ -156,54 +182,60 @@ def main():
                            for k, v in analysis['biases'].items()])
     st.dataframe(bias_df, hide_index=True)
     
-    # OI Analysis
+    # Signal Conditions
     col1, col2 = st.columns(2)
     with col1:
-        ratio = abs(analysis['pe_oi_chg'] / analysis['ce_oi_chg']) if analysis['ce_oi_chg'] != 0 else float('inf')
-        st.metric("PE/CE OI Ratio", f"{ratio:.2f}x")
-        if analysis['pe_1_5x_ce']: st.success("✅ PE > 1.5x CE")
-        if analysis['all_bullish']: st.success("✅ All Bullish")
+        st.subheader("Primary Signals")
+        chg_ratio = abs(analysis['pe_oi_chg'] / analysis['ce_oi_chg']) if analysis['ce_oi_chg'] != 0 else float('inf')
+        st.metric("PE/CE OI Change", f"{chg_ratio:.2f}x")
+        if analysis['pe_chg_1_5x_ce'] and analysis['all_bullish']: st.success("✅ Primary CALL Ready")
+        if analysis['ce_chg_1_5x_pe'] and analysis['all_bearish']: st.error("✅ Primary PUT Ready")
     
     with col2:
-        ratio = abs(analysis['ce_oi_chg'] / analysis['pe_oi_chg']) if analysis['pe_oi_chg'] != 0 else float('inf')
-        st.metric("CE/PE OI Ratio", f"{ratio:.2f}x")
-        if analysis['ce_1_5x_pe']: st.error("✅ CE > 1.5x PE")
-        if analysis['all_bearish']: st.error("✅ All Bearish")
+        st.subheader("Secondary Signals") 
+        oi_ratio = analysis['pe_oi'] / analysis['ce_oi'] if analysis['ce_oi'] > 0 else float('inf')
+        st.metric("PE/CE OI Absolute", f"{oi_ratio:.2f}x")
+        if analysis['pe_oi_1_3x_ce'] and analysis['all_bullish']: st.success("✅ Secondary CALL Ready")
+        if analysis['ce_oi_1_3x_pe'] and analysis['all_bearish']: st.error("✅ Secondary PUT Ready")
     
-    # Signal handling
-    if signal == "BULLISH":
-        st.session_state.last_signal_time['bullish'] = time.time()
-        st.success("🚨 BULLISH SIGNAL!")
+    # Process signals
+    for signal_type, cooldown_key in signals:
+        st.session_state.cooldowns[cooldown_key] = time.time()
         
-        stop_loss = analysis['ce_ltp'] * 0.8
-        msg = f"""
-🟢 BULLISH SIGNAL - BUY CALL
+        if 'BULLISH' in signal_type:
+            st.success(f"🚨 {signal_type.replace('_', ' ')} SIGNAL!")
+            stop_loss = analysis['ce_ltp'] * 0.8
+            signal_prefix = "PRIMARY" if "PRIMARY" in signal_type else "SECONDARY"
+            
+            msg = f"""
+🟢 <b>{signal_prefix} BULLISH SIGNAL - BUY CALL</b>
 
 Strike: {analysis['atm']}
 Entry: ₹{analysis['ce_ltp']:.2f}
 Stop Loss: ₹{stop_loss:.2f} (20%)
 
-All Biases Bullish + PE OI Change > 1.5x CE OI Change
+Condition: {"PE OI Change > 1.5x CE" if "PRIMARY" in signal_type else "PUT OI > 1.3x CALL OI"}
+All Biases: Bullish
 Time: {datetime.now().strftime("%H:%M:%S")}
-        """
-        st.code(msg)
-        send_telegram(msg.strip())
-    
-    elif signal == "BEARISH":
-        st.session_state.last_signal_time['bearish'] = time.time()
-        st.error("🚨 BEARISH SIGNAL!")
-        
-        stop_loss = analysis['pe_ltp'] * 0.8
-        msg = f"""
-🔴 BEARISH SIGNAL - BUY PUT
+            """
+            
+        else:  # BEARISH
+            st.error(f"🚨 {signal_type.replace('_', ' ')} SIGNAL!")
+            stop_loss = analysis['pe_ltp'] * 0.8
+            signal_prefix = "PRIMARY" if "PRIMARY" in signal_type else "SECONDARY"
+            
+            msg = f"""
+🔴 <b>{signal_prefix} BEARISH SIGNAL - BUY PUT</b>
 
 Strike: {analysis['atm']}
 Entry: ₹{analysis['pe_ltp']:.2f}
 Stop Loss: ₹{stop_loss:.2f} (20%)
 
-All Biases Bearish + CE OI Change > 1.5x PE OI Change
+Condition: {"CE OI Change > 1.5x PE" if "PRIMARY" in signal_type else "CALL OI > 1.3x PUT OI"}
+All Biases: Bearish
 Time: {datetime.now().strftime("%H:%M:%S")}
-        """
+            """
+        
         st.code(msg)
         send_telegram(msg.strip())
 
