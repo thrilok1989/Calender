@@ -629,8 +629,8 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
             ce_chg_oi = row.get('changeinOpenInterest_CE', 0)
             pe_chg_oi = row.get('changeinOpenInterest_PE', 0)
 
-            bullish_oi_confirm = ce_chg_oi > 1.5 * pe_chg_oi
-            bearish_oi_confirm = pe_chg_oi > 1.5 * ce_chg_oi
+            bullish_oi_confirm = pe_chg_oi > 1.5 * ce_chg_oi
+            bearish_oi_confirm = ce_chg_oi > 1.5 * pe_chg_oi
 
             # === Bullish Call Signal ===
             if (
