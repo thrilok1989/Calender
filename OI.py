@@ -15,13 +15,11 @@ import numpy as np
 import math
 from scipy.stats import norm
 from pytz import timezone
-import io
-import os
 
 # Page configuration
 st.set_page_config(
     page_title="Nifty Trading & Options Analyzer",
-    page_icon="📈",
+    page_icon="ðŸ“ˆ",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -29,7 +27,7 @@ st.set_page_config(
 # Auto-refresh every 80 seconds
 st_autorefresh(interval=80000, key="datarefresh")
 
-# Custom CSS for TradingView-like appearance + ATM highlighting
+# Custom CSS for TradingView-like appearance
 st.markdown("""
 <style>
     .main > div {
@@ -51,10 +49,6 @@ st.markdown("""
     .price-down {
         color: #ff4444;
     }
-    .atm-row {
-        background-color: #FFD700 !important;
-        font-weight: bold !important;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,99 +64,14 @@ try:
         
     supabase_url = st.secrets.get("supabase", {}).get("url", "")
     supabase_key = st.secrets.get("supabase", {}).get("anon_key", "")
-    
-    # Enhanced Telegram Configuration with better error handling
-    try:
-        # Try multiple ways to get the credentials
-        TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-        TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
-        
-        # If still empty, try alternative approaches
-        if not TELEGRAM_BOT_TOKEN:
-            try:
-                TELEGRAM_BOT_TOKEN = st.secrets.TELEGRAM_BOT_TOKEN
-            except:
-                pass
-        
-        if not TELEGRAM_CHAT_ID:
-            try:
-                TELEGRAM_CHAT_ID = st.secrets.TELEGRAM_CHAT_ID
-            except:
-                pass
-        
-        # Convert chat ID to string if it's numeric
-        if TELEGRAM_CHAT_ID and isinstance(TELEGRAM_CHAT_ID, (int, float)):
-            TELEGRAM_CHAT_ID = str(int(TELEGRAM_CHAT_ID))
-            
-    except Exception as e:
-        st.error(f"Telegram config error: {e}")
-        TELEGRAM_BOT_TOKEN = ""
-        TELEGRAM_CHAT_ID = ""
-    
 except Exception:
     DHAN_CLIENT_ID = ""
     DHAN_ACCESS_TOKEN = ""
     supabase_url = ""
     supabase_key = ""
-    TELEGRAM_BOT_TOKEN = ""
-    TELEGRAM_CHAT_ID = ""
 
 NIFTY_UNDERLYING_SCRIP = 13
 NIFTY_UNDERLYING_SEG = "IDX_I"
-
-# Cached functions for performance
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def cached_pivot_calculation(df_json, pivot_settings):
-    """Cache pivot calculations to improve performance"""
-    df = pd.read_json(df_json)
-    return PivotIndicator.get_all_pivots(df, pivot_settings)
-
-@st.cache_data(ttl=60)  # Cache for 1 minute
-def cached_iv_average(option_data_json):
-    """Cache IV average calculation"""
-    df = pd.read_json(option_data_json)
-    iv_ce_avg = df['impliedVolatility_CE'].mean()
-    iv_pe_avg = df['impliedVolatility_PE'].mean()
-    return iv_ce_avg, iv_pe_avg
-
-# Telegram Functions
-def send_telegram_message_sync(message):
-    """Send message to Telegram synchronously"""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-    
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error(f"Telegram error: {response.status_code}")
-    except Exception as e:
-        st.error(f"Telegram notification error: {e}")
-
-def test_telegram_connection():
-    """Test if Telegram is properly configured"""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return False, "Credentials not configured"
-    
-    try:
-        test_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
-        response = requests.get(test_url, timeout=10)
-        
-        if response.status_code == 200:
-            return True, "✅ Telegram bot is active and connected"
-        else:
-            return False, f"❌ Telegram API error: {response.status_code}"
-            
-    except Exception as e:
-        return False, f"❌ Telegram connection failed: {str(e)}"
 
 class SupabaseDB:
     def __init__(self, url, key):
@@ -231,22 +140,7 @@ class SupabaseDB:
             st.error(f"Error retrieving candle data: {str(e)}")
             return pd.DataFrame()
     
-    def clear_old_candle_data(self, days_old=7):
-        """Clear candle data older than specified days"""
-        try:
-            cutoff_date = datetime.now(pytz.UTC) - timedelta(days=days_old)
-            
-            result = self.client.table('candle_data')\
-                .delete()\
-                .lt('datetime', cutoff_date.isoformat())\
-                .execute()
-            
-            return len(result.data) if result.data else 0
-        except Exception as e:
-            st.error(f"Error clearing old data: {str(e)}")
-            return 0
-    
-    def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, pivot_settings, pivot_proximity=5):
+    def save_user_preferences(self, user_id, timeframe, auto_refresh, days_back, pivot_settings):
         """Save user preferences"""
         try:
             data = {
@@ -255,7 +149,6 @@ class SupabaseDB:
                 'auto_refresh': auto_refresh,
                 'days_back': days_back,
                 'pivot_settings': json.dumps(pivot_settings),
-                'pivot_proximity': pivot_proximity,
                 'updated_at': datetime.now(pytz.UTC).isoformat()
             }
             
@@ -290,7 +183,6 @@ class SupabaseDB:
                     'timeframe': '5',
                     'auto_refresh': True,
                     'days_back': 1,
-                    'pivot_proximity': 5,
                     'pivot_settings': {
                         'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
                     }
@@ -302,7 +194,6 @@ class SupabaseDB:
                 'timeframe': '5', 
                 'auto_refresh': True, 
                 'days_back': 1,
-                'pivot_proximity': 5,
                 'pivot_settings': {
                     'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
                 }
@@ -415,10 +306,6 @@ class DhanAPI:
         except Exception as e:
             st.error(f"Error fetching LTP: {str(e)}")
             return None
-
-@st.cache_data(ttl=300)  # Cache expiry list for 5 minutes
-def get_dhan_expiry_list_cached(underlying_scrip: int, underlying_seg: str):
-    return get_dhan_expiry_list(underlying_scrip, underlying_seg)
 
 def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: str):
     if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
@@ -575,174 +462,6 @@ class PivotIndicator:
         
         return all_pivots
 
-def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_proximity=5):
-    """Trading signal detection with Normal Bias OR OI Dominance (both require full ATM bias alignment)."""
-    if df.empty or option_data is None or len(option_data) == 0 or not current_price:
-        return
-    
-    try:
-        df_json = df.to_json()
-        pivots = cached_pivot_calculation(df_json, pivot_settings)
-    except:
-        pivots = PivotIndicator.get_all_pivots(df, pivot_settings)
-    
-    near_pivot = False
-    pivot_level = None
-    price_relation = None
-    
-    for pivot in pivots:
-        if pivot['timeframe'] in ['3M', '5M', '10M', '15M']:
-            price_diff = current_price - pivot['value']
-            if abs(price_diff) <= pivot_proximity:
-                near_pivot = True
-                pivot_level = pivot
-                price_relation = 'above' if price_diff > 0 else 'below'
-                break
-    
-    if near_pivot and len(option_data) > 0:
-        atm_data = option_data[option_data['Zone'] == 'ATM']
-        
-        if not atm_data.empty:
-            row = atm_data.iloc[0]
-            
-            bullish_conditions = {
-                'Support Level': row.get('Level') == 'Support',
-                'ChgOI Bias': row.get('ChgOI_Bias') == 'Bullish',
-                'Volume Bias': row.get('Volume_Bias') == 'Bullish',
-                'AskQty Bias': row.get('AskQty_Bias') == 'Bullish',
-                'BidQty Bias': row.get('BidQty_Bias') == 'Bullish',
-                'Pressure Bias': row.get('PressureBias') == 'Bullish'
-            }
-            
-            bearish_conditions = {
-                'Resistance Level': row.get('Level') == 'Resistance',
-                'ChgOI Bias': row.get('ChgOI_Bias') == 'Bearish',
-                'Volume Bias': row.get('Volume_Bias') == 'Bearish',
-                'AskQty Bias': row.get('AskQty_Bias') == 'Bearish',
-                'BidQty Bias': row.get('BidQty_Bias') == 'Bearish',
-                'Pressure Bias': row.get('PressureBias') == 'Bearish'
-            }
-            
-            atm_strike = row['Strike']
-            stop_loss_percent = 20
-            
-            ce_chg_oi = row.get('changeinOpenInterest_CE', 0)
-            pe_chg_oi = row.get('changeinOpenInterest_PE', 0)
-
-            bullish_oi_confirm = pe_chg_oi > 1.5 * ce_chg_oi
-            bearish_oi_confirm = ce_chg_oi > 1.5 * pe_chg_oi
-
-            # === Bullish Call Signal ===
-            if (
-                (all(bullish_conditions.values()) and price_relation == 'above' and 0 < (current_price - pivot_level['value']) <= pivot_proximity)
-                or (bullish_oi_confirm and all(bullish_conditions.values()) and price_relation == 'above' and 0 < (current_price - pivot_level['value']) <= pivot_proximity)
-            ):
-                trigger_type = "📊 Normal Bias Trigger" if not bullish_oi_confirm else "🔥 OI Dominance Trigger"
-                conditions_text = "\n".join([f"✅ {k}" for k, v in bullish_conditions.items() if v])
-                price_diff = current_price - pivot_level['value']
-                
-                message = f"""
-🚨 <b>NIFTY CALL SIGNAL ALERT</b> 🚨
-
-📍 <b>Spot Price:</b> ₹{current_price:.2f} (ABOVE Pivot by +{price_diff:.2f} points)
-📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
-🎯 <b>ATM Strike:</b> {atm_strike}
-
-<b>✅ BULLISH CONDITIONS MET:</b>
-{conditions_text}
-
-⚡ <b>{trigger_type}</b>
-⚡ <b>OI:</b> CE ChgOI {ce_chg_oi:,} vs PE ChgOI {pe_chg_oi:,}
-
-📋 <b>SUGGESTED REVIEW:</b>
-• Strike: {atm_strike} CE
-• Stop Loss: {stop_loss_percent}%
-• Manual verification required
-
-🕐 Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-"""
-                try:
-                    send_telegram_message_sync(message)
-                    st.success("🟢 Bullish signal notification sent!")
-                except Exception as e:
-                    st.error(f"Failed to send notification: {e}")
-            
-            # === Bearish Put Signal ===
-            elif (
-                (all(bearish_conditions.values()) and price_relation == 'below' and -pivot_proximity <= (current_price - pivot_level['value']) < 0)
-                or (bearish_oi_confirm and all(bearish_conditions.values()) and price_relation == 'below' and -pivot_proximity <= (current_price - pivot_level['value']) < 0)
-            ):
-                trigger_type = "📊 Normal Bias Trigger" if not bearish_oi_confirm else "🔥 OI Dominance Trigger"
-                conditions_text = "\n".join([f"🔴 {k}" for k, v in bearish_conditions.items() if v])
-                price_diff = current_price - pivot_level['value']
-                
-                message = f"""
-🔴 <b>NIFTY PUT SIGNAL ALERT</b> 🔴
-
-📍 <b>Spot Price:</b> ₹{current_price:.2f} (BELOW Pivot by {price_diff:+.2f} points)
-📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
-🎯 <b>ATM Strike:</b> {atm_strike}
-
-<b>🔴 BEARISH CONDITIONS MET:</b>
-{conditions_text}
-
-⚡ <b>{trigger_type}</b>
-⚡ <b>OI:</b> PE ChgOI {pe_chg_oi:,} vs CE ChgOI {ce_chg_oi:,}
-
-📋 <b>SUGGESTED REVIEW:</b>
-• Strike: {atm_strike} PE
-• Stop Loss: {stop_loss_percent}%
-• Manual verification required
-
-🕐 Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-"""
-                try:
-                    send_telegram_message_sync(message)
-                    st.success("🔴 Bearish signal notification sent!")
-                except Exception as e:
-                    st.error(f"Failed to send notification: {e}")
-
-
-def calculate_exact_time_to_expiry(expiry_date_str):
-    """Calculate exact time to expiry in years (days + hours)"""
-    try:
-        expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").replace(hour=15, minute=30)
-        expiry_date = expiry_date.replace(tzinfo=pytz.timezone('Asia/Kolkata'))
-        
-        now = datetime.now(pytz.timezone('Asia/Kolkata'))
-        time_diff = expiry_date - now
-        
-        # Convert to years (more precise calculation)
-        total_seconds = time_diff.total_seconds()
-        total_days = total_seconds / (24 * 3600)
-        years = total_days / 365.25
-        
-        return max(years, 1/365.25)  # Minimum 1 day
-    except:
-        return 1/365.25
-
-def get_iv_fallback(df, strike_price):
-    """Get IV fallback using nearest strike average instead of fixed value"""
-    try:
-        # Find strikes within ±100 points of current strike
-        nearby_strikes = df[abs(df['strikePrice'] - strike_price) <= 100]
-        
-        if not nearby_strikes.empty:
-            iv_ce_avg = nearby_strikes['impliedVolatility_CE'].mean()
-            iv_pe_avg = nearby_strikes['impliedVolatility_PE'].mean()
-            
-            # Fill NaN with overall average
-            if pd.isna(iv_ce_avg):
-                iv_ce_avg = df['impliedVolatility_CE'].mean()
-            if pd.isna(iv_pe_avg):
-                iv_pe_avg = df['impliedVolatility_PE'].mean()
-                
-            return iv_ce_avg or 15, iv_pe_avg or 15
-        else:
-            return 15, 15
-    except:
-        return 15, 15
-
 def calculate_greeks(option_type, S, K, T, r, sigma):
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -825,12 +544,6 @@ def color_pcr(val):
     else:
         return 'background-color: #FFFFE0; color: black'
 
-def highlight_atm_row(row):
-    """Highlight ATM row in the dataframe"""
-    if row['Zone'] == 'ATM':
-        return ['background-color: #FFD700; font-weight: bold'] * len(row)
-    return [''] * len(row)
-
 def process_candle_data(data, interval):
     """Process API response into DataFrame"""
     if not data or 'open' not in data:
@@ -882,9 +595,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True, pivot_settin
     
     if show_pivots and len(df) > 50:
         try:
-            # Use cached pivot calculation for performance
-            df_json = df.to_json()
-            pivots = cached_pivot_calculation(df_json, pivot_settings or {})
+            pivots = PivotIndicator.get_all_pivots(df, pivot_settings or {})
             
             timeframes = {}
             for pivot in pivots:
@@ -989,7 +700,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True, pivot_settin
     )
     
     fig.update_yaxes(
-        title_text="Price (₹)",
+        title_text="Price (â‚¹)",
         showgrid=True,
         gridwidth=1,
         gridcolor='#333333',
@@ -1050,7 +761,7 @@ def display_metrics(ltp_data, df, db, symbol="NIFTY50"):
                 st.markdown(f"""
                 <div class="metric-container">
                     <h4>Current Price</h4>
-                    <h2 class="{color}">₹{current_price:,.2f}</h2>
+                    <h2 class="{color}">â‚¹{current_price:,.2f}</h2>
                 </div>
                 """, unsafe_allow_html=True)
             
@@ -1068,7 +779,7 @@ def display_metrics(ltp_data, df, db, symbol="NIFTY50"):
                 st.markdown(f"""
                 <div class="metric-container">
                     <h4>Day High</h4>
-                    <h3>₹{day_high:,.2f}</h3>
+                    <h3>â‚¹{day_high:,.2f}</h3>
                 </div>
                 """, unsafe_allow_html=True)
             
@@ -1076,7 +787,7 @@ def display_metrics(ltp_data, df, db, symbol="NIFTY50"):
                 st.markdown(f"""
                 <div class="metric-container">
                     <h4>Day Low</h4>
-                    <h3>₹{day_low:,.2f}</h3>
+                    <h3>â‚¹{day_low:,.2f}</h3>
                 </div>
                 """, unsafe_allow_html=True)
             
@@ -1123,36 +834,32 @@ def get_user_id():
         st.session_state.user_id = hashlib.md5(str(datetime.now()).encode()).hexdigest()[:12]
     return st.session_state.user_id
 
-def create_csv_download(df_summary):
-    """Create CSV download for option chain summary"""
-    output = io.StringIO()
-    df_summary.to_csv(output, index=False)
-    return output.getvalue()
-
-
-def analyze_option_chain(selected_expiry=None):
-    """Enhanced options chain analysis with expiry selection"""
+def analyze_option_chain():
+    """Options chain analysis function"""
     now = datetime.now(timezone("Asia/Kolkata"))
+    current_day = now.weekday()
+    current_time = now.time()
+    market_start = datetime.strptime("00:00", "%H:%M").time()
+    market_end = datetime.strptime("15:40", "%H:%M").time()
     
-    # Get expiry list - use cached version for performance
-    expiry_data = get_dhan_expiry_list_cached(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG)
+    if current_day >= 5 or not (market_start <= current_time <= market_end):
+        st.warning("Market Closed (Mon-Fri 9:00-15:40)")
+        return None
+    
+    expiry_data = get_dhan_expiry_list(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG)
     if not expiry_data or 'data' not in expiry_data:
         st.error("Failed to get expiry list from Dhan API")
-        return None, None, []
-    
+        return None
     expiry_dates = expiry_data['data']
     if not expiry_dates:
         st.error("No expiry dates available")
-        return None, None, []
-    
-    # Use selected expiry or default to first
-    expiry = selected_expiry if selected_expiry else expiry_dates[0]
+        return None
+    expiry = expiry_dates[0]
 
     option_chain_data = get_dhan_option_chain(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG, expiry)
     if not option_chain_data or 'data' not in option_chain_data:
         st.error("Failed to get option chain from Dhan API")
-        return None, None, expiry_dates
-    
+        return None
     data = option_chain_data['data']
     underlying = data['last_price']
 
@@ -1167,7 +874,6 @@ def analyze_option_chain(selected_expiry=None):
             pe_data = strike_data['pe']
             pe_data['strikePrice'] = float(strike)
             puts.append(pe_data)
-    
     df_ce = pd.DataFrame(calls)
     df_pe = pd.DataFrame(puts)
     df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
@@ -1185,40 +891,23 @@ def analyze_option_chain(selected_expiry=None):
             df.rename(columns={f"{old_col}_CE": f"{new_col}_CE"}, inplace=True)
         if f"{old_col}_PE" in df.columns:
             df.rename(columns={f"{old_col}_PE": f"{new_col}_PE"}, inplace=True)
-    
     df['changeinOpenInterest_CE'] = df['openInterest_CE'] - df['previousOpenInterest_CE']
     df['changeinOpenInterest_PE'] = df['openInterest_PE'] - df['previousOpenInterest_PE']
 
-    # Enhanced Greeks calculation with exact time-to-expiry
-    T = calculate_exact_time_to_expiry(expiry)
+    expiry_date = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone("Asia/Kolkata"))
+    T = max((expiry_date - now).days, 1) / 365
     r = 0.06
-    
     for idx, row in df.iterrows():
         strike = row['strikePrice']
-        
-        # Enhanced IV fallback using nearest strike average
-        iv_ce = row.get('impliedVolatility_CE')
-        iv_pe = row.get('impliedVolatility_PE')
-        
-        if pd.isna(iv_ce) or iv_ce == 0:
-            iv_ce, _ = get_iv_fallback(df, strike)
-        if pd.isna(iv_pe) or iv_pe == 0:
-            _, iv_pe = get_iv_fallback(df, strike)
-        
-        iv_ce = iv_ce or 15
-        iv_pe = iv_pe or 15
-        
+        iv_ce = row.get('impliedVolatility_CE', 15) or 15
+        iv_pe = row.get('impliedVolatility_PE', 15) or 15
         greeks_ce = calculate_greeks('CE', underlying, strike, T, r, iv_ce / 100)
         greeks_pe = calculate_greeks('PE', underlying, strike, T, r, iv_pe / 100)
         df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks_ce
         df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks_pe
 
     atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
-    
-    # Limit to ATM ± 2 strikes for faster UI (performance optimization)
-    atm_plus_minus_2 = df[abs(df['strikePrice'] - atm_strike) <= 100]  # Assuming 50 point strikes
-    df = atm_plus_minus_2.copy()
-    
+    df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
     df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
     df['Level'] = df.apply(determine_level, axis=1)
 
@@ -1228,12 +917,14 @@ def analyze_option_chain(selected_expiry=None):
     st.markdown("## Open Interest Change (in Lakhs)")
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("CALL ΔOI", f"{total_ce_change:+.1f}L", delta_color="inverse")
+        st.metric("CALL Î”OI", f"{total_ce_change:+.1f}L", delta_color="inverse")
     with col2:
-        st.metric("PUT ΔOI", f"{total_pe_change:+.1f}L", delta_color="normal")
+        st.metric("PUT Î”OI", f"{total_pe_change:+.1f}L", delta_color="normal")
 
     bias_results = []
     for _, row in df.iterrows():
+        if abs(row['strikePrice'] - atm_strike) > 50:
+            continue
         bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
             row.get('bidQty_CE', 0), row.get('askQty_CE', 0),
             row.get('bidQty_PE', 0), row.get('askQty_PE', 0)
@@ -1279,25 +970,10 @@ def analyze_option_chain(selected_expiry=None):
     )
 
     st.markdown("## Option Chain Bias Summary")
-    
-    # Enhanced styling with ATM highlighting
-    styled_df = df_summary.style\
-        .applymap(color_pcr, subset=['PCR'])\
-        .applymap(color_pressure, subset=['BidAskPressure'])\
-        .apply(highlight_atm_row, axis=1)
-    
+    styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(color_pressure, subset=['BidAskPressure'])
     st.dataframe(styled_df, use_container_width=True)
-    
-    # Add download button for CSV
-    csv_data = create_csv_download(df_summary)
-    st.download_button(
-        label="📥 Download Summary as CSV",
-        data=csv_data,
-        file_name=f"nifty_options_summary_{expiry}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv"
-    )
 
-    return underlying, df_summary, expiry_dates
+    return underlying
 
 def display_analytics_dashboard(db, symbol="NIFTY50"):
     """Display analytics dashboard"""
@@ -1348,11 +1024,11 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
         
         with col1:
             avg_price = analytics_df['day_close'].mean()
-            st.metric("Average Price", f"₹{avg_price:,.2f}")
+            st.metric("Average Price", f"â‚¹{avg_price:,.2f}")
         
         with col2:
             volatility = analytics_df['price_change_pct'].std()
-            st.metric("Volatility (σ)", f"{volatility:.2f}%")
+            st.metric("Volatility (Ïƒ)", f"{volatility:.2f}%")
         
         with col3:
             max_gain = analytics_df['price_change_pct'].max()
@@ -1363,7 +1039,7 @@ def display_analytics_dashboard(db, symbol="NIFTY50"):
             st.metric("Max Daily Loss", f"{max_loss:.2f}%")
 
 def main():
-    st.title("📈 Nifty Trading & Options Analyzer")
+    st.title("ðŸ“ˆ Nifty Trading & Options Analyzer")
     
     # Initialize Supabase
     try:
@@ -1394,8 +1070,6 @@ def main():
             ```
             DHAN_CLIENT_ID = "your_client_id"
             DHAN_ACCESS_TOKEN = "your_access_token"
-            TELEGRAM_BOT_TOKEN = "your_telegram_bot_token"
-            TELEGRAM_CHAT_ID = "your_telegram_chat_id"
             ```
             """)
             return
@@ -1405,16 +1079,10 @@ def main():
         if issues:
             st.error("Issues found with API credentials:")
             for issue in issues:
-                st.error(f"• {issue}")
+                st.error(f"â€¢ {issue}")
             st.info("The app will try to use the cleaned values automatically.")
         
         st.sidebar.success("API credentials processed")
-        
-        # Check Telegram configuration
-        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-            st.sidebar.success("Telegram notifications enabled")
-        else:
-            st.sidebar.warning("Telegram notifications disabled - configure bot token and chat ID")
         
     except Exception as e:
         st.error(f"Credential validation error: {str(e)}")
@@ -1446,7 +1114,7 @@ def main():
     interval = timeframes[selected_timeframe]
     
     # Pivot indicator controls
-    st.sidebar.header("📊 Pivot Indicator Settings")
+    st.sidebar.header("ðŸ“Š Pivot Indicator Settings")
     
     show_pivots = st.sidebar.checkbox("Show Pivot Levels", value=True, help="Display Higher Timeframe Support/Resistance levels")
     
@@ -1458,10 +1126,10 @@ def main():
                 'show_3m': True, 'show_5m': True, 'show_10m': True, 'show_15m': True
             }
         
-        show_3m = st.sidebar.checkbox("3 Minute Pivots", value=user_prefs['pivot_settings'].get('show_3m', True), help="🟢 Green lines")
-        show_5m = st.sidebar.checkbox("5 Minute Pivots", value=user_prefs['pivot_settings'].get('show_5m', True), help="🟠 Orange lines")
-        show_10m = st.sidebar.checkbox("10 Minute Pivots", value=user_prefs['pivot_settings'].get('show_10m', True), help="🟣 Pink lines")
-        show_15m = st.sidebar.checkbox("15 Minute Pivots", value=user_prefs['pivot_settings'].get('show_15m', True), help="🔵 Blue lines")
+        show_3m = st.sidebar.checkbox("3 Minute Pivots", value=user_prefs['pivot_settings'].get('show_3m', True), help="ðŸŸ¢ Green lines")
+        show_5m = st.sidebar.checkbox("5 Minute Pivots", value=user_prefs['pivot_settings'].get('show_5m', True), help="ðŸŸ  Orange lines")
+        show_10m = st.sidebar.checkbox("10 Minute Pivots", value=user_prefs['pivot_settings'].get('show_10m', True), help="ðŸŸ£ Pink lines")
+        show_15m = st.sidebar.checkbox("15 Minute Pivots", value=user_prefs['pivot_settings'].get('show_15m', True), help="ðŸ”µ Blue lines")
         
         pivot_settings = {
             'show_3m': show_3m,
@@ -1472,10 +1140,10 @@ def main():
         
         st.sidebar.info("""
         **Pivot Levels Legend:**
-        🟢 3M (Green) - 3-minute timeframe
-        🟠 5M (Orange) - 5-minute timeframe  
-        🟣 10M (Pink) - 10-minute timeframe
-        🔵 15M (Blue) - 15-minute timeframe
+        ðŸŸ¢ 3M (Green) - 3-minute timeframe
+        ðŸŸ  5M (Orange) - 5-minute timeframe  
+        ðŸŸ£ 10M (Pink) - 10-minute timeframe
+        ðŸ”µ 15M (Blue) - 15-minute timeframe
         
         S = Support, R = Resistance
         """)
@@ -1483,41 +1151,6 @@ def main():
         pivot_settings = {
             'show_3m': False, 'show_5m': False, 'show_10m': False, 'show_15m': False
         }
-    
-    # Trading signal settings
-    st.sidebar.header("🔔 Trading Signals")
-    enable_signals = st.sidebar.checkbox("Enable Telegram Signals", value=True, help="Send notifications when conditions are met")
-    
-    # Configurable pivot proximity with both positive and negative values
-    pivot_proximity = st.sidebar.slider(
-        "Pivot Proximity (± Points)", 
-        min_value=1, 
-        max_value=20, 
-        value=user_prefs.get('pivot_proximity', 5),
-        help="Distance from pivot levels to trigger signals (both above and below)"
-    )
-    
-    if enable_signals:
-        st.sidebar.info(f"Signals sent when:\n• Price within ±{pivot_proximity}pts of pivot\n• All option bias aligned\n• ATM at support/resistance")
-    
-    # Options expiry selection
-    st.sidebar.header("📅 Options Settings")
-    
-    # Get available expiry dates
-    expiry_data = get_dhan_expiry_list_cached(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG)
-    expiry_dates = []
-    if expiry_data and 'data' in expiry_data:
-        expiry_dates = expiry_data['data']
-    
-    selected_expiry = None
-    if expiry_dates:
-        expiry_options = [f"{exp} ({'Weekly' if i < 4 else 'Monthly'})" for i, exp in enumerate(expiry_dates)]
-        selected_expiry_idx = st.sidebar.selectbox(
-            "Select Expiry",
-            range(len(expiry_options)),
-            format_func=lambda x: expiry_options[x]
-        )
-        selected_expiry = expiry_dates[selected_expiry_idx]
     
     # Auto-refresh settings
     auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=user_prefs['auto_refresh'])
@@ -1528,47 +1161,17 @@ def main():
     # Data source preference
     use_cache = st.sidebar.checkbox("Use Cached Data", value=True, help="Use database cache for faster loading")
     
-    # Database management
-    st.sidebar.header("🗑️ Database Management")
-    cleanup_days = st.sidebar.selectbox("Clear History Older Than", [7, 14, 30], index=0)
-    
-    if st.sidebar.button("🗑 Clear History"):
-        deleted_count = db.clear_old_candle_data(cleanup_days)
-        st.sidebar.success(f"Deleted {deleted_count} old records")
-    
-    # Connection Test Section
-    st.sidebar.header("🔧 Connection Test")
-    
-    if st.sidebar.button("Test Telegram Connection"):
-        success, message = test_telegram_connection()
-        if success:
-            st.sidebar.success(message)
-            
-            # Send a test message
-            test_msg = "🔔 Nifty Analyzer - Test message successful! ✅"
-            send_telegram_message_sync(test_msg)
-            st.sidebar.success("Test message sent to Telegram!")
-        else:
-            st.sidebar.error(message)
-    
     # Save preferences
-    if st.sidebar.button("💾 Save Preferences"):
-        db.save_user_preferences(user_id, interval, auto_refresh, days_back, pivot_settings, pivot_proximity)
+    if st.sidebar.button("ðŸ’¾ Save Preferences"):
+        db.save_user_preferences(user_id, interval, auto_refresh, days_back, pivot_settings)
         st.sidebar.success("Preferences saved!")
     
     # Manual refresh button
-    if st.sidebar.button("🔄 Refresh Now"):
+    if st.sidebar.button("ðŸ”„ Refresh Now"):
         st.rerun()
     
     # Show analytics dashboard
     show_analytics = st.sidebar.checkbox("Show Analytics Dashboard", value=False)
-    
-    # Debug info
-    st.sidebar.subheader("🔧 Debug Info")
-    st.sidebar.write(f"Telegram Bot Token: {'✅ Set' if TELEGRAM_BOT_TOKEN else '❌ Missing'}")
-    st.sidebar.write(f"Telegram Chat ID: {'✅ Set' if TELEGRAM_CHAT_ID else '❌ Missing'}")
-    st.sidebar.write(f"Token length: {len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0}")
-    st.sidebar.write(f"Chat ID: {TELEGRAM_CHAT_ID}")
     
     # Initialize API
     api = DhanAPI(access_token, client_id)
@@ -1577,11 +1180,10 @@ def main():
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.header("📈 Trading Chart")
+        st.header("ðŸ“ˆ Trading Chart")
         
         # Data fetching strategy
         df = pd.DataFrame()
-        current_price = None
         
         if use_cache:
             df = db.get_candle_data("NIFTY50", "IDX_I", interval, hours_back=days_back*24)
@@ -1613,16 +1215,8 @@ def main():
                     df = process_candle_data(data, interval)
                     db.save_candle_data("NIFTY50", "IDX_I", interval, df)
         
-        # Get LTP data and current price
+        # Get LTP data
         ltp_data = api.get_ltp_data("13", "IDX_I")
-        if ltp_data and 'data' in ltp_data:
-            for exchange, data in ltp_data['data'].items():
-                for security_id, price_data in data.items():
-                    current_price = price_data.get('last_price', 0)
-                    break
-        
-        if current_price is None and not df.empty:
-            current_price = df['close'].iloc[-1]
         
         # Display metrics
         if not df.empty:
@@ -1642,24 +1236,24 @@ def main():
             # Show data info
             col1_info, col2_info, col3_info, col4_info = st.columns(4)
             with col1_info:
-                st.info(f"📊 Data Points: {len(df)}")
+                st.info(f"ðŸ“Š Data Points: {len(df)}")
             with col2_info:
                 latest_time = df['datetime'].max().strftime("%Y-%m-%d %H:%M:%S IST")
-                st.info(f"🕐 Latest: {latest_time}")
+                st.info(f"ðŸ• Latest: {latest_time}")
             with col3_info:
                 data_source = "Database Cache" if use_cache else "Live API"
-                st.info(f"📡 Source: {data_source}")
+                st.info(f"ðŸ“¡ Source: {data_source}")
             with col4_info:
-                pivot_status = "✅ Enabled" if show_pivots else "❌ Disabled"
-                st.info(f"📈 Pivots: {pivot_status}")
+                pivot_status = "âœ… Enabled" if show_pivots else "âŒ Disabled"
+                st.info(f"ðŸ“ˆ Pivots: {pivot_status}")
             
             if show_pivots and len(df) > 50:
                 st.markdown("""
                 **Pivot Levels Legend:**
-                - 🟢 **3M Levels**: 3-minute timeframe support/resistance
-                - 🟠 **5M Levels**: 5-minute timeframe swing points  
-                - 🟣 **10M Levels**: 10-minute support/resistance zones
-                - 🔵 **15M Levels**: 15-minute major support/resistance levels
+                - ðŸŸ¢ **3M Levels**: 3-minute timeframe support/resistance
+                - ðŸŸ  **5M Levels**: 5-minute timeframe swing points  
+                - ðŸŸ£ **10M Levels**: 10-minute support/resistance zones
+                - ðŸ”µ **15M Levels**: 15-minute major support/resistance levels
                 
                 *R = Resistance (Price ceiling), S = Support (Price floor)*
                 """)
@@ -1667,17 +1261,13 @@ def main():
             st.error("No data available. Please check your API credentials and try again.")
     
     with col2:
-        st.header("📊 Options Analysis")
+        st.header("ðŸ“Š Options Analysis")
         
-        # Options chain analysis with expiry selection
-        underlying_price, df_summary, available_expiries = analyze_option_chain(selected_expiry)
+        # Options chain analysis
+        underlying_price = analyze_option_chain()
         
         if underlying_price:
             st.info(f"**NIFTY SPOT:** {underlying_price:.2f}")
-            
-            # Check for trading signals if enabled
-            if enable_signals and not df.empty and df_summary is not None and len(df_summary) > 0:
-                check_trading_signals(df, pivot_settings, df_summary, underlying_price, pivot_proximity)
     
     # Analytics dashboard below
     if show_analytics:
@@ -1688,6 +1278,12 @@ def main():
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
     st.sidebar.info(f"Last Updated: {current_time}")
+    
+    # Auto-refresh logic - REMOVED to prevent error
+    # if auto_refresh:
+    #     st.sidebar.info("Auto-refresh enabled - page will refresh every 2 minutes")
+    #     time.sleep(120)
+    #     st.rerun()
 
 if __name__ == "__main__":
     main()
