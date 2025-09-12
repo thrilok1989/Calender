@@ -576,21 +576,19 @@ class PivotIndicator:
         return all_pivots
 
 def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_proximity=5):
-    """Enhanced trading signal detection with both bullish and bearish signals"""
+    """Trading signal detection with Normal Bias OR OI Dominance (both require full ATM bias alignment)."""
     if df.empty or option_data is None or len(option_data) == 0 or not current_price:
         return
     
-    # Use cached pivot calculation for performance
     try:
         df_json = df.to_json()
         pivots = cached_pivot_calculation(df_json, pivot_settings)
     except:
         pivots = PivotIndicator.get_all_pivots(df, pivot_settings)
     
-    # Check if price is within configured proximity of any pivot level
     near_pivot = False
     pivot_level = None
-    price_relation = None  # 'above' or 'below' pivot level
+    price_relation = None
     
     for pivot in pivots:
         if pivot['timeframe'] in ['3M', '5M', '10M', '15M']:
@@ -602,13 +600,11 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
                 break
     
     if near_pivot and len(option_data) > 0:
-        # Check option chain bias conditions for ATM strike
         atm_data = option_data[option_data['Zone'] == 'ATM']
         
         if not atm_data.empty:
             row = atm_data.iloc[0]
             
-            # Bullish conditions
             bullish_conditions = {
                 'Support Level': row.get('Level') == 'Support',
                 'ChgOI Bias': row.get('ChgOI_Bias') == 'Bullish',
@@ -618,7 +614,6 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
                 'Pressure Bias': row.get('PressureBias') == 'Bullish'
             }
             
-            # Bearish conditions (mirror of bullish)
             bearish_conditions = {
                 'Resistance Level': row.get('Level') == 'Resistance',
                 'ChgOI Bias': row.get('ChgOI_Bias') == 'Bearish',
@@ -631,8 +626,18 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
             atm_strike = row['Strike']
             stop_loss_percent = 20
             
-            # Check for bullish signal - Price must be ABOVE pivot (within +5 points range)
-            if all(bullish_conditions.values()) and price_relation == 'above' and 0 < (current_price - pivot_level['value']) <= pivot_proximity:
+            ce_chg_oi = row.get('changeinOpenInterest_CE', 0)
+            pe_chg_oi = row.get('changeinOpenInterest_PE', 0)
+
+            bullish_oi_confirm = ce_chg_oi > 1.5 * pe_chg_oi
+            bearish_oi_confirm = pe_chg_oi > 1.5 * ce_chg_oi
+
+            # === Bullish Call Signal ===
+            if (
+                (all(bullish_conditions.values()) and price_relation == 'above' and 0 < (current_price - pivot_level['value']) <= pivot_proximity)
+                or (bullish_oi_confirm and all(bullish_conditions.values()) and price_relation == 'above' and 0 < (current_price - pivot_level['value']) <= pivot_proximity)
+            ):
+                trigger_type = "📊 Normal Bias Trigger" if not bullish_oi_confirm else "🔥 OI Dominance Trigger"
                 conditions_text = "\n".join([f"✅ {k}" for k, v in bullish_conditions.items() if v])
                 price_diff = current_price - pivot_level['value']
                 
@@ -643,28 +648,31 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
 📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
 🎯 <b>ATM Strike:</b> {atm_strike}
 
-<b>✅ ALL BULLISH CONDITIONS MET:</b>
+<b>✅ BULLISH CONDITIONS MET:</b>
 {conditions_text}
+
+⚡ <b>{trigger_type}</b>
+⚡ <b>OI:</b> CE ChgOI {ce_chg_oi:,} vs PE ChgOI {pe_chg_oi:,}
 
 📋 <b>SUGGESTED REVIEW:</b>
 • Strike: {atm_strike} CE
 • Stop Loss: {stop_loss_percent}%
 • Manual verification required
 
-⚠️ <b>DISCLAIMER:</b> This is for notification only. 
-Please verify all conditions manually before trading.
-
 🕐 Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-                """
-                
+"""
                 try:
                     send_telegram_message_sync(message)
                     st.success("🟢 Bullish signal notification sent!")
                 except Exception as e:
                     st.error(f"Failed to send notification: {e}")
             
-            # Check for bearish signal - Price must be BELOW pivot (within -5 points range)
-            elif all(bearish_conditions.values()) and price_relation == 'below' and -pivot_proximity <= (current_price - pivot_level['value']) < 0:
+            # === Bearish Put Signal ===
+            elif (
+                (all(bearish_conditions.values()) and price_relation == 'below' and -pivot_proximity <= (current_price - pivot_level['value']) < 0)
+                or (bearish_oi_confirm and all(bearish_conditions.values()) and price_relation == 'below' and -pivot_proximity <= (current_price - pivot_level['value']) < 0)
+            ):
+                trigger_type = "📊 Normal Bias Trigger" if not bearish_oi_confirm else "🔥 OI Dominance Trigger"
                 conditions_text = "\n".join([f"🔴 {k}" for k, v in bearish_conditions.items() if v])
                 price_diff = current_price - pivot_level['value']
                 
@@ -675,25 +683,25 @@ Please verify all conditions manually before trading.
 📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
 🎯 <b>ATM Strike:</b> {atm_strike}
 
-<b>🔴 ALL BEARISH CONDITIONS MET:</b>
+<b>🔴 BEARISH CONDITIONS MET:</b>
 {conditions_text}
+
+⚡ <b>{trigger_type}</b>
+⚡ <b>OI:</b> PE ChgOI {pe_chg_oi:,} vs CE ChgOI {ce_chg_oi:,}
 
 📋 <b>SUGGESTED REVIEW:</b>
 • Strike: {atm_strike} PE
 • Stop Loss: {stop_loss_percent}%
 • Manual verification required
 
-⚠️ <b>DISCLAIMER:</b> This is for notification only. 
-Please verify all conditions manually before trading.
-
 🕐 Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-                """
-                
+"""
                 try:
                     send_telegram_message_sync(message)
                     st.success("🔴 Bearish signal notification sent!")
                 except Exception as e:
                     st.error(f"Failed to send notification: {e}")
+
 
 def calculate_exact_time_to_expiry(expiry_date_str):
     """Calculate exact time to expiry in years (days + hours)"""
