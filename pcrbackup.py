@@ -9,7 +9,7 @@ import os
 import numpy as np
 
 # Configuration
-st.set_page_config(page_title="RSI Dual Signal Dhan Bot", layout="wide")
+st.set_page_config(page_title="TradingView RSI Dual Signal Bot", layout="wide")
 DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", os.getenv("DHAN_CLIENT_ID", ""))
 DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", os.getenv("DHAN_ACCESS_TOKEN", ""))
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
@@ -19,9 +19,11 @@ if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
     st.error("Configure DHAN credentials in .streamlit/secrets.toml")
     st.stop()
 
-# Session state
+# Session state for RSI calculation continuity
 if 'cooldowns' not in st.session_state:
     st.session_state.cooldowns = {}
+if 'rsi_data' not in st.session_state:
+    st.session_state.rsi_data = {'avg_gain': None, 'avg_loss': None, 'prices': []}
 
 # Auto-refresh
 st_autorefresh(interval=30000, key="refresh")
@@ -50,51 +52,88 @@ def dhan_api(endpoint, payload):
 
 def is_market_open():
     now = datetime.now(timezone("Asia/Kolkata"))
-    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("18:30", "%H:%M").time()
+    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("15:30", "%H:%M").time()
 
-def calculate_rsi(prices, period=7):
-    """Calculate RSI with given period"""
+def calculate_wilder_rsi(prices, period=7):
+    """Calculate RSI using Wilder's smoothing method (TradingView style)"""
     if len(prices) < period + 1:
         return None
     
-    deltas = np.diff(prices)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
+    # Calculate price changes
+    changes = np.diff(prices)
+    gains = np.where(changes > 0, changes, 0)
+    losses = np.where(changes < 0, -changes, 0)
     
-    avg_gain = np.mean(gains[:period])
-    avg_loss = np.mean(losses[:period])
+    # Check if we have stored smoothed averages
+    if (st.session_state.rsi_data['avg_gain'] is None or 
+        st.session_state.rsi_data['avg_loss'] is None or
+        len(st.session_state.rsi_data['prices']) == 0):
+        
+        # Initial calculation - simple average for first period
+        if len(gains) >= period:
+            avg_gain = np.mean(gains[:period])
+            avg_loss = np.mean(losses[:period])
+            
+            # Apply Wilder's smoothing for remaining periods
+            for i in range(period, len(gains)):
+                avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
+                avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
+            
+            # Store for next iteration
+            st.session_state.rsi_data['avg_gain'] = avg_gain
+            st.session_state.rsi_data['avg_loss'] = avg_loss
+            st.session_state.rsi_data['prices'] = prices.copy()
+        else:
+            return None
+    else:
+        # Update with new price data (incremental calculation)
+        stored_prices = st.session_state.rsi_data['prices']
+        
+        # Only process new prices
+        if len(prices) > len(stored_prices):
+            new_prices = prices[len(stored_prices):]
+            
+            for new_price in new_prices:
+                if len(stored_prices) > 0:
+                    change = new_price - stored_prices[-1]
+                    gain = max(0, change)
+                    loss = max(0, -change)
+                    
+                    # Wilder's smoothing
+                    avg_gain = ((st.session_state.rsi_data['avg_gain'] * (period - 1)) + gain) / period
+                    avg_loss = ((st.session_state.rsi_data['avg_loss'] * (period - 1)) + loss) / period
+                    
+                    st.session_state.rsi_data['avg_gain'] = avg_gain
+                    st.session_state.rsi_data['avg_loss'] = avg_loss
+                
+                stored_prices.append(new_price)
+            
+            st.session_state.rsi_data['prices'] = stored_prices
+    
+    # Calculate RSI
+    avg_gain = st.session_state.rsi_data['avg_gain']
+    avg_loss = st.session_state.rsi_data['avg_loss']
     
     if avg_loss == 0:
-        return 100
+        return 100.0
     
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     
-    # Calculate for remaining periods
-    for i in range(period, len(deltas)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        if avg_loss == 0:
-            rsi = 100
-        else:
-            rs = avg_gain / avg_loss
-            rsi = 100 - (100 / (1 + rs))
-    
     return round(rsi, 2)
 
-def get_rsi_data():
-    """Fetch intraday data and calculate RSI-7"""
+def get_nifty_ohlc_data():
+    """Fetch NIFTY OHLC data for RSI calculation"""
     try:
         now = datetime.now(timezone("Asia/Kolkata"))
-        # Get data from market open to now
         from_date = now.strftime("%Y-%m-%d 09:15:00")
         to_date = now.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Try NIFTY 50 Index - Security ID 13
+        # Try NIFTY 50 Index first
         payload = {
             "securityId": "13",
-            "exchangeSegment": "IDX_I", 
-            "instrument": "INDEX",
+            "exchangeSegment": "IDX_I",
+            "instrument": "INDEX", 
             "interval": "1",
             "fromDate": from_date,
             "toDate": to_date
@@ -102,30 +141,57 @@ def get_rsi_data():
         
         data = dhan_api("/charts/intraday", payload)
         
-        # Debug: Print data length for troubleshooting
-        if data and 'close' in data:
-            st.write(f"Debug: Got {len(data['close'])} data points")  # Remove this after testing
-            
-            if len(data['close']) >= 14:  # Need minimum 14 points for RSI-7
-                prices = data['close']
-                rsi = calculate_rsi(prices, 7)
-                
-                if rsi is not None:
-                    if rsi > 70:
-                        level = "Overbought"
-                    elif rsi < 30:
-                        level = "Oversold"
-                    else:
-                        level = "Neutral"
-                    return rsi, level
-            else:
-                st.write(f"Debug: Insufficient data - need 14, got {len(data['close'])}")
-        else:
-            st.write("Debug: No data received from API")
-            
-        return None, "N/A"
+        if not data or not all(key in data for key in ['open', 'high', 'low', 'close']):
+            # Fallback: Try NIFTY Futures
+            payload = {
+                "securityId": "1333",  # Common NIFTY futures ID
+                "exchangeSegment": "NSE_FNO",
+                "instrument": "FUTIDX",
+                "interval": "1", 
+                "fromDate": from_date,
+                "toDate": to_date
+            }
+            data = dhan_api("/charts/intraday", payload)
+        
+        if data and all(key in data for key in ['open', 'high', 'low', 'close']):
+            return {
+                'open': data['open'],
+                'high': data['high'], 
+                'low': data['low'],
+                'close': data['close'],
+                'timestamp': data.get('timestamp', [])
+            }
+        
+        return None
     except Exception as e:
-        st.write(f"Debug RSI Error: {e}")  # Remove this after testing
+        return None
+
+def get_rsi_data():
+    """Calculate RSI using TradingView methodology"""
+    try:
+        ohlc_data = get_nifty_ohlc_data()
+        
+        if not ohlc_data or len(ohlc_data['close']) < 8:
+            return None, "N/A"
+        
+        # Use closing prices for RSI calculation (standard method)
+        close_prices = np.array(ohlc_data['close'])
+        
+        # Calculate RSI-7 using Wilder's method
+        rsi = calculate_wilder_rsi(close_prices, 7)
+        
+        if rsi is not None:
+            if rsi > 70:
+                level = "Overbought"
+            elif rsi < 30:
+                level = "Oversold" 
+            else:
+                level = "Neutral"
+            return rsi, level
+        
+        return None, "N/A"
+        
+    except Exception as e:
         return None, "N/A"
 
 def analyze_atm(df, spot):
@@ -191,10 +257,12 @@ def check_signals(data):
     return signals
 
 def main():
-    st.title("RSI Dual Signal Dhan Options Bot")
+    st.title("TradingView RSI Dual Signal Bot")
     
     if not is_market_open():
         st.warning("Market Closed")
+        # Reset RSI data when market is closed
+        st.session_state.rsi_data = {'avg_gain': None, 'avg_loss': None, 'prices': []}
         return
     
     # Sidebar
@@ -203,17 +271,22 @@ def main():
         st.write(f"Client: {DHAN_CLIENT_ID[:8]}...")
         st.write(f"Telegram: {'✅' if TELEGRAM_BOT_TOKEN else '❌'}")
         
-        st.subheader("RSI Settings")
-        st.write("Period: 7")
+        st.subheader("RSI-7 (TradingView)")
+        st.write("Method: Wilder's Smoothing")
+        st.write("Data: OHLC Candles")
         st.write("Oversold: < 30")
         st.write("Overbought: > 70")
         
-        st.subheader("Signals")
+        st.subheader("Signals") 
         st.write("**Primary:** OI Change > 1.5x")
         st.write("**Secondary:** Absolute OI > 1.3x")
         
+        if st.button("Reset RSI", use_container_width=True):
+            st.session_state.rsi_data = {'avg_gain': None, 'avg_loss': None, 'prices': []}
+            st.success("RSI calculation reset!")
+        
         if TELEGRAM_BOT_TOKEN and st.button("Test Telegram", use_container_width=True):
-            test_msg = f"🧪 Test from RSI Dual Signal Bot\nTime: {datetime.now().strftime('%H:%M:%S')}"
+            test_msg = f"🧪 Test from TradingView RSI Bot\nTime: {datetime.now().strftime('%H:%M:%S')}"
             if send_telegram(test_msg):
                 st.success("✅ Working!")
             else:
@@ -260,12 +333,15 @@ def main():
     col1, col2, col3, col4 = st.columns(4)
     with col1: st.metric("NIFTY", f"{spot:.2f}")
     with col2: st.metric("ATM Strike", analysis['atm'])
-    with col3: 
-        rsi_color = "🔴" if analysis['rsi_level'] == "Overbought" else "🟢" if analysis['rsi_level'] == "Oversold" else "🟡"
-        st.metric("RSI-7", f"{rsi_color} {analysis['rsi_value'] or 'N/A'}")
+    with col3:
+        if analysis['rsi_value']:
+            rsi_color = "🔴" if analysis['rsi_level'] == "Overbought" else "🟢" if analysis['rsi_level'] == "Oversold" else "🟡"
+            st.metric("RSI-7", f"{rsi_color} {analysis['rsi_value']}")
+        else:
+            st.metric("RSI-7", "N/A")
     with col4: st.metric("Time", datetime.now().strftime("%H:%M:%S"))
     
-    # RSI Level Display
+    # RSI Status
     if analysis['rsi_value']:
         if analysis['rsi_level'] == "Overbought":
             st.error(f"RSI-7: {analysis['rsi_value']} (Overbought)")
@@ -273,6 +349,8 @@ def main():
             st.success(f"RSI-7: {analysis['rsi_value']} (Oversold)")
         else:
             st.info(f"RSI-7: {analysis['rsi_value']} (Neutral)")
+    else:
+        st.warning("RSI: Calculating... (need more data)")
     
     # Biases
     st.subheader("ATM Biases")
@@ -290,7 +368,7 @@ def main():
         if analysis['ce_chg_1_5x_pe'] and analysis['all_bearish']: st.error("✅ Primary PUT Ready")
     
     with col2:
-        st.subheader("Secondary Signals") 
+        st.subheader("Secondary Signals")
         oi_ratio = analysis['pe_oi'] / analysis['ce_oi'] if analysis['ce_oi'] > 0 else float('inf')
         st.metric("PE/CE OI Absolute", f"{oi_ratio:.2f}x")
         if analysis['pe_oi_1_3x_ce'] and analysis['all_bullish']: st.success("✅ Secondary CALL Ready")
@@ -300,7 +378,7 @@ def main():
     for signal_type, cooldown_key in signals:
         st.session_state.cooldowns[cooldown_key] = time.time()
         
-        rsi_text = f"RSI-7: {analysis['rsi_value']} ({analysis['rsi_level']})" if analysis['rsi_value'] else "RSI-7: N/A"
+        rsi_text = f"RSI-7: {analysis['rsi_value']} ({analysis['rsi_level']})" if analysis['rsi_value'] else "RSI-7: Calculating..."
         
         if 'BULLISH' in signal_type:
             st.success(f"🚨 {signal_type.replace('_', ' ')} SIGNAL!")
