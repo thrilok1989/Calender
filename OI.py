@@ -703,8 +703,6 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
                 except Exception as e:
                     st.error(f"Failed to send notification: {e}")
 
-
-
 def calculate_exact_time_to_expiry(expiry_date_str):
     """Calculate exact time to expiry in years (days + hours)"""
     try:
