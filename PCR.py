@@ -288,8 +288,6 @@ def main():
     
     # Process signals
     for signal_type, cooldown_key in signals:
-        st.session_state.cooldowns[cooldown_key] = time.time()
-        
         rsi_text = f"RSI-7: {analysis['rsi_value']} ({analysis['rsi_level']})" if analysis['rsi_value'] else "RSI-7: N/A"
         
         if 'BULLISH' in signal_type:
@@ -305,7 +303,7 @@ Entry: ₹{analysis['ce_ltp']:.2f}
 Stop Loss: ₹{stop_loss:.2f} (20%)
 {rsi_text}
 
-Condition: {"PE OI Change > 1.5x CE" if "PRIMARY" in signal_type else "PUT OI > 1.3x CALL OI"}
+Condition: {"PE OI Change > 1.2x CE" if "PRIMARY" in signal_type else "PUT OI > CALL OI"}
 All Biases: Bullish
 
 Time: {datetime.now().strftime("%H:%M:%S")}
@@ -324,7 +322,7 @@ Entry: ₹{analysis['pe_ltp']:.2f}
 Stop Loss: ₹{stop_loss:.2f} (20%)
 {rsi_text}
 
-Condition: {"CE OI Change > 1.5x PE" if "PRIMARY" in signal_type else "CALL OI > 1.3x PUT OI"}
+Condition: {"CE OI Change > 1.2x PE" if "PRIMARY" in signal_type else "CALL OI > PUT OI"}
 All Biases: Bearish
 
 Time: {datetime.now().strftime("%H:%M:%S")}
