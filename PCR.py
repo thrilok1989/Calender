@@ -140,12 +140,12 @@ def analyze_atm(df, spot):
     all_bearish = all(b == "Bearish" for b in biases.values())
     
     # Primary conditions (OI Change ratios)
-    pe_chg_1_5x_ce = abs(pe_oi_chg) > 1.5 * abs(ce_oi_chg) if ce_oi_chg != 0 else abs(pe_oi_chg) > 1000
-    ce_chg_1_5x_pe = abs(ce_oi_chg) > 1.5 * abs(pe_oi_chg) if pe_oi_chg != 0 else abs(ce_oi_chg) > 1000
+    pe_chg_1_5x_ce = abs(pe_oi_chg) > 1.2 * abs(ce_oi_chg) if ce_oi_chg != 0 else abs(pe_oi_chg) > 1000
+    ce_chg_1_5x_pe = abs(ce_oi_chg) > 1.2 * abs(pe_oi_chg) if pe_oi_chg != 0 else abs(ce_oi_chg) > 1000
     
     # Secondary conditions (Absolute OI ratios)
-    pe_oi_1_3x_ce = pe_oi > 1.3 * ce_oi if ce_oi > 0 else False
-    ce_oi_1_3x_pe = ce_oi > 1.3 * pe_oi if pe_oi > 0 else False
+    pe_oi_1_3x_ce = pe_oi > ce_oi if ce_oi > 0 else False
+    ce_oi_1_3x_pe = ce_oi > pe_oi if pe_oi > 0 else False
     
     # RSI
     rsi_value, rsi_level = get_rsi()
