@@ -25,7 +25,7 @@ if 'rsi_prices' not in st.session_state:
     st.session_state.rsi_prices = []
 
 # Auto refresh
-st_autorefresh(interval=35000, key="refresh")
+st_autorefresh(interval=55000, key="refresh")
 
 def send_telegram(msg):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
