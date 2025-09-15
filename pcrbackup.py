@@ -1,457 +1,333 @@
-import strea mlit as st
+import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import requests
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import datetime
-import pytz
-import numpy as np
-import math
-from scipy.stats import norm
-from datetime import datetime, timedelta
-import json
+from datetime import datetime
+from pytz import timezone
+import time
+import os
 
-# Page config
-st.set_page_config(page_title="Nifty Analyzer", page_icon="📈", layout="wide")
-st_autorefresh(interval=70000, key="refresh")
+# Config
+st.set_page_config(page_title="RSI Dual Signal Bot", layout="wide")
+DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", os.getenv("DHAN_CLIENT_ID", ""))
+DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", os.getenv("DHAN_ACCESS_TOKEN", ""))
+TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
+TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID", ""))
 
-# Get credentials from secrets
-DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
-DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", "")
-TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
+if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
+    st.error("Configure DHAN credentials in .streamlit/secrets.toml")
+    st.stop()
 
-# Constants
-NIFTY_SCRIP = 13
-NIFTY_SEG = "IDX_I"
+# Session state
+if 'cooldowns' not in st.session_state:
+    st.session_state.cooldowns = {}
+if 'rsi_prices' not in st.session_state:
+    st.session_state.rsi_prices = []
 
-class DhanAPI:
-    def __init__(self):
-        self.base_url = "https://api.dhan.co/v2"
-        self.headers = {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'access-token': DHAN_ACCESS_TOKEN,
-            'client-id': DHAN_CLIENT_ID
-        }
-    
-    def get_intraday_data(self, interval="5", days_back=1):
-        url = f"{self.base_url}/charts/intraday"
-        ist = pytz.timezone('Asia/Kolkata')
-        end_date = datetime.now(ist)
-        start_date = end_date - timedelta(days=days_back)
-        
-        payload = {
-            "securityId": str(NIFTY_SCRIP),
-            "exchangeSegment": NIFTY_SEG,
-            "instrument": "INDEX",
-            "interval": interval,
-            "oi": False,
-            "fromDate": start_date.strftime("%Y-%m-%d %H:%M:%S"),
-            "toDate": end_date.strftime("%Y-%m-%d %H:%M:%S")
-        }
-        
-        try:
-            response = requests.post(url, headers=self.headers, json=payload)
-            return response.json() if response.status_code == 200 else None
-        except:
-            return None
-    
-    def get_ltp_data(self):
-        url = f"{self.base_url}/marketfeed/ltp"
-        payload = {NIFTY_SEG: [NIFTY_SCRIP]}
-        try:
-            response = requests.post(url, headers=self.headers, json=payload)
-            return response.json() if response.status_code == 200 else None
-        except:
-            return None
+# Auto refresh
+st_autorefresh(interval=30000, key="refresh")
 
-def get_option_chain(expiry):
-    url = "https://api.dhan.co/v2/optionchain"
-    headers = {
-        'access-token': DHAN_ACCESS_TOKEN,
-        'client-id': DHAN_CLIENT_ID,
-        'Content-Type': 'application/json'
-    }
-    payload = {
-        "UnderlyingScrip": NIFTY_SCRIP,
-        "UnderlyingSeg": NIFTY_SEG,
-        "Expiry": expiry
-    }
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        return response.json() if response.status_code == 200 else None
-    except:
-        return None
-
-def get_expiry_list():
-    url = "https://api.dhan.co/v2/optionchain/expirylist"
-    headers = {
-        'access-token': DHAN_ACCESS_TOKEN,
-        'client-id': DHAN_CLIENT_ID,
-        'Content-Type': 'application/json'
-    }
-    payload = {
-        "UnderlyingScrip": NIFTY_SCRIP,
-        "UnderlyingSeg": NIFTY_SEG
-    }
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        return response.json() if response.status_code == 200 else None
-    except:
-        return None
-
-def send_telegram(message):
+def send_telegram(msg):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+        return False
     try:
-        requests.post(url, json=payload, timeout=10)
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        return requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': msg, 'parse_mode': 'HTML'}).status_code == 200
     except:
-        pass
+        return False
 
-def process_candle_data(data):
-    if not data or 'open' not in data:
-        return pd.DataFrame()
-    
-    df = pd.DataFrame({
-        'timestamp': data['timestamp'],
-        'open': data['open'],
-        'high': data['high'],
-        'low': data['low'],
-        'close': data['close'],
-        'volume': data['volume']
-    })
-    
-    ist = pytz.timezone('Asia/Kolkata')
-    df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
-    return df
-
-def pivot_high_low(series, length=4):
-    max_vals = series.rolling(window=length*2+1, center=True).max()
-    min_vals = series.rolling(window=length*2+1, center=True).min()
-    pivot_highs = series == max_vals
-    pivot_lows = series == min_vals
-    return pivot_highs, pivot_lows
-
-def get_pivots(df, timeframe="5", length=4):
-    if df.empty:
-        return []
-    
-    # Resample to higher timeframe
-    rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min"}
-    rule = rule_map.get(timeframe, "5min")
-    
-    df_temp = df.set_index('datetime')
+def dhan_api(endpoint, payload):
+    headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
     try:
-        resampled = df_temp.resample(rule).agg({
-            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-        }).dropna()
-        
-        if len(resampled) < length * 2 + 1:
-            return []
-        
-        ph_mask, pl_mask = pivot_high_low(resampled['high'], length), pivot_high_low(resampled['low'], length)
-        
-        pivots = []
-        for timestamp, value in resampled['high'][ph_mask[0]].items():
-            pivots.append({'type': 'high', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
-        
-        for timestamp, value in resampled['low'][pl_mask[1]].items():
-            pivots.append({'type': 'low', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
-        
-        return pivots
+        response = requests.post(f"https://api.dhan.co/v2{endpoint}", headers=headers, json=payload)
+        return response.json() if response.status_code == 200 else None
     except:
-        return []
+        return None
 
-def calculate_greeks(option_type, S, K, T, r, sigma):
+def is_market_open():
+    now = datetime.now(timezone("Asia/Kolkata"))
+    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("15:30", "%H:%M").time()
+
+def calculate_rsi(prices, period=7):
+    """Calculate RSI using Wilder's smoothing (TradingView method)"""
+    if len(prices) < period + 1:
+        return None
+    
+    changes = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+    gains = [max(0, change) for change in changes]
+    losses = [max(0, -change) for change in changes]
+    
+    # Initial averages
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    
+    # Wilder's smoothing for remaining periods
+    for i in range(period, len(gains)):
+        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
+        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
+    
+    if avg_loss == 0:
+        return 100.0
+    
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 2)
+
+def get_current_ltp():
+    """Get current NIFTY LTP from market quote"""
     try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        delta = norm.cdf(d1) if option_type == 'CE' else -norm.cdf(-d1)
-        gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
-        vega = S * norm.pdf(d1) * math.sqrt(T) / 100
-        theta = (-(S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365 if option_type == 'CE' else (-(S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
-        return round(delta, 4), round(gamma, 4), round(vega, 4), round(theta, 4)
+        payload = {"IDX_I": [13]}
+        data = dhan_api("/marketfeed/ltp", payload)
+        if data and 'data' in data and 'IDX_I' in data['data'] and '13' in data['data']['IDX_I']:
+            return data['data']['IDX_I']['13']['last_price']
+        return None
     except:
-        return 0, 0, 0, 0
+        return None
 
-def calculate_time_to_expiry(expiry_date_str):
-    try:
-        expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").replace(hour=15, minute=30)
-        expiry_date = expiry_date.replace(tzinfo=pytz.timezone('Asia/Kolkata'))
-        now = datetime.now(pytz.timezone('Asia/Kolkata'))
-        time_diff = expiry_date - now
-        years = time_diff.total_seconds() / (365.25 * 24 * 3600)
-        return max(years, 1/365.25)
-    except:
-        return 1/365.25
-
-def create_chart(df, title):
-    if df.empty:
-        return go.Figure()
+def update_rsi_prices():
+    """Update price history and calculate RSI"""
+    current_ltp = get_current_ltp()
+    if current_ltp is None:
+        return None, "N/A"
     
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, 
-                       row_heights=[0.7, 0.3])
+    # Add current price to history
+    if 'rsi_prices' not in st.session_state:
+        st.session_state.rsi_prices = []
     
-    # Candlestick chart
-    fig.add_trace(go.Candlestick(
-        x=df['datetime'], open=df['open'], high=df['high'], 
-        low=df['low'], close=df['close'], name='Nifty',
-        increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
-    ), row=1, col=1)
-    
-    # Volume chart
-    volume_colors = ['#00ff88' if close >= open else '#ff4444' 
-                    for close, open in zip(df['close'], df['open'])]
-    fig.add_trace(go.Bar(
-        x=df['datetime'], y=df['volume'], name='Volume',
-        marker_color=volume_colors, opacity=0.7
-    ), row=2, col=1)
-    
-    # Add pivot levels
-    if len(df) > 50:
-        timeframes = ["5", "10", "15"]
-        colors = ["#ff9900", "#ff44ff", "#4444ff"]
+    # Only add if price is different from last price (avoid duplicates)
+    if not st.session_state.rsi_prices or st.session_state.rsi_prices[-1] != current_ltp:
+        st.session_state.rsi_prices.append(current_ltp)
         
-        for tf, color in zip(timeframes, colors):
-            pivots = get_pivots(df, tf)
-            x_start, x_end = df['datetime'].min(), df['datetime'].max()
-            
-            for pivot in pivots[-5:]:  # Last 5 pivots
-                fig.add_shape(type="line", x0=x_start, x1=x_end,
-                            y0=pivot['value'], y1=pivot['value'],
-                            line=dict(color=color, width=1, dash="dash"), row=1, col=1)
+        # Keep only last 50 prices for efficiency
+        if len(st.session_state.rsi_prices) > 50:
+            st.session_state.rsi_prices = st.session_state.rsi_prices[-50:]
     
-    fig.update_layout(title=title, template='plotly_dark', height=600,
-                     xaxis_rangeslider_visible=False, showlegend=False)
-    return fig
+    # Calculate RSI if we have enough data points
+    if len(st.session_state.rsi_prices) >= 8:
+        rsi = calculate_rsi(st.session_state.rsi_prices, 7)
+        if rsi is not None:
+            if rsi > 70:
+                level = "Overbought"
+            elif rsi < 30:
+                level = "Oversold"
+            else:
+                level = "Neutral"
+            return rsi, level
+    
+    return None, "N/A"
 
-def analyze_options(expiry):
-    option_data = get_option_chain(expiry)
-    if not option_data or 'data' not in option_data:
-        return None, None
+def get_rsi():
+    """Get RSI using live market data"""
+    return update_rsi_prices()
+
+def analyze_atm(df, spot):
+    atm = min(df['strikePrice'], key=lambda x: abs(x - spot))
+    row = df[df['strikePrice'] == atm].iloc[0]
     
-    data = option_data['data']
-    underlying = data['last_price']
-    oc_data = data['oc']
+    ce_oi = row.get('openInterest_CE', 0)
+    pe_oi = row.get('openInterest_PE', 0)
+    ce_oi_chg = row.get('changeinOpenInterest_CE', 0)
+    pe_oi_chg = row.get('changeinOpenInterest_PE', 0)
     
-    calls, puts = [], []
-    for strike, strike_data in oc_data.items():
-        if 'ce' in strike_data:
-            ce_data = strike_data['ce']
-            ce_data['strikePrice'] = float(strike)
-            calls.append(ce_data)
-        if 'pe' in strike_data:
-            pe_data = strike_data['pe']
-            pe_data['strikePrice'] = float(strike)
-            puts.append(pe_data)
-    
-    df_ce = pd.DataFrame(calls)
-    df_pe = pd.DataFrame(puts)
-    df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
-    
-    # Rename columns
-    rename_map = {
-        'last_price': 'lastPrice', 'oi': 'openInterest', 'previous_oi': 'previousOpenInterest',
-        'top_ask_quantity': 'askQty', 'top_bid_quantity': 'bidQty', 'volume': 'totalTradedVolume'
+    # Biases
+    biases = {
+        'ChgOI': "Bullish" if pe_oi_chg > ce_oi_chg else "Bearish",
+        'Volume': "Bullish" if row.get('totalTradedVolume_PE', 0) > row.get('totalTradedVolume_CE', 0) else "Bearish",
+        'AskQty': "Bullish" if row.get('askQty_CE', 0) > row.get('askQty_PE', 0) else "Bearish",
+        'BidQty': "Bullish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bearish"
     }
-    for old, new in rename_map.items():
-        df.rename(columns={f"{old}_CE": f"{new}_CE", f"{old}_PE": f"{new}_PE"}, inplace=True)
     
+    all_bullish = all(b == "Bullish" for b in biases.values())
+    all_bearish = all(b == "Bearish" for b in biases.values())
+    
+    # Primary conditions (OI Change ratios)
+    pe_chg_1_5x_ce = abs(pe_oi_chg) > 1.2 * abs(ce_oi_chg) if ce_oi_chg != 0 else abs(pe_oi_chg) > 1000
+    ce_chg_1_5x_pe = abs(ce_oi_chg) > 1.2 * abs(pe_oi_chg) if pe_oi_chg != 0 else abs(ce_oi_chg) > 1000
+    
+    # Secondary conditions (Absolute OI ratios)
+    pe_oi_1_3x_ce = pe_oi > ce_oi if ce_oi > 0 else False
+    ce_oi_1_3x_pe = ce_oi > pe_oi if pe_oi > 0 else False
+    
+    # RSI
+    rsi_value, rsi_level = get_rsi()
+    
+    return {
+        'atm': atm, 'spot': spot, 'biases': biases, 'all_bullish': all_bullish, 'all_bearish': all_bearish,
+        'pe_chg_1_5x_ce': pe_chg_1_5x_ce, 'ce_chg_1_5x_pe': ce_chg_1_5x_pe,
+        'pe_oi_1_3x_ce': pe_oi_1_3x_ce, 'ce_oi_1_3x_pe': ce_oi_1_3x_pe,
+        'ce_ltp': row.get('lastPrice_CE', 0), 'pe_ltp': row.get('lastPrice_PE', 0),
+        'ce_oi_chg': ce_oi_chg, 'pe_oi_chg': pe_oi_chg, 'ce_oi': ce_oi, 'pe_oi': pe_oi,
+        'rsi_value': rsi_value, 'rsi_level': rsi_level
+    }
+
+def check_signals(data):
+    signals = []
+    
+    # Primary signals
+    if data['pe_chg_1_5x_ce'] and data['all_bullish']:
+        signals.append(('PRIMARY_BULLISH', 'p_bull'))
+    
+    if data['ce_chg_1_5x_pe'] and data['all_bearish']:
+        signals.append(('PRIMARY_BEARISH', 'p_bear'))
+    
+    # Secondary signals
+    if data['pe_oi_1_3x_ce'] and data['all_bullish']:
+        signals.append(('SECONDARY_BULLISH', 's_bull'))
+    
+    if data['ce_oi_1_3x_pe'] and data['all_bearish']:
+        signals.append(('SECONDARY_BEARISH', 's_bear'))
+    
+    return signals
+
+def main():
+    st.title("RSI Dual Signal Dhan Bot")
+    
+    if not is_market_open():
+        st.warning("Market Closed")
+        return
+    
+    # Sidebar
+    with st.sidebar:
+        st.header("Config")
+        st.write(f"Client: {DHAN_CLIENT_ID[:8]}...")
+        st.write(f"Telegram: {'✅' if TELEGRAM_BOT_TOKEN else '❌'}")
+        
+        st.subheader("RSI-7")
+        st.write("Method: Wilder's (TradingView)")
+        st.write("Oversold: < 30, Overbought: > 70")
+        
+        st.subheader("Signals")
+        st.write("**Primary:** OI Change > 1.5x + All Biases")
+        st.write("**Secondary:** OI > 1.3x + All Biases")
+        
+        if TELEGRAM_BOT_TOKEN and st.button("Test Telegram", use_container_width=True):
+            if send_telegram(f"🧪 Test from RSI Bot\nTime: {datetime.now().strftime('%H:%M:%S')}"):
+                st.success("✅ Working!")
+            else:
+                st.error("❌ Failed!")
+    
+    # Get data
+    expiry_data = dhan_api("/optionchain/expirylist", {"UnderlyingScrip": 13, "UnderlyingSeg": "IDX_I"})
+    if not expiry_data:
+        st.error("Failed to fetch expiry")
+        return
+    
+    oc_data = dhan_api("/optionchain", {"UnderlyingScrip": 13, "UnderlyingSeg": "IDX_I", "Expiry": expiry_data['data'][0]})
+    if not oc_data:
+        st.error("Failed to fetch option chain")
+        return
+    
+    # Process data
+    spot = oc_data['data']['last_price']
+    oc = oc_data['data']['oc']
+    
+    df_data = []
+    for strike, data in oc.items():
+        if 'ce' in data and 'pe' in data:
+            row = {'strikePrice': float(strike)}
+            for suffix, option_data in [('_CE', data['ce']), ('_PE', data['pe'])]:
+                row[f'lastPrice{suffix}'] = option_data.get('last_price', 0)
+                row[f'openInterest{suffix}'] = option_data.get('oi', 0)
+                row[f'previousOpenInterest{suffix}'] = option_data.get('previous_oi', 0)
+                row[f'totalTradedVolume{suffix}'] = option_data.get('volume', 0)
+                row[f'bidQty{suffix}'] = option_data.get('top_bid_quantity', 0)
+                row[f'askQty{suffix}'] = option_data.get('top_ask_quantity', 0)
+            df_data.append(row)
+    
+    df = pd.DataFrame(df_data)
     df['changeinOpenInterest_CE'] = df['openInterest_CE'] - df['previousOpenInterest_CE']
     df['changeinOpenInterest_PE'] = df['openInterest_PE'] - df['previousOpenInterest_PE']
     
-    # Calculate Greeks
-    T = calculate_time_to_expiry(expiry)
-    r = 0.06
+    # Analysis
+    analysis = analyze_atm(df, spot)
+    signals = check_signals(analysis)
     
-    for idx, row in df.iterrows():
-        strike = row['strikePrice']
-        iv_ce = row.get('impliedVolatility_CE', 15) or 15
-        iv_pe = row.get('impliedVolatility_PE', 15) or 15
-        
-        greeks_ce = calculate_greeks('CE', underlying, strike, T, r, iv_ce / 100)
-        greeks_pe = calculate_greeks('PE', underlying, strike, T, r, iv_pe / 100)
-        
-        df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'] = greeks_ce
-        df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'] = greeks_pe
-    
-    # Find ATM and create summary
-    atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
-    df_filtered = df[abs(df['strikePrice'] - atm_strike) <= 100]  # ATM ± 2 strikes
-    
-    df_filtered['Zone'] = df_filtered['strikePrice'].apply(
-        lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM'
-    )
-    
-    # Bias analysis
-    bias_results = []
-    for _, row in df_filtered.iterrows():
-        chg_oi_bias = "Bullish" if row['changeinOpenInterest_CE'] < row['changeinOpenInterest_PE'] else "Bearish"
-        volume_bias = "Bullish" if row['totalTradedVolume_CE'] < row['totalTradedVolume_PE'] else "Bearish"
-        
-        ce_oi = row['openInterest_CE']
-        pe_oi = row['openInterest_PE']
-        level = "Support" if pe_oi > 1.12 * ce_oi else "Resistance" if ce_oi > 1.12 * pe_oi else "Neutral"
-        
-        bias_results.append({
-            "Strike": row['strikePrice'],
-            "Zone": row['Zone'],
-            "Level": level,
-            "ChgOI_Bias": chg_oi_bias,
-            "Volume_Bias": volume_bias,
-            "PCR": round(pe_oi / ce_oi if ce_oi > 0 else 0, 2)
-        })
-    
-    return underlying, pd.DataFrame(bias_results)
-
-def check_signals(df, option_data, current_price, proximity=5):
-    if df.empty or option_data is None or not current_price:
-        return
-    
-    # Get recent pivots
-    pivots = get_pivots(df, "5") + get_pivots(df, "10") + get_pivots(df, "15")
-    
-    near_pivot = False
-    pivot_level = None
-    
-    for pivot in pivots:
-        if abs(current_price - pivot['value']) <= proximity:
-            near_pivot = True
-            pivot_level = pivot
-            break
-    
-    if near_pivot and len(option_data) > 0:
-        atm_data = option_data[option_data['Zone'] == 'ATM']
-        
-        if not atm_data.empty:
-            row = atm_data.iloc[0]
-            
-            # Signal conditions
-            bullish_signal = (
-                row['Level'] == 'Support' and 
-                row['ChgOI_Bias'] == 'Bullish' and 
-                row['Volume_Bias'] == 'Bullish'
-            )
-            
-            bearish_signal = (
-                row['Level'] == 'Resistance' and 
-                row['ChgOI_Bias'] == 'Bearish' and 
-                row['Volume_Bias'] == 'Bearish'
-            )
-            
-            if bullish_signal or bearish_signal:
-                signal_type = "CALL" if bullish_signal else "PUT"
-                price_diff = current_price - pivot_level['value']
-                
-                message = f"""
-🚨 NIFTY {signal_type} SIGNAL 🚨
-
-📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
-📌 Pivot: {pivot_level['timeframe']}M at ₹{pivot_level['value']:.2f}
-🎯 ATM: {row['Strike']}
-
-Conditions: {row['Level']}, {row['ChgOI_Bias']} OI, {row['Volume_Bias']} Volume
-
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-"""
-                send_telegram(message)
-                st.success(f"🔔 {signal_type} signal sent!")
-
-def main():
-    st.title("📈 Nifty Trading Analyzer")
-    
-    # Sidebar
-    st.sidebar.header("Settings")
-    interval = st.sidebar.selectbox("Timeframe", ["1", "3", "5", "10", "15"], index=2)
-    proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
-    enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
-    
-    # Initialize API
-    api = DhanAPI()
-    
-    # Get data
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.header("Chart")
-        
-        # Fetch candle data
-        data = api.get_intraday_data(interval)
-        df = process_candle_data(data) if data else pd.DataFrame()
-        
-        # Get current price
-        ltp_data = api.get_ltp_data()
-        current_price = None
-        if ltp_data and 'data' in ltp_data:
-            for exchange, data in ltp_data['data'].items():
-                for security_id, price_data in data.items():
-                    current_price = price_data.get('last_price', 0)
-                    break
-        
-        if current_price is None and not df.empty:
-            current_price = df['close'].iloc[-1]
-        
-        # Display metrics
-        if not df.empty and len(df) > 1:
-            prev_close = df['close'].iloc[-2]
-            change = current_price - prev_close
-            change_pct = (change / prev_close) * 100
-            
-            col1_m, col2_m, col3_m = st.columns(3)
-            with col1_m:
-                color = "🟢" if change >= 0 else "🔴"
-                st.metric("Price", f"₹{current_price:,.2f}", f"{change:+.2f} ({change_pct:+.2f}%)")
-            with col2_m:
-                st.metric("High", f"₹{df['high'].max():,.2f}")
-            with col3_m:
-                st.metric("Low", f"₹{df['low'].min():,.2f}")
-        
-        # Chart
-        if not df.empty:
-            fig = create_chart(df, f"Nifty {interval}min")
-            st.plotly_chart(fig, use_container_width=True)
+    # Display
+    col1, col2, col3, col4 = st.columns(4)
+    with col1: st.metric("NIFTY", f"{spot:.2f}")
+    with col2: st.metric("ATM", analysis['atm'])
+    with col3:
+        if analysis['rsi_value']:
+            rsi_color = "🔴" if analysis['rsi_level'] == "Overbought" else "🟢" if analysis['rsi_level'] == "Oversold" else "🟡"
+            st.metric("RSI-7", f"{rsi_color} {analysis['rsi_value']}")
         else:
-            st.error("No chart data available")
+            st.metric("RSI-7", "N/A")
+    with col4: st.metric("Time", datetime.now().strftime("%H:%M:%S"))
+    
+    # RSI Status
+    if analysis['rsi_value']:
+        if analysis['rsi_level'] == "Overbought":
+            st.error(f"RSI-7: {analysis['rsi_value']} (Overbought)")
+        elif analysis['rsi_level'] == "Oversold":
+            st.success(f"RSI-7: {analysis['rsi_value']} (Oversold)")
+        else:
+            st.info(f"RSI-7: {analysis['rsi_value']} (Neutral)")
+    
+    # Biases
+    st.subheader("ATM Biases")
+    bias_df = pd.DataFrame([{"Bias": k, "Value": v, "Status": "✅" if v == "Bullish" else "❌"} 
+                           for k, v in analysis['biases'].items()])
+    st.dataframe(bias_df, hide_index=True)
+    
+    # Conditions
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Primary")
+        chg_ratio = abs(analysis['pe_oi_chg'] / analysis['ce_oi_chg']) if analysis['ce_oi_chg'] != 0 else float('inf')
+        st.metric("PE/CE Change", f"{chg_ratio:.2f}x")
+        if analysis['pe_chg_1_5x_ce'] and analysis['all_bullish']: st.success("✅ CALL Ready")
+        if analysis['ce_chg_1_5x_pe'] and analysis['all_bearish']: st.error("✅ PUT Ready")
     
     with col2:
-        st.header("Options")
+        st.subheader("Secondary")
+        oi_ratio = analysis['pe_oi'] / analysis['ce_oi'] if analysis['ce_oi'] > 0 else float('inf')
+        st.metric("PE/CE OI", f"{oi_ratio:.2f}x")
+        if analysis['pe_oi_1_3x_ce'] and analysis['all_bullish']: st.success("✅ CALL Ready")
+        if analysis['ce_oi_1_3x_pe'] and analysis['all_bearish']: st.error("✅ PUT Ready")
+    
+    # Process signals
+    for signal_type, cooldown_key in signals:
+        rsi_text = f"RSI-7: {analysis['rsi_value']} ({analysis['rsi_level']})" if analysis['rsi_value'] else "RSI-7: N/A"
         
-        # Get expiry list
-        expiry_data = get_expiry_list()
-        if expiry_data and 'data' in expiry_data:
-            expiry_dates = expiry_data['data']
-            selected_expiry = st.selectbox("Expiry", expiry_dates)
+        if 'BULLISH' in signal_type:
+            st.success(f"🚨 {signal_type.replace('_', ' ')} SIGNAL!")
+            stop_loss = analysis['ce_ltp'] * 0.8
+            signal_prefix = "PRIMARY" if "PRIMARY" in signal_type else "SECONDARY"
             
-            # Analyze options
-            underlying_price, option_summary = analyze_options(selected_expiry)
+            msg = f"""
+🟢 <b>{signal_prefix} BULLISH - BUY CALL</b>
+
+Strike: {analysis['atm']}
+Entry: ₹{analysis['ce_ltp']:.2f}
+Stop Loss: ₹{stop_loss:.2f} (20%)
+{rsi_text}
+
+Condition: {"PE OI Change > 1.2x CE" if "PRIMARY" in signal_type else "PUT OI > CALL OI"}
+All Biases: Bullish
+
+Time: {datetime.now().strftime("%H:%M:%S")}
+            """
             
-            if underlying_price and option_summary is not None:
-                st.info(f"Spot: ₹{underlying_price:.2f}")
-                
-                # Display option summary
-                st.dataframe(option_summary, use_container_width=True)
-                
-                # Check signals
-                if enable_signals and not df.empty:
-                    check_signals(df, option_summary, underlying_price, proximity)
-            else:
-                st.error("Options data unavailable")
         else:
-            st.error("Expiry data unavailable")
-    
-    # Status
-    ist = pytz.timezone('Asia/Kolkata')
-    current_time = datetime.now(ist).strftime("%H:%M:%S IST")
-    st.sidebar.info(f"Updated: {current_time}")
-    
-    # Test Telegram
-    if st.sidebar.button("Test Telegram"):
-        send_telegram("🔔 Test message from Nifty Analyzer")
-        st.sidebar.success("Test sent!")
+            st.error(f"🚨 {signal_type.replace('_', ' ')} SIGNAL!")
+            stop_loss = analysis['pe_ltp'] * 0.8
+            signal_prefix = "PRIMARY" if "PRIMARY" in signal_type else "SECONDARY"
+            
+            msg = f"""
+🔴 <b>{signal_prefix} BEARISH - BUY PUT</b>
+
+Strike: {analysis['atm']}
+Entry: ₹{analysis['pe_ltp']:.2f}
+Stop Loss: ₹{stop_loss:.2f} (20%)
+{rsi_text}
+
+Condition: {"CE OI Change > 1.2x PE" if "PRIMARY" in signal_type else "CALL OI > PUT OI"}
+All Biases: Bearish
+
+Time: {datetime.now().strftime("%H:%M:%S")}
+            """
+        
+        st.code(msg)
+        send_telegram(msg.strip())
 
 if __name__ == "__main__":
     main()
