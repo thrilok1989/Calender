@@ -46,7 +46,7 @@ def dhan_api(endpoint, payload):
 
 def is_market_open():
     now = datetime.now(timezone("Asia/Kolkata"))
-    return now.weekday() < 5 and datetime.strptime("09:00", "%H:%M").time() <= now.time() <= datetime.strptime("15:30", "%H:%M").time()
+    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("15:30", "%H:%M").time()
 
 def calculate_rsi(prices, period=7):
     """Calculate RSI using Wilder's smoothing (TradingView method)"""
@@ -133,8 +133,7 @@ def analyze_atm(df, spot):
         'ChgOI': "Bullish" if pe_oi_chg > ce_oi_chg else "Bearish",
         'Volume': "Bullish" if row.get('totalTradedVolume_PE', 0) > row.get('totalTradedVolume_CE', 0) else "Bearish",
         'AskQty': "Bullish" if row.get('askQty_CE', 0) > row.get('askQty_PE', 0) else "Bearish",
-        'BidQty': "Bullish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bearish",
-        'Pressure': "Bullish" if (row.get('bidQty_CE', 0) - row.get('askQty_CE', 0) + row.get('askQty_PE', 0) - row.get('bidQty_PE', 0)) > 500 else "Bearish"
+        'BidQty': "Bullish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bearish"
     }
     
     all_bullish = all(b == "Bullish" for b in biases.values())
