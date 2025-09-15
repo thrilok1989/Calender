@@ -46,7 +46,7 @@ def dhan_api(endpoint, payload):
 
 def is_market_open():
     now = datetime.now(timezone("Asia/Kolkata"))
-    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("15:30", "%H:%M").time()
+    return now.weekday() < 5 and datetime.strptime("09:00", "%H:%M").time() <= now.time() <= datetime.strptime("15:30", "%H:%M").time()
 
 def calculate_rsi(prices, period=7):
     """Calculate RSI using Wilder's smoothing (TradingView method)"""
