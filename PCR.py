@@ -132,8 +132,8 @@ def analyze_atm(df, spot):
     biases = {
         'ChgOI': "Bullish" if pe_oi_chg > ce_oi_chg else "Bearish",
         'Volume': "Bullish" if row.get('totalTradedVolume_PE', 0) > row.get('totalTradedVolume_CE', 0) else "Bearish",
-        'AskQty': "Bullish" if row.get('askQty_CE', 0) > row.get('askQty_PE', 0) else "Bearish",
-        'BidQty': "Bullish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bearish"
+        'AskQty': "Bullish" if row.get('askQty_CE', 0) < row.get('askQty_PE', 0) else "Bearish",
+        'BidQty': "Bullish" if row.get('bidQty_PE', 0) < row.get('bidQty_CE', 0) else "Bearish"
     }
     
     all_bullish = all(b == "Bullish" for b in biases.values())
