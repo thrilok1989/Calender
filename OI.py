@@ -18,7 +18,7 @@ from pytz import timezone
 import io
 import os
 
-# Page configuration - ADD THIS AT THE VERY TOP
+# Page configuration
 st.set_page_config(
     page_title="Nifty Trading & Options Analyzer",
     page_icon="📈",
@@ -26,7 +26,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Auto-refresh every 80 seconds - MOVE THIS RIGHT AFTER PAGE CONFIG
+# Auto-refresh every 80 seconds
 st_autorefresh(interval=80000, key="datarefresh")
 
 # Custom CSS for TradingView-like appearance + ATM highlighting
@@ -110,20 +110,24 @@ except Exception:
 NIFTY_UNDERLYING_SCRIP = 13
 NIFTY_UNDERLYING_SEG = "IDX_I"
 
-# Cached functions for performance
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def cached_pivot_calculation(df_json, pivot_settings):
+# Cached functions for performance - ADD REFRESH TRACKING
+@st.cache_data(ttl=60)  # Reduce cache time to 1 minute for chart data
+def cached_pivot_calculation(df_json, pivot_settings, refresh_counter):
     """Cache pivot calculations to improve performance"""
     df = pd.read_json(df_json)
     return PivotIndicator.get_all_pivots(df, pivot_settings)
 
-@st.cache_data(ttl=60)  # Cache for 1 minute
-def cached_iv_average(option_data_json):
+@st.cache_data(ttl=30)  # Reduce cache time for IV calculation
+def cached_iv_average(option_data_json, refresh_counter):
     """Cache IV average calculation"""
     df = pd.read_json(option_data_json)
     iv_ce_avg = df['impliedVolatility_CE'].mean()
     iv_pe_avg = df['impliedVolatility_PE'].mean()
     return iv_ce_avg, iv_pe_avg
+
+# Add refresh counter to session state
+if 'refresh_counter' not in st.session_state:
+    st.session_state.refresh_counter = 0
 
 # Telegram Functions
 def send_telegram_message_sync(message):
@@ -582,7 +586,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
     
     try:
         df_json = df.to_json()
-        pivots = cached_pivot_calculation(df_json, pivot_settings)
+        pivots = cached_pivot_calculation(df_json, pivot_settings, st.session_state.refresh_counter)
     except:
         pivots = PivotIndicator.get_all_pivots(df, pivot_settings)
     
@@ -629,8 +633,8 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
             ce_chg_oi = row.get('changeinOpenInterest_CE', 0)
             pe_chg_oi = row.get('changeinOpenInterest_PE', 0)
 
-            bullish_oi_confirm = pe_chg_oi > 1.2 * ce_chg_oi
-            bearish_oi_confirm = ce_chg_oi > 1.2 * pe_chg_oi
+            bullish_oi_confirm = pe_chg_oi > 1.5 * ce_chg_oi
+            bearish_oi_confirm = ce_chg_oi > 1.5 * pe_chg_oi
 
             # === Bullish Call Signal ===
             if (
@@ -675,7 +679,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
                 trigger_type = "📊 Normal Bias Trigger" if not bearish_oi_confirm else "🔥 OI Dominance Trigger"
                 conditions_text = "\n".join([f"🔴 {k}" for k, v in bearish_conditions.items() if v])
                 price_diff = current_price - pivot_level['value']
-                
+
                 message = f"""
 🔴 <b>NIFTY PUT SIGNAL ALERT</b> 🔴
 
@@ -884,7 +888,7 @@ def create_candlestick_chart(df, title, interval, show_pivots=True, pivot_settin
         try:
             # Use cached pivot calculation for performance
             df_json = df.to_json()
-            pivots = cached_pivot_calculation(df_json, pivot_settings or {})
+            pivots = cached_pivot_calculation(df_json, pivot_settings or {}, st.session_state.refresh_counter)
             
             timeframes = {}
             for pivot in pivots:
@@ -1556,8 +1560,9 @@ def main():
         db.save_user_preferences(user_id, interval, auto_refresh, days_back, pivot_settings, pivot_proximity)
         st.sidebar.success("Preferences saved!")
     
-    # Manual refresh button
+    # Manual refresh button - INCREMENT REFRESH COUNTER
     if st.sidebar.button("🔄 Refresh Now"):
+        st.session_state.refresh_counter += 1
         st.rerun()
     
     # Show analytics dashboard
@@ -1579,13 +1584,14 @@ def main():
     with col1:
         st.header("📈 Trading Chart")
         
-        # Data fetching strategy
+        # Data fetching strategy - USE REFRESH COUNTER TO FORCE FRESH DATA
         df = pd.DataFrame()
         current_price = None
         
         if use_cache:
             df = db.get_candle_data("NIFTY50", "IDX_I", interval, hours_back=days_back*24)
             
+            # Force refresh if data is stale or refresh counter has changed
             if df.empty or (datetime.now(pytz.UTC) - df['datetime'].max().tz_convert(pytz.UTC)).total_seconds() > 300:
                 with st.spinner("Fetching latest data from API..."):
                     data = api.get_intraday_data(
@@ -1600,6 +1606,7 @@ def main():
                         df = process_candle_data(data, interval)
                         db.save_candle_data("NIFTY50", "IDX_I", interval, df)
         else:
+            # Always fetch fresh data when not using cache
             with st.spinner("Fetching fresh data from API..."):
                 data = api.get_intraday_data(
                     security_id="13",
@@ -1628,7 +1635,7 @@ def main():
         if not df.empty:
             display_metrics(ltp_data, df, db)
         
-        # Create and display chart
+        # Create and display chart - PASS REFRESH COUNTER
         if not df.empty:
             fig = create_candlestick_chart(
                 df, 
@@ -1688,6 +1695,9 @@ def main():
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
     st.sidebar.info(f"Last Updated: {current_time}")
+    
+    # Increment refresh counter on auto-refresh
+    st.session_state.refresh_counter += 1
 
 if __name__ == "__main__":
     main()
