@@ -27,7 +27,7 @@ st.set_page_config(
 )
 
 # Auto-refresh every 80 seconds - MOVE THIS RIGHT AFTER PAGE CONFIG
-st_autorefresh(interval=800000, key="datarefresh")
+st_autorefresh(interval=80000, key="datarefresh")
 
 # Custom CSS for TradingView-like appearance + ATM highlighting
 st.markdown("""
@@ -588,6 +588,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
     
     near_pivot = False
     pivot_level = None
+    price_relation = None
     
     for pivot in pivots:
         if pivot['timeframe'] in ['3M', '5M', '10M', '15M']:
@@ -595,6 +596,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
             if abs(price_diff) <= pivot_proximity:
                 near_pivot = True
                 pivot_level = pivot
+                price_relation = 'above' if price_diff > 0 else 'below'
                 break
     
     if near_pivot and len(option_data) > 0:
@@ -603,7 +605,6 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
         if not atm_data.empty:
             row = atm_data.iloc[0]
             
-            # Bias checks
             bullish_conditions = {
                 'Support Level': row.get('Level') == 'Support',
                 'ChgOI Bias': row.get('ChgOI_Bias') == 'Bullish',
@@ -625,18 +626,16 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
             atm_strike = row['Strike']
             stop_loss_percent = 20
             
-            # Change in OI
             ce_chg_oi = row.get('changeinOpenInterest_CE', 0)
             pe_chg_oi = row.get('changeinOpenInterest_PE', 0)
 
-            # OI dominance logic (flipped as per your request)
-            bullish_oi_confirm = pe_chg_oi > 1.5 * ce_chg_oi   # Bullish if Put ChgOI dominates
-            bearish_oi_confirm = ce_chg_oi > 1.5 * pe_chg_oi   # Bearish if Call ChgOI dominates
+            bullish_oi_confirm = pe_chg_oi > 1.5 * ce_chg_oi
+            bearish_oi_confirm = ce_chg_oi > 1.5 * pe_chg_oi
 
-            # === Bullish Call Signal (spot near pivot, above OR below) ===
+            # === Bullish Call Signal ===
             if (
-                (all(bullish_conditions.values()) and abs(current_price - pivot_level['value']) <= pivot_proximity)
-                or (bullish_oi_confirm and all(bullish_conditions.values()) and abs(current_price - pivot_level['value']) <= pivot_proximity)
+                (all(bullish_conditions.values()) and price_relation == 'above' and 0 < (current_price - pivot_level['value']) <= pivot_proximity)
+                or (bullish_oi_confirm and all(bullish_conditions.values()) and price_relation == 'above' and 0 < (current_price - pivot_level['value']) <= pivot_proximity)
             ):
                 trigger_type = "📊 Normal Bias Trigger" if not bullish_oi_confirm else "🔥 OI Dominance Trigger"
                 conditions_text = "\n".join([f"✅ {k}" for k, v in bullish_conditions.items() if v])
@@ -645,7 +644,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
                 message = f"""
 🚨 <b>NIFTY CALL SIGNAL ALERT</b> 🚨
 
-📍 <b>Spot Price:</b> ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} Pivot by {price_diff:+.2f} points)
+📍 <b>Spot Price:</b> ₹{current_price:.2f} (ABOVE Pivot by +{price_diff:.2f} points)
 📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
 🎯 <b>ATM Strike:</b> {atm_strike}
 
@@ -653,7 +652,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
 {conditions_text}
 
 ⚡ <b>{trigger_type}</b>
-⚡ <b>OI:</b> PE ChgOI {pe_chg_oi:,} vs CE ChgOI {ce_chg_oi:,}
+⚡ <b>OI:</b> CE ChgOI {ce_chg_oi:,} vs PE ChgOI {pe_chg_oi:,}
 
 📋 <b>SUGGESTED REVIEW:</b>
 • Strike: {atm_strike} CE
@@ -668,10 +667,10 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
                 except Exception as e:
                     st.error(f"Failed to send notification: {e}")
             
-            # === Bearish Put Signal (spot near pivot, above OR below) ===
+            # === Bearish Put Signal ===
             elif (
-                (all(bearish_conditions.values()) and abs(current_price - pivot_level['value']) <= pivot_proximity)
-                or (bearish_oi_confirm and all(bearish_conditions.values()) and abs(current_price - pivot_level['value']) <= pivot_proximity)
+                (all(bearish_conditions.values()) and price_relation == 'below' and -pivot_proximity <= (current_price - pivot_level['value']) < 0)
+                or (bearish_oi_confirm and all(bearish_conditions.values()) and price_relation == 'below' and -pivot_proximity <= (current_price - pivot_level['value']) < 0)
             ):
                 trigger_type = "📊 Normal Bias Trigger" if not bearish_oi_confirm else "🔥 OI Dominance Trigger"
                 conditions_text = "\n".join([f"🔴 {k}" for k, v in bearish_conditions.items() if v])
@@ -680,7 +679,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
                 message = f"""
 🔴 <b>NIFTY PUT SIGNAL ALERT</b> 🔴
 
-📍 <b>Spot Price:</b> ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} Pivot by {price_diff:+.2f} points)
+📍 <b>Spot Price:</b> ₹{current_price:.2f} (BELOW Pivot by {price_diff:+.2f} points)
 📌 <b>Near Pivot:</b> {pivot_level['timeframe']} Level at ₹{pivot_level['value']:.2f}
 🎯 <b>ATM Strike:</b> {atm_strike}
 
@@ -688,7 +687,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
 {conditions_text}
 
 ⚡ <b>{trigger_type}</b>
-⚡ <b>OI:</b> CE ChgOI {ce_chg_oi:,} vs PE ChgOI {pe_chg_oi:,}
+⚡ <b>OI:</b> PE ChgOI {pe_chg_oi:,} vs CE ChgOI {ce_chg_oi:,}
 
 📋 <b>SUGGESTED REVIEW:</b>
 • Strike: {atm_strike} PE
@@ -702,6 +701,7 @@ def check_trading_signals(df, pivot_settings, option_data, current_price, pivot_
                     st.success("🔴 Bearish signal notification sent!")
                 except Exception as e:
                     st.error(f"Failed to send notification: {e}")
+
 
 def calculate_exact_time_to_expiry(expiry_date_str):
     """Calculate exact time to expiry in years (days + hours)"""
