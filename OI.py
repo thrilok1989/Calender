@@ -797,10 +797,10 @@ def debug_data_info(df):
     else:
         st.error("No valid volume data available for Volume Profile calculation!")
 
-        fig = create_chart(df, f"Nifty {interval}min with Volume Profile")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.error("No chart data available")
+            fig = create_chart(df, f"Nifty {interval}min with Volume Profile")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.error("No chart data available")
     
     with col2:
         st.header("Options Analysis")
@@ -816,43 +816,48 @@ def debug_data_info(df):
                 st.info(f"Spot: ₹{underlying_price:.2f}")
                 st.dataframe(option_summary, use_container_width=True)
                 
-            if enable_signals and not df.empty and is_market_hours():
+                if enable_signals and not df.empty and is_market_hours():
                     check_signals(df, option_summary, underlying_price, proximity)
-        else:
+            else:
                 st.error("Options data unavailable")
         else:
             st.error("Expiry data unavailable")
         
         # Volume Profile Summary for Options Analysis
-        if not df.empty and len(df) > 50:
+        if not df.empty and len(df) > 20:
             st.subheader("📊 VP Trading Levels")
-            profiles = calculate_volume_profile(df, VP_CONFIG["TIMEFRAME"], VP_CONFIG["BINS"])
-            vp_insights = get_volume_profile_insights(profiles, current_price)
-            
-            if vp_insights:
-                # Create a summary table of key levels
-                levels_data = {
-                    "Level": ["POC", "VA High", "VA Low"],
-                    "Price": [f"₹{vp_insights['poc']:,.1f}", 
-                             f"₹{vp_insights['va_high']:,.1f}", 
-                             f"₹{vp_insights['va_low']:,.1f}"],
-                    "Distance": [f"{current_price - vp_insights['poc']:+.1f}", 
-                               f"{current_price - vp_insights['va_high']:+.1f}", 
-                               f"{current_price - vp_insights['va_low']:+.1f}"],
-                    "Type": ["Support/Resistance", "Resistance", "Support"]
-                }
-                st.dataframe(pd.DataFrame(levels_data), use_container_width=True)
+            try:
+                profiles = calculate_volume_profile(df, VP_CONFIG["TIMEFRAME"], VP_CONFIG["BINS"])
+                vp_insights = get_volume_profile_insights(profiles, current_price)
                 
-                # Trading recommendations based on VP
-                st.subheader("🎯 VP Trading Strategy")
-                if vp_insights['bias'] == 'BULLISH' and vp_insights['strength'] in ['STRONG', 'MODERATE']:
-                    st.success("💡 **Bullish Setup**: Price above POC with strong volume support. Look for CALL options on dips to VA Low.")
-                elif vp_insights['bias'] == 'BEARISH' and vp_insights['strength'] in ['STRONG', 'MODERATE']:
-                    st.error("💡 **Bearish Setup**: Price below POC with strong volume resistance. Look for PUT options on rallies to VA High.")
-                elif "INSIDE VALUE AREA" in vp_insights['price_vs_va']:
-                    st.info("💡 **Range Trading**: Price inside Value Area. Wait for breakout above VA High (bullish) or below VA Low (bearish).")
+                if vp_insights:
+                    # Create a summary table of key levels
+                    levels_data = {
+                        "Level": ["POC", "VA High", "VA Low"],
+                        "Price": [f"₹{vp_insights['poc']:,.1f}", 
+                                 f"₹{vp_insights['va_high']:,.1f}", 
+                                 f"₹{vp_insights['va_low']:,.1f}"],
+                        "Distance": [f"{current_price - vp_insights['poc']:+.1f}", 
+                                   f"{current_price - vp_insights['va_high']:+.1f}", 
+                                   f"{current_price - vp_insights['va_low']:+.1f}"],
+                        "Type": ["Support/Resistance", "Resistance", "Support"]
+                    }
+                    st.dataframe(pd.DataFrame(levels_data), use_container_width=True)
+                    
+                    # Trading recommendations based on VP
+                    st.subheader("🎯 VP Trading Strategy")
+                    if vp_insights['bias'] == 'BULLISH' and vp_insights['strength'] in ['STRONG', 'MODERATE']:
+                        st.success("💡 **Bullish Setup**: Price above POC with strong volume support. Look for CALL options on dips to VA Low.")
+                    elif vp_insights['bias'] == 'BEARISH' and vp_insights['strength'] in ['STRONG', 'MODERATE']:
+                        st.error("💡 **Bearish Setup**: Price below POC with strong volume resistance. Look for PUT options on rallies to VA High.")
+                    elif "INSIDE VALUE AREA" in vp_insights['price_vs_va']:
+                        st.info("💡 **Range Trading**: Price inside Value Area. Wait for breakout above VA High (bullish) or below VA Low (bearish).")
+                    else:
+                        st.warning("💡 **Neutral**: No clear VP signal. Wait for price to interact with key VP levels.")
                 else:
-                    st.warning("💡 **Neutral**: No clear VP signal. Wait for price to interact with key VP levels.")
+                    st.info("Volume Profile data not available")
+            except Exception as e:
+                st.error(f"VP Analysis error: {e}")
     
     current_time = datetime.now(ist).strftime("%H:%M:%S IST")
     st.sidebar.info(f"Updated: {current_time}")
