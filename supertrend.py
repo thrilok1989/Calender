@@ -10,25 +10,21 @@ import numpy as np
 import math
 from scipy.stats import norm
 from datetime import datetime, timedelta
-import json
 
 # Page config
 st.set_page_config(page_title="Nifty Analyzer", page_icon="📈", layout="wide")
-st_autorefresh(interval=45000, key="refresh")
+st_autorefresh(interval=80000, key="refresh")
 
-# Get credentials from secrets
+# Credentials
 DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
 DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", "")
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
-
-# Constants
 NIFTY_SCRIP = 13
 NIFTY_SEG = "IDX_I"
 
 class DhanAPI:
     def __init__(self):
-        self.base_url = "https://api.dhan.co/v2"
         self.headers = {
             'Accept': 'application/json',
             'Content-Type': 'application/json',
@@ -37,7 +33,7 @@ class DhanAPI:
         }
     
     def get_intraday_data(self, interval="5", days_back=1):
-        url = f"{self.base_url}/charts/intraday"
+        url = "https://api.dhan.co/v2/charts/intraday"
         ist = pytz.timezone('Asia/Kolkata')
         end_date = datetime.now(ist)
         start_date = end_date - timedelta(days=days_back)
@@ -59,7 +55,7 @@ class DhanAPI:
             return None
     
     def get_ltp_data(self):
-        url = f"{self.base_url}/marketfeed/ltp"
+        url = "https://api.dhan.co/v2/marketfeed/ltp"
         payload = {NIFTY_SEG: [NIFTY_SCRIP]}
         try:
             response = requests.post(url, headers=self.headers, json=payload)
@@ -69,16 +65,8 @@ class DhanAPI:
 
 def get_option_chain(expiry):
     url = "https://api.dhan.co/v2/optionchain"
-    headers = {
-        'access-token': DHAN_ACCESS_TOKEN,
-        'client-id': DHAN_CLIENT_ID,
-        'Content-Type': 'application/json'
-    }
-    payload = {
-        "UnderlyingScrip": NIFTY_SCRIP,
-        "UnderlyingSeg": NIFTY_SEG,
-        "Expiry": expiry
-    }
+    headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
+    payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG, "Expiry": expiry}
     try:
         response = requests.post(url, headers=headers, json=payload)
         return response.json() if response.status_code == 200 else None
@@ -87,15 +75,8 @@ def get_option_chain(expiry):
 
 def get_expiry_list():
     url = "https://api.dhan.co/v2/optionchain/expirylist"
-    headers = {
-        'access-token': DHAN_ACCESS_TOKEN,
-        'client-id': DHAN_CLIENT_ID,
-        'Content-Type': 'application/json'
-    }
-    payload = {
-        "UnderlyingScrip": NIFTY_SCRIP,
-        "UnderlyingSeg": NIFTY_SEG
-    }
+    headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
+    payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG}
     try:
         response = requests.post(url, headers=headers, json=payload)
         return response.json() if response.status_code == 200 else None
@@ -127,20 +108,28 @@ def process_candle_data(data):
     
     ist = pytz.timezone('Asia/Kolkata')
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
+    
+    # Filter for trading hours only (9:15 AM to 3:30 PM IST) and weekdays only
+    df['time'] = df['datetime'].dt.time
+    df['weekday'] = df['datetime'].dt.weekday  # Monday=0, Sunday=6
+    
+    market_start = datetime.strptime('09:15:00', '%H:%M:%S').time()
+    market_end = datetime.strptime('15:30:00', '%H:%M:%S').time()
+    
+    # Filter: trading hours + Monday to Friday only (weekday < 5)
+    df = df[
+        (df['time'] >= market_start) & 
+        (df['time'] <= market_end) & 
+        (df['weekday'] < 5)
+    ]
+    
+    df = df.drop(['time', 'weekday'], axis=1)
     return df
-
-def pivot_high_low(series, length=4):
-    max_vals = series.rolling(window=length*2+1, center=True).max()
-    min_vals = series.rolling(window=length*2+1, center=True).min()
-    pivot_highs = series == max_vals
-    pivot_lows = series == min_vals
-    return pivot_highs, pivot_lows
 
 def get_pivots(df, timeframe="5", length=4):
     if df.empty:
         return []
     
-    # Resample to higher timeframe
     rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min"}
     rule = rule_map.get(timeframe, "5min")
     
@@ -153,57 +142,32 @@ def get_pivots(df, timeframe="5", length=4):
         if len(resampled) < length * 2 + 1:
             return []
         
-        ph_mask, pl_mask = pivot_high_low(resampled['high'], length), pivot_high_low(resampled['low'], length)
+        max_vals = resampled['high'].rolling(window=length*2+1, center=True).max()
+        min_vals = resampled['low'].rolling(window=length*2+1, center=True).min()
         
         pivots = []
-        for timestamp, value in resampled['high'][ph_mask[0]].items():
+        for timestamp, value in resampled['high'][resampled['high'] == max_vals].items():
             pivots.append({'type': 'high', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
         
-        for timestamp, value in resampled['low'][pl_mask[1]].items():
+        for timestamp, value in resampled['low'][resampled['low'] == min_vals].items():
             pivots.append({'type': 'low', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
         
         return pivots
     except:
         return []
 
-def calculate_greeks(option_type, S, K, T, r, sigma):
-    try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        delta = norm.cdf(d1) if option_type == 'CE' else -norm.cdf(-d1)
-        gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
-        vega = S * norm.pdf(d1) * math.sqrt(T) / 100
-        theta = (-(S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365 if option_type == 'CE' else (-(S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
-        return round(delta, 4), round(gamma, 4), round(vega, 4), round(theta, 4)
-    except:
-        return 0, 0, 0, 0
-
-def calculate_time_to_expiry(expiry_date_str):
-    try:
-        expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").replace(hour=15, minute=30)
-        expiry_date = expiry_date.replace(tzinfo=pytz.timezone('Asia/Kolkata'))
-        now = datetime.now(pytz.timezone('Asia/Kolkata'))
-        time_diff = expiry_date - now
-        years = time_diff.total_seconds() / (365.25 * 24 * 3600)
-        return max(years, 1/365.25)
-    except:
-        return 1/365.25
-
 def create_chart(df, title):
     if df.empty:
         return go.Figure()
     
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, 
-                       row_heights=[0.7, 0.3])
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
-    # Candlestick chart
     fig.add_trace(go.Candlestick(
         x=df['datetime'], open=df['open'], high=df['high'], 
         low=df['low'], close=df['close'], name='Nifty',
         increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
     ), row=1, col=1)
     
-    # Volume chart
     volume_colors = ['#00ff88' if close >= open else '#ff4444' 
                     for close, open in zip(df['close'], df['open'])]
     fig.add_trace(go.Bar(
@@ -211,7 +175,6 @@ def create_chart(df, title):
         marker_color=volume_colors, opacity=0.7
     ), row=2, col=1)
     
-    # Add pivot levels
     if len(df) > 50:
         timeframes = ["5", "10", "15"]
         colors = ["#ff9900", "#ff44ff", "#4444ff"]
@@ -220,7 +183,7 @@ def create_chart(df, title):
             pivots = get_pivots(df, tf)
             x_start, x_end = df['datetime'].min(), df['datetime'].max()
             
-            for pivot in pivots[-5:]:  # Last 5 pivots
+            for pivot in pivots[-5:]:
                 fig.add_shape(type="line", x0=x_start, x1=x_end,
                             y0=pivot['value'], y1=pivot['value'],
                             line=dict(color=color, width=1, dash="dash"), row=1, col=1)
@@ -253,7 +216,6 @@ def analyze_options(expiry):
     df_pe = pd.DataFrame(puts)
     df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
     
-    # Rename columns
     rename_map = {
         'last_price': 'lastPrice', 'oi': 'openInterest', 'previous_oi': 'previousOpenInterest',
         'top_ask_quantity': 'askQty', 'top_bid_quantity': 'bidQty', 'volume': 'totalTradedVolume'
@@ -264,45 +226,24 @@ def analyze_options(expiry):
     df['changeinOpenInterest_CE'] = df['openInterest_CE'] - df['previousOpenInterest_CE']
     df['changeinOpenInterest_PE'] = df['openInterest_PE'] - df['previousOpenInterest_PE']
     
-    # Calculate Greeks
-    T = calculate_time_to_expiry(expiry)
-    r = 0.06
-    
-    for idx, row in df.iterrows():
-        strike = row['strikePrice']
-        iv_ce = row.get('impliedVolatility_CE', 15) or 15
-        iv_pe = row.get('impliedVolatility_PE', 15) or 15
-        
-        greeks_ce = calculate_greeks('CE', underlying, strike, T, r, iv_ce / 100)
-        greeks_pe = calculate_greeks('PE', underlying, strike, T, r, iv_pe / 100)
-        
-        df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'] = greeks_ce
-        df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'] = greeks_pe
-    
-    # Find ATM and create summary
     atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
-    df_filtered = df[abs(df['strikePrice'] - atm_strike) <= 100]  # ATM ± 2 strikes
+    df_filtered = df[abs(df['strikePrice'] - atm_strike) <= 100]
     
     df_filtered['Zone'] = df_filtered['strikePrice'].apply(
         lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM'
     )
     
-    # Bias analysis
     bias_results = []
     for _, row in df_filtered.iterrows():
         chg_oi_bias = "Bullish" if row['changeinOpenInterest_CE'] < row['changeinOpenInterest_PE'] else "Bearish"
         volume_bias = "Bullish" if row['totalTradedVolume_CE'] < row['totalTradedVolume_PE'] else "Bearish"
         
-        # Ask and Bid Bias calculations
         ask_ce = row.get('askQty_CE', 0)
         ask_pe = row.get('askQty_PE', 0)
         bid_ce = row.get('bidQty_CE', 0)
         bid_pe = row.get('bidQty_PE', 0)
         
-        # Ask Bias: If Ask Call > Ask Put = Bearish, else Bullish
         ask_bias = "Bearish" if ask_ce > ask_pe else "Bullish"
-        
-        # Bid Bias: If Bid Call > Bid Put = Bullish, else Bearish
         bid_bias = "Bullish" if bid_ce > bid_pe else "Bearish"
         
         ce_oi = row['openInterest_CE']
@@ -317,7 +258,9 @@ def analyze_options(expiry):
             "Volume_Bias": volume_bias,
             "Ask_Bias": ask_bias,
             "Bid_Bias": bid_bias,
-            "PCR": round(pe_oi / ce_oi if ce_oi > 0 else 0, 2)
+            "PCR": round(pe_oi / ce_oi if ce_oi > 0 else 0, 2),
+            "changeinOpenInterest_CE": row['changeinOpenInterest_CE'],
+            "changeinOpenInterest_PE": row['changeinOpenInterest_PE']
         })
     
     return underlying, pd.DataFrame(bias_results)
@@ -332,11 +275,9 @@ def check_signals(df, option_data, current_price, proximity=5):
     
     row = atm_data.iloc[0]
     
-    # Get change in OI values for secondary signal
     ce_chg_oi = abs(row.get('changeinOpenInterest_CE', 0))
     pe_chg_oi = abs(row.get('changeinOpenInterest_PE', 0))
     
-    # Common bias conditions
     bias_aligned_bullish = (
         row['ChgOI_Bias'] == 'Bullish' and 
         row['Volume_Bias'] == 'Bullish' and
@@ -351,7 +292,7 @@ def check_signals(df, option_data, current_price, proximity=5):
         row['Bid_Bias'] == 'Bearish'
     )
     
-    # PRIMARY SIGNAL - Requires pivot proximity + bias alignment + support/resistance
+    # PRIMARY SIGNAL
     pivots = get_pivots(df, "5") + get_pivots(df, "10") + get_pivots(df, "15")
     near_pivot = False
     pivot_level = None
@@ -363,13 +304,8 @@ def check_signals(df, option_data, current_price, proximity=5):
             break
     
     if near_pivot:
-        primary_bullish_signal = (
-            row['Level'] == 'Support' and bias_aligned_bullish
-        )
-        
-        primary_bearish_signal = (
-            row['Level'] == 'Resistance' and bias_aligned_bearish
-        )
+        primary_bullish_signal = (row['Level'] == 'Support' and bias_aligned_bullish)
+        primary_bearish_signal = (row['Level'] == 'Resistance' and bias_aligned_bearish)
         
         if primary_bullish_signal or primary_bearish_signal:
             signal_type = "CALL" if primary_bullish_signal else "PUT"
@@ -390,17 +326,12 @@ ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}
             send_telegram(message)
             st.success(f"🔔 PRIMARY {signal_type} signal sent!")
     
-    # SECONDARY SIGNAL - OI Dominance + bias alignment (no pivot requirement)
+    # SECONDARY SIGNAL
     put_dominance = pe_chg_oi > 1.3 * ce_chg_oi if ce_chg_oi > 0 else False
     call_dominance = ce_chg_oi > 1.3 * pe_chg_oi if pe_chg_oi > 0 else False
     
-    secondary_bullish_signal = (
-        bias_aligned_bullish and put_dominance
-    )
-    
-    secondary_bearish_signal = (
-        bias_aligned_bearish and call_dominance
-    )
+    secondary_bullish_signal = (bias_aligned_bullish and put_dominance)
+    secondary_bearish_signal = (bias_aligned_bearish and call_dominance)
     
     if secondary_bullish_signal or secondary_bearish_signal:
         signal_type = "CALL" if secondary_bullish_signal else "PUT"
@@ -425,26 +356,21 @@ ChgOI: CE {ce_chg_oi:,} | PE {pe_chg_oi:,}
 def main():
     st.title("📈 Nifty Trading Analyzer")
     
-    # Sidebar
     st.sidebar.header("Settings")
     interval = st.sidebar.selectbox("Timeframe", ["1", "3", "5", "10", "15"], index=2)
     proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
     enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
     
-    # Initialize API
     api = DhanAPI()
     
-    # Get data
     col1, col2 = st.columns([2, 1])
     
     with col1:
         st.header("Chart")
         
-        # Fetch candle data
         data = api.get_intraday_data(interval)
         df = process_candle_data(data) if data else pd.DataFrame()
         
-        # Get current price
         ltp_data = api.get_ltp_data()
         current_price = None
         if ltp_data and 'data' in ltp_data:
@@ -456,7 +382,6 @@ def main():
         if current_price is None and not df.empty:
             current_price = df['close'].iloc[-1]
         
-        # Display metrics
         if not df.empty and len(df) > 1:
             prev_close = df['close'].iloc[-2]
             change = current_price - prev_close
@@ -464,14 +389,12 @@ def main():
             
             col1_m, col2_m, col3_m = st.columns(3)
             with col1_m:
-                color = "🟢" if change >= 0 else "🔴"
                 st.metric("Price", f"₹{current_price:,.2f}", f"{change:+.2f} ({change_pct:+.2f}%)")
             with col2_m:
                 st.metric("High", f"₹{df['high'].max():,.2f}")
             with col3_m:
                 st.metric("Low", f"₹{df['low'].min():,.2f}")
         
-        # Chart
         if not df.empty:
             fig = create_chart(df, f"Nifty {interval}min")
             st.plotly_chart(fig, use_container_width=True)
@@ -481,22 +404,17 @@ def main():
     with col2:
         st.header("Options")
         
-        # Get expiry list
         expiry_data = get_expiry_list()
         if expiry_data and 'data' in expiry_data:
             expiry_dates = expiry_data['data']
             selected_expiry = st.selectbox("Expiry", expiry_dates)
             
-            # Analyze options
             underlying_price, option_summary = analyze_options(selected_expiry)
             
             if underlying_price and option_summary is not None:
                 st.info(f"Spot: ₹{underlying_price:.2f}")
-                
-                # Display option summary
                 st.dataframe(option_summary, use_container_width=True)
                 
-                # Check signals
                 if enable_signals and not df.empty:
                     check_signals(df, option_summary, underlying_price, proximity)
             else:
@@ -504,12 +422,10 @@ def main():
         else:
             st.error("Expiry data unavailable")
     
-    # Status
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist).strftime("%H:%M:%S IST")
     st.sidebar.info(f"Updated: {current_time}")
     
-    # Test Telegram
     if st.sidebar.button("Test Telegram"):
         send_telegram("🔔 Test message from Nifty Analyzer")
         st.sidebar.success("Test sent!")
