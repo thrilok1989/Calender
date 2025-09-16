@@ -217,67 +217,181 @@ def get_pivots(df, timeframe="5", length=4):
     except: return []
 
 def create_chart(df, title):
-    if df.empty: return go.Figure()
+    if df.empty: 
+        return go.Figure().add_annotation(text="No data available", xref="paper", yref="paper", 
+                                        x=0.5, y=0.5, showarrow=False)
     
-    fig = make_subplots(rows=2, cols=2, shared_xaxes=True, vertical_spacing=0.05,
-                       column_widths=[0.8, 0.2], row_heights=[0.7, 0.3],
-                       specs=[[{"secondary_y": False}, {"secondary_y": False}],
-                              [{"secondary_y": False}, {"secondary_y": False}]])
+    # Debug: Check data availability
+    has_volume = 'volume' in df.columns and df['volume'].sum() > 0
     
-    # Candlestick
+    # Create subplots: Main chart + Volume chart + VP histogram
+    fig = make_subplots(
+        rows=2, cols=2, 
+        shared_xaxes=True,
+        vertical_spacing=0.1,
+        horizontal_spacing=0.05,
+        column_widths=[0.75, 0.25],
+        row_heights=[0.65, 0.35],
+        subplot_titles=('Price Chart', 'Volume Profile', 'Volume', ''),
+        specs=[[{"secondary_y": False}, {"secondary_y": False}],
+               [{"colspan": 2, "secondary_y": False}, None]]
+    )
+    
+    # 1. Main Candlestick Chart (row=1, col=1)
     fig.add_trace(go.Candlestick(
-        x=df['datetime'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
-        name='Nifty', increasing_line_color='#00ff88', decreasing_line_color='#ff4444',
+        x=df['datetime'], 
+        open=df['open'], 
+        high=df['high'], 
+        low=df['low'], 
+        close=df['close'],
+        name='Nifty',
+        increasing_line_color='#00ff88', 
+        decreasing_line_color='#ff4444',
         showlegend=False
     ), row=1, col=1)
     
-    # Volume
-    if 'volume' in df.columns:
-        volume_colors = ['#00ff88' if c >= o else '#ff4444' for c, o in zip(df['close'], df['open'])]
-        fig.add_trace(go.Bar(
-            x=df['datetime'], y=df['volume'], marker_color=volume_colors,
-            opacity=0.7, showlegend=False
-        ), row=2, col=1)
+    # 2. Volume Chart (row=2, col=1 - spans both columns)
+    if has_volume:
+        volume_colors = ['#00ff88' if close >= open else '#ff4444' 
+                        for close, open in zip(df['close'], df['open'])]
         
-        # Volume Profile
-        if len(df) > 20:
-            try:
-                profiles = calculate_volume_profile(df, VP_CONFIG["BINS"])
-                if profiles:
-                    profile = profiles[0]
-                    
-                    # POC line
-                    fig.add_hline(y=profile["poc"], line_dash="dash", line_color=VP_CONFIG["POC_COLOR"],
-                                line_width=2, row=1, col=1)
-                    
-                    # Value Area
-                    fig.add_hrect(y0=profile["va_low"], y1=profile["va_high"],
-                                fillcolor="rgba(255, 215, 0, 0.1)", line_color="rgba(255, 215, 0, 0.3)",
-                                row=1, col=1)
-                    
-                    # VP Histogram
-                    price_centers = (profile["price_bins"][:-1] + profile["price_bins"][1:]) / 2
-                    volume_hist = profile["volume_hist"]
-                    
-                    if len(volume_hist) > 0 and volume_hist.max() > 0:
-                        normalized_vol = volume_hist / volume_hist.max() * 100
-                        fig.add_trace(go.Bar(x=normalized_vol, y=price_centers, orientation='h',
-                                           marker_color=VP_CONFIG["VOLUME_COLOR"], opacity=0.7,
-                                           showlegend=False), row=1, col=2)
-            except: pass
+        fig.add_trace(go.Bar(
+            x=df['datetime'], 
+            y=df['volume'],
+            name='Volume',
+            marker_color=volume_colors,
+            opacity=0.7,
+            showlegend=False
+        ), row=2, col=1)
+    else:
+        # Show message if no volume data
+        fig.add_annotation(
+            text="No Volume Data Available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.2,
+            showarrow=False,
+            font=dict(size=14, color="gray")
+        )
     
-    # Pivots
-    if len(df) > 50:
-        for tf, color in zip(["5", "10", "15"], ["#ff9900", "#ff44ff", "#4444ff"]):
+    # 3. Volume Profile Analysis and Visualization
+    if has_volume and len(df) > 20:
+        try:
+            profiles = calculate_volume_profile(df, VP_CONFIG["BINS"])
+            
+            if profiles and len(profiles) > 0:
+                profile = profiles[0]
+                
+                # Add POC line to main chart
+                fig.add_hline(
+                    y=profile["poc"], 
+                    line_dash="dash", 
+                    line_color=VP_CONFIG["POC_COLOR"],
+                    line_width=2,
+                    annotation_text=f"POC: ₹{profile['poc']:.1f}",
+                    annotation_position="top right",
+                    row=1, col=1
+                )
+                
+                # Add Value Area rectangle to main chart
+                fig.add_hrect(
+                    y0=profile["va_low"], 
+                    y1=profile["va_high"],
+                    fillcolor="rgba(255, 215, 0, 0.1)",
+                    line_color="rgba(255, 215, 0, 0.3)",
+                    line_width=1,
+                    annotation_text=f"VA: ₹{profile['va_low']:.0f}-₹{profile['va_high']:.0f}",
+                    annotation_position="bottom right",
+                    row=1, col=1
+                )
+                
+                # Add Volume Profile Histogram (row=1, col=2)
+                price_centers = (profile["price_bins"][:-1] + profile["price_bins"][1:]) / 2
+                volume_hist = profile["volume_hist"]
+                
+                if len(volume_hist) > 0 and volume_hist.max() > 0:
+                    # Normalize volume for better visualization
+                    max_vol = volume_hist.max()
+                    normalized_vol = (volume_hist / max_vol) * 100
+                    
+                    # Volume Profile bars (horizontal)
+                    fig.add_trace(go.Bar(
+                        x=normalized_vol,
+                        y=price_centers,
+                        orientation='h',
+                        name='VP',
+                        marker_color=VP_CONFIG["VOLUME_COLOR"],
+                        opacity=0.6,
+                        showlegend=False,
+                        text=[f'{int(v):,}' if v > max_vol*0.3 else '' for v in volume_hist],
+                        textposition='middle right',
+                        textfont=dict(size=8, color='white')
+                    ), row=1, col=2)
+                    
+                    # Highlight POC in VP histogram
+                    poc_idx = np.argmax(volume_hist)
+                    if poc_idx < len(normalized_vol):
+                        fig.add_trace(go.Bar(
+                            x=[normalized_vol[poc_idx]],
+                            y=[price_centers[poc_idx]],
+                            orientation='h',
+                            name='POC',
+                            marker_color=VP_CONFIG["POC_COLOR"],
+                            opacity=0.9,
+                            showlegend=False
+                        ), row=1, col=2)
+                    
+        except Exception as e:
+            # Add error message to chart
+            fig.add_annotation(
+                text=f"VP Error: {str(e)[:50]}...",
+                xref="paper", yref="paper",
+                x=0.9, y=0.9,
+                showarrow=False,
+                font=dict(size=10, color="red"),
+                bgcolor="rgba(0,0,0,0.7)"
+            )
+    
+    # 4. Add Pivot Lines
+    if len(df) > 30:
+        timeframes = ["5", "10", "15"]
+        colors = ["#ff9900", "#ff44ff", "#4444ff"]
+        
+        for tf, color in zip(timeframes, colors):
             try:
                 pivots = get_pivots(df, tf)
-                for pivot in pivots[-3:]:
-                    fig.add_hline(y=pivot['value'], line_dash="dot", line_color=color,
-                                line_width=1, opacity=0.7, row=1, col=1)
-            except: continue
+                # Show only the most recent 2 pivots to avoid clutter
+                for pivot in pivots[-2:]:
+                    fig.add_hline(
+                        y=pivot['value'],
+                        line_dash="dot",
+                        line_color=color,
+                        line_width=1,
+                        opacity=0.6,
+                        row=1, col=1
+                    )
+            except:
+                continue
     
-    fig.update_layout(title=title, template='plotly_dark', height=600,
-                     xaxis_rangeslider_visible=False, showlegend=False)
+    # 5. Update Layout
+    fig.update_layout(
+        title=dict(
+            text=title,
+            font=dict(size=16)
+        ),
+        template='plotly_dark',
+        height=700,
+        showlegend=False,
+        xaxis_rangeslider_visible=False,
+        margin=dict(t=50, b=50, l=50, r=50)
+    )
+    
+    # Update axes labels
+    fig.update_xaxes(title_text="Time", row=2, col=1)
+    fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
+    fig.update_yaxes(title_text="Volume", row=2, col=1)
+    fig.update_yaxes(title_text="Price (₹)", row=1, col=2)
+    fig.update_xaxes(title_text="Volume %", row=1, col=2)
+    
     return fig
 
 def analyze_options(expiry):
@@ -453,6 +567,65 @@ ChgOI: CE {ce_chg_oi:,} | PE {pe_chg_oi:,}
         send_telegram(message)
         st.success(f"⚡ SECONDARY {signal_type} signal sent!")
 
+def debug_data_info(df):
+    """Debug function to show data information"""
+    if df.empty:
+        st.error("DataFrame is empty")
+        return
+    
+    st.subheader("🔍 Data Debug Info")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Records", len(df))
+        st.metric("Columns", len(df.columns))
+        st.write("**Columns:**", list(df.columns))
+    
+    with col2:
+        if 'volume' in df.columns:
+            valid_volume = df['volume'].notna() & (df['volume'] > 0)
+            total_volume = df['volume'].sum()
+            st.metric("Valid Volume Records", valid_volume.sum())
+            st.metric("Total Volume", f"{total_volume:,.0f}")
+            st.metric("Max Volume", f"{df['volume'].max():,.0f}" if df['volume'].max() > 0 else "0")
+        else:
+            st.error("❌ Volume column missing!")
+    
+    with col3:
+        date_range = (df['datetime'].max() - df['datetime'].min()).total_seconds() / 3600
+        st.metric("Hours of Data", f"{date_range:.1f}")
+        st.metric("Price Range", f"₹{df['low'].min():.1f} - ₹{df['high'].max():.1f}")
+        st.metric("Last Price", f"₹{df['close'].iloc[-1]:.2f}")
+    
+    # Show sample data
+    st.subheader("📊 Sample Data")
+    sample_df = df[['datetime', 'open', 'high', 'low', 'close', 'volume']].head(10)
+    st.dataframe(sample_df, use_container_width=True)
+    
+    # Volume statistics
+    if 'volume' in df.columns and df['volume'].sum() > 0:
+        st.subheader("📈 Volume Statistics")
+        vol_stats = df['volume'].describe()
+        st.write(vol_stats)
+        
+        # Check for zero volume records
+        zero_vol_count = (df['volume'] == 0).sum()
+        if zero_vol_count > 0:
+            st.warning(f"⚠️ Found {zero_vol_count} records with zero volume")
+    else:
+        st.error("❌ No valid volume data available for Volume Profile calculation!")
+
+    # Test Volume Profile calculation
+    st.subheader("🧪 VP Test")
+    try:
+        profiles = calculate_volume_profile(df, VP_CONFIG["BINS"])
+        if profiles:
+            st.success(f"✅ Volume Profile calculated successfully! POC: ₹{profiles[0]['poc']:.1f}")
+        else:
+            st.error("❌ Volume Profile calculation failed")
+    except Exception as e:
+        st.error(f"❌ VP Error: {e}")
+
 def main():
     st.title("📈 Nifty Trading Analyzer with Volume Profile")
     
@@ -468,6 +641,9 @@ def main():
     enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
     VP_CONFIG["BINS"] = st.sidebar.slider("VP Bins", 10, 30, 20)
     
+    # Add debug option
+    show_debug = st.sidebar.checkbox("🔍 Show Debug Info", value=False)
+    
     api = DhanAPI()
     col1, col2 = st.columns([2, 1])
     
@@ -476,6 +652,10 @@ def main():
         
         data = api.get_intraday_data(interval)
         df = process_candle_data(data) if data else pd.DataFrame()
+        
+        # Show debug info if enabled
+        if show_debug:
+            debug_data_info(df)
         
         ltp_data = api.get_ltp_data()
         current_price = None
