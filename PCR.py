@@ -314,7 +314,7 @@ def main():
                         'ltp': pe_ltp,
                         'offset': offset,
                         'volume': strike_data.get('pe', {}).get('volume', 0),
-                        'oi': strike_data.get('pe', {}).get('oi', 0)
+                        'oi': stake_data.get('pe', {}).get('oi', 0)
                     })
         
         if active_options:
@@ -410,16 +410,19 @@ def main():
                     if len(data) > 0:
                         df = pd.DataFrame(data)
                         
-                        # Create figure with LTP line chart instead of candlestick
+                        # Create figure with candlestick chart
                         fig = go.Figure()
                         
-                        # Add LTP line
-                        fig.add_trace(go.Scatter(
+                        # Add candlestick
+                        fig.add_trace(go.Candlestick(
                             x=df['timestamp'],
-                            y=df['close'],
-                            mode='lines',
-                            name=f"{strike} {opt_type} LTP",
-                            line=dict(color='#2196F3', width=2)
+                            open=df['open'],
+                            high=df['high'],
+                            low=df['low'],
+                            close=df['close'],
+                            name=f"{strike} {opt_type}",
+                            increasing_line_color='#2E7D32',  # Green for up
+                            decreasing_line_color='#D32F2F',  # Red for down
                         ))
                         
                         # Calculate and add SuperTrend
@@ -430,14 +433,78 @@ def main():
                             )
                             
                             if supertrend:
+                                # Add SuperTrend line with up/down arrows
+                                buy_signals = []
+                                sell_signals = []
+                                
+                                for i in range(1, len(trend_direction)):
+                                    if trend_direction[i] == 1 and trend_direction[i-1] == -1:
+                                        buy_signals.append((df['timestamp'].iloc[i], supertrend[i]))
+                                    elif trend_direction[i] == -1 and trend_direction[i-1] == 1:
+                                        sell_signals.append((df['timestamp'].iloc[i], supertrend[i]))
+                                
                                 # Add SuperTrend line
                                 fig.add_trace(go.Scatter(
                                     x=df['timestamp'],
                                     y=supertrend,
                                     mode='lines',
-                                    name='SuperTrend',
-                                    line=dict(color='purple', width=2)
+                                    name=f'SuperTrend {st_period} {st_multiplier}',
+                                    line=dict(color='#7B1FA2', width=2),
+                                    hoverinfo='skip'
                                 ))
+                                
+                                # Add buy signals (up arrows)
+                                if buy_signals:
+                                    buy_x, buy_y = zip(*buy_signals)
+                                    fig.add_trace(go.Scatter(
+                                        x=buy_x,
+                                        y=buy_y,
+                                        mode='markers',
+                                        name='Buy Signal',
+                                        marker=dict(
+                                            symbol='triangle-up',
+                                            color='#00C853',
+                                            size=12,
+                                            line=dict(width=2, color='#00C853')
+                                        ),
+                                        hovertemplate='Buy Signal<extra></extra>'
+                                    ))
+                                
+                                # Add sell signals (down arrows)
+                                if sell_signals:
+                                    sell_x, sell_y = zip(*sell_signals)
+                                    fig.add_trace(go.Scatter(
+                                        x=sell_x,
+                                        y=sell_y,
+                                        mode='markers',
+                                        name='Sell Signal',
+                                        marker=dict(
+                                            symbol='triangle-down',
+                                            color='#FF5252',
+                                            size=12,
+                                            line=dict(width=2, color='#FF5252')
+                                        ),
+                                        hovertemplate='Sell Signal<extra></extra>'
+                                    ))
+                                
+                                # Add current SuperTrend value annotation
+                                current_st = supertrend[-1]
+                                fig.add_annotation(
+                                    x=df['timestamp'].iloc[-1],
+                                    y=current_st,
+                                    text=f"SuperTrend: {current_st:.2f}",
+                                    showarrow=True,
+                                    arrowhead=2,
+                                    arrowsize=1,
+                                    arrowwidth=2,
+                                    arrowcolor="#7B1FA2",
+                                    ax=0,
+                                    ay=-40,
+                                    bgcolor="rgba(255,255,255,0.8)",
+                                    bordercolor="#7B1FA2",
+                                    borderwidth=1,
+                                    borderpad=4
+                                )
                                 
                                 # Check trend change
                                 if len(trend_direction) >= 2 and trend_direction[-1] != trend_direction[-2]:
@@ -457,30 +524,54 @@ Time: {ist_time} IST
                                             st.success(f"Alert: {strike} {opt_type} - {trend_text}")
                                             st.session_state.alert_sent.add(alert_key)
                         
-                        # Update layout for better readability
+                        # Update layout for TBT-like appearance
                         fig.update_layout(
                             template='plotly_white',
-                            height=500,
-                            title=f"{strike} {opt_type} - LTP Chart with SuperTrend",
-                            xaxis_title="Time",
+                            height=600,
+                            title=f"NIFTY {expiry.split('-')[0]} {strike} {opt_type} · SuperTrend {st_period} {st_multiplier}",
+                            xaxis_title="",
                             yaxis_title="Price (₹)",
                             xaxis_rangeslider_visible=False,
                             showlegend=True,
-                            font=dict(size=12)
+                            font=dict(size=12),
+                            margin=dict(t=80, b=50, l=50, r=50),
+                            hovermode='x unified'
                         )
                         
                         # Format x-axis to show proper dates
                         fig.update_xaxes(
-                            tickformat="%m-%d %H:%M",
-                            tickangle=45
+                            tickformat="%H:%M",
+                            tickangle=0,
+                            showgrid=True,
+                            gridwidth=1,
+                            gridcolor='lightgray'
+                        )
+                        
+                        fig.update_yaxes(
+                            showgrid=True,
+                            gridwidth=1,
+                            gridcolor='lightgray'
                         )
                         
                         # Display chart
                         st.plotly_chart(fig, use_container_width=True)
                         
-                        # Show current LTP value
+                        # Show current values
                         current_ltp = df['close'].iloc[-1] if len(df) > 0 else 0
-                        st.metric(f"Current {strike} {opt_type} LTP", f"₹{current_ltp:.2f}")
+                        prev_close = df['close'].iloc[-2] if len(df) > 1 else current_ltp
+                        change = current_ltp - prev_close
+                        change_pct = (change / prev_close) * 100 if prev_close > 0 else 0
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric(f"Current LTP", f"₹{current_ltp:.2f}", 
+                                     f"{change:+.2f} ({change_pct:+.2f}%)")
+                        with col2:
+                            if len(df) > 0:
+                                st.metric("High", f"₹{df['high'].max():.2f}")
+                        with col3:
+                            if len(df) > 0:
+                                st.metric("Low", f"₹{df['low'].min():.2f}")
                         
                         # Show data summary
                         total_points = len(data)
