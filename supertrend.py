@@ -1,4 +1,4 @@
-import stre amlit as st
+import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import requests
 import pandas as pd
@@ -356,6 +356,47 @@ ChgOI: CE {ce_chg_oi:,} | PE {pe_chg_oi:,}
 """
         send_telegram(message)
         st.success(f"⚡ SECONDARY {signal_type} signal sent!")
+    
+    # THIRD SIGNAL - PIVOT PROXIMITY
+    if near_pivot and pivot_level:
+        signal_type = "CALL" if current_price > pivot_level['value'] else "PUT"
+        price_diff = current_price - pivot_level['value']
+        
+        message = f"""
+🔔 THIRD SIGNAL - PIVOT PROXIMITY {signal_type} 🔔
+
+📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
+📌 Pivot: {pivot_level['timeframe']}M at ₹{pivot_level['value']:.2f}
+🎯 ATM: {row['Strike']}
+
+Pivot Type: {'Resistance' if pivot_level['type'] == 'high' else 'Support'}
+ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+"""
+        send_telegram(message)
+        st.success(f"🔔 THIRD {signal_type} signal sent!")
+    
+    # FOURTH SIGNAL - ALL BIAS ALIGNED
+    if bias_aligned_bullish or bias_aligned_bearish:
+        signal_type = "CALL" if bias_aligned_bullish else "PUT"
+        
+        message = f"""
+🎯 FOURTH SIGNAL - ALL BIAS ALIGNED {signal_type} 🎯
+
+📍 Spot: ₹{current_price:.2f}
+🎯 ATM: {row['Strike']}
+
+All ATM Biases Aligned: {signal_type}
+ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
+
+ChgOI: CE {ce_chg_oi:,} | PE {pe_chg_oi:,}
+PCR: {row['PCR']}
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+"""
+        send_telegram(message)
+        st.success(f"🎯 FOURTH {signal_type} signal sent!")
 
 def main():
     st.title("📈 Nifty Trading Analyzer")
