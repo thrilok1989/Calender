@@ -34,7 +34,8 @@ class DhanAPI:
         try:
             response = requests.post(url, headers=self.headers, json=payload, timeout=10)
             return response.json() if response.status_code == 200 else None
-        except:
+        except Exception as e:
+            st.error(f"API Error: {e}")
             return None
     
     def get_expiry_list(self, underlying_scrip, underlying_seg):
@@ -133,119 +134,94 @@ def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
     
     return supertrend, trend_direction
 
-def generate_historical_data(current_price, option_type, strike_price, spot_price, points=78):
-    """Generate 1 day of historical OHLC data with realistic option behavior"""
-    # Use different seeds for CE vs PE to get different patterns
-    seed = hash(f"{option_type}_{strike_price}") % 1000
-    np.random.seed(seed)
+def collect_live_data(api, strike_price, option_type, expiry, max_points=100):
+    """Collect real-time LTP data points"""
     
-    prices = []
+    # Initialize session state for data storage
+    data_key = f"live_data_{strike_price}_{option_type}_{expiry}"
     
-    # Calculate initial price based on option type and moneyness
-    if option_type == 'CE':
-        # Call options: more valuable when spot > strike
-        moneyness = (spot_price - strike_price) / strike_price
-        if moneyness > 0:  # ITM
-            base_price = current_price * 0.7  # Start lower, trend up
-            drift = 0.001  # Slight upward drift
-        else:  # OTM
-            base_price = current_price * 0.9  # Start higher, decay
-            drift = -0.0005  # Slight downward drift (time decay)
-    else:  # PE
-        # Put options: more valuable when spot < strike
-        moneyness = (strike_price - spot_price) / strike_price
-        if moneyness > 0:  # ITM
-            base_price = current_price * 0.8  # Start lower, trend up
-            drift = 0.0008
-        else:  # OTM
-            base_price = current_price * 0.85  # Start higher, decay
-            drift = -0.0008  # More decay for OTM puts
+    if data_key not in st.session_state:
+        st.session_state[data_key] = []
     
-    # Generate price movements with option-specific characteristics
-    for i in range(points):
-        # Base volatility
-        volatility = 0.03 if option_type == 'CE' else 0.035  # Puts slightly more volatile
-        
-        # Time decay effect (stronger near end of day)
-        time_factor = 1 + (i / points) * 0.5
-        if moneyness <= 0:  # OTM options decay faster
-            time_factor *= 1.2
-        
-        # Random walk with drift
-        change = np.random.normal(drift * base_price, base_price * volatility / time_factor)
-        
-        # Add some mean reversion
-        if i > 10:
-            mean_price = sum(prices[-10:]) / 10
-            reversion = (mean_price - base_price) * 0.05
-            change += reversion
-        
-        base_price = max(0.05, base_price + change)
-        prices.append(base_price)
+    # Get current option chain data
+    option_chain = api.get_option_chain(13, "IDX_I", expiry)
     
-    # Generate OHLC data
-    ohlc_data = []
-    ist = pytz.timezone('Asia/Kolkata')
-    start_time = datetime.now(ist).replace(hour=9, minute=15, second=0, microsecond=0)
+    if option_chain and 'data' in option_chain:
+        oc_data = option_chain['data'].get('oc', {})
+        strike_key = f"{strike_price}.000000"
+        
+        if strike_key in oc_data:
+            option_data = oc_data[strike_key].get(option_type.lower(), {})
+            current_ltp = option_data.get('last_price', 0)
+            
+            if current_ltp > 0:
+                ist_now = datetime.now(pytz.timezone('Asia/Kolkata'))
+                
+                # Create OHLC from current LTP
+                if len(st.session_state[data_key]) == 0:
+                    # First data point
+                    ohlc_point = {
+                        'timestamp': ist_now,
+                        'open': current_ltp,
+                        'high': current_ltp,
+                        'low': current_ltp,
+                        'close': current_ltp,
+                        'time_str': ist_now.strftime('%H:%M:%S')
+                    }
+                else:
+                    # Use previous close as current open
+                    prev_close = st.session_state[data_key][-1]['close']
+                    
+                    # Simulate intraday high/low based on LTP movement
+                    price_change = abs(current_ltp - prev_close)
+                    volatility_factor = max(0.01, price_change / prev_close) if prev_close > 0 else 0.01
+                    
+                    high = current_ltp * (1 + volatility_factor * 0.5)
+                    low = current_ltp * (1 - volatility_factor * 0.5)
+                    
+                    ohlc_point = {
+                        'timestamp': ist_now,
+                        'open': prev_close,
+                        'high': max(high, prev_close, current_ltp),
+                        'low': min(low, prev_close, current_ltp),
+                        'close': current_ltp,
+                        'time_str': ist_now.strftime('%H:%M:%S')
+                    }
+                
+                # Add new data point
+                st.session_state[data_key].append(ohlc_point)
+                
+                # Keep only last max_points
+                if len(st.session_state[data_key]) > max_points:
+                    st.session_state[data_key] = st.session_state[data_key][-max_points:]
+                
+                return st.session_state[data_key], current_ltp
     
-    for i, price in enumerate(prices):
-        timestamp = start_time + timedelta(minutes=i * 5)
-        
-        # Option-specific volatility patterns
-        if option_type == 'CE':
-            intraday_vol = 0.02 * (1 + 0.5 * np.sin(i * 0.1))  # Varying volatility
-        else:
-            intraday_vol = 0.025 * (1 + 0.3 * np.cos(i * 0.08))  # Different pattern for puts
-        
-        high = price * (1 + np.random.uniform(0, intraday_vol))
-        low = price * (1 - np.random.uniform(0, intraday_vol))
-        
-        if i == 0:
-            open_price = price
-        else:
-            open_price = prices[i-1]
-        
-        close_price = price
-        
-        # Ensure OHLC relationships
-        high = max(high, open_price, close_price)
-        low = min(low, open_price, close_price)
-        
-        ohlc_data.append({
-            'timestamp': timestamp,
-            'open': float(open_price),
-            'high': float(high),
-            'low': float(low),
-            'close': float(close_price),
-            'time_str': timestamp.strftime('%H:%M')
-        })
-    
-    return ohlc_data
+    return [], 0
 
 def create_candlestick_chart(ohlc_data, strike_price, option_type, st_period, st_multiplier):
-    """Create candlestick chart with SuperTrend"""
+    """Create candlestick chart with SuperTrend from real data"""
     
-    if len(ohlc_data) < 10:
+    if len(ohlc_data) < 4:
         fig = go.Figure()
-        fig.add_annotation(text="Insufficient data", x=0.5, y=0.5, showarrow=False)
+        fig.add_annotation(
+            text="Collecting data... Please wait for more data points",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="white")
+        )
         return fig, None
     
     df = pd.DataFrame(ohlc_data)
     
-    # Ensure all OHLC values are numeric and valid
+    # Ensure all OHLC values are numeric
     for col in ['open', 'high', 'low', 'close']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-        df[col] = df[col].fillna(method='ffill').fillna(0)
-    
-    # Validate OHLC relationships
-    df['high'] = df[['open', 'high', 'low', 'close']].max(axis=1)
-    df['low'] = df[['open', 'high', 'low', 'close']].min(axis=1)
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(method='ffill')
     
     fig = go.Figure()
     
     # Add candlestick chart
     fig.add_trace(go.Candlestick(
-        x=list(range(len(df))),  # Use numeric index instead of time strings
+        x=list(range(len(df))),
         open=df['open'].tolist(),
         high=df['high'].tolist(),
         low=df['low'].tolist(),
@@ -257,8 +233,8 @@ def create_candlestick_chart(ohlc_data, strike_price, option_type, st_period, st
         decreasing_fillcolor='rgba(255,68,68,0.3)'
     ))
     
-    # Calculate SuperTrend
-    if len(df) >= st_period + 5:
+    # Calculate SuperTrend if enough data
+    if len(df) >= st_period + 2:
         supertrend, trend_direction = calculate_supertrend(
             df['high'].tolist(),
             df['low'].tolist(), 
@@ -345,23 +321,23 @@ def create_candlestick_chart(ohlc_data, strike_price, option_type, st_period, st
     
     # Update layout
     fig.update_layout(
-        title=f"{strike_price} {option_type} - 1 Day Chart with SuperTrend<br><sub style='color:#888'>{'Call Option (Bullish when spot rises)' if option_type == 'CE' else 'Put Option (Bullish when spot falls)'}</sub>",
+        title=f"{strike_price} {option_type} - Real-time LTP with SuperTrend<br><sub style='color:#888'>Live data points: {len(df)}</sub>",
         template='plotly_dark',
         height=600,
-        xaxis_title="Time Points",
+        xaxis_title="Data Points",
         yaxis_title="Price (₹)",
         showlegend=True,
         xaxis=dict(
             tickmode='array',
-            tickvals=list(range(0, len(df), 10)),
-            ticktext=[df['time_str'].iloc[i] for i in range(0, len(df), 10)]
+            tickvals=list(range(0, len(df), max(1, len(df)//10))),
+            ticktext=[df['time_str'].iloc[i] for i in range(0, len(df), max(1, len(df)//10))]
         )
     )
     
     return fig, None
 
 def main():
-    st.title("Nifty Options SuperTrend Trader")
+    st.title("Nifty Options SuperTrend Trader - Real LTP Data")
     
     # Initialize session state
     if 'alert_sent' not in st.session_state:
@@ -383,8 +359,8 @@ def main():
     )
     option_type = st.sidebar.selectbox("Option Type", ['CE', 'PE'])
     
-    auto_refresh = st.sidebar.checkbox("Auto Refresh", value=False)
-    refresh_interval = st.sidebar.selectbox("Refresh Interval (seconds)", [10, 30, 60], index=1)
+    auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
+    refresh_interval = st.sidebar.selectbox("Refresh Interval (seconds)", [5, 10, 15, 30], index=1)
     
     # Get expiry dates
     expiry_data = api.get_expiry_list(13, "IDX_I")
@@ -393,9 +369,20 @@ def main():
     else:
         expiry = "2024-10-31"
     
-    # Manual refresh
-    if st.sidebar.button("Refresh Data"):
-        st.rerun()
+    # Control buttons
+    col_btn1, col_btn2 = st.sidebar.columns(2)
+    with col_btn1:
+        if st.button("Refresh Now"):
+            st.rerun()
+    
+    with col_btn2:
+        if st.button("Clear Data"):
+            # Clear stored data
+            for key in list(st.session_state.keys()):
+                if key.startswith('live_data_'):
+                    del st.session_state[key]
+            st.success("Data cleared!")
+            st.rerun()
     
     # Get option chain data
     option_chain = api.get_option_chain(13, "IDX_I", expiry)
@@ -427,82 +414,70 @@ def main():
         with col4:
             st.metric("Selected Strike", f"{strike_price} {option_type}")
         
-        # Get current option price
-        oc_data = option_chain['data'].get('oc', {})
-        strike_key = f"{strike_price}.000000"
+        # Collect live data and create chart
+        live_data, current_ltp = collect_live_data(api, strike_price, option_type, expiry)
         
-        if strike_key in oc_data:
-            option_data = oc_data[strike_key].get(option_type.lower(), {})
-            current_ltp = option_data.get('last_price', 0)
+        if current_ltp > 0:
+            # Calculate moneyness
+            if option_type == 'CE':
+                moneyness = spot_price - strike_price
+                status = f"ITM by ₹{moneyness:.2f}" if moneyness > 0 else f"OTM by ₹{abs(moneyness):.2f}"
+                status_color = "🟢" if moneyness > 0 else "🔴"
+            else:  # PE
+                moneyness = strike_price - spot_price
+                status = f"ITM by ₹{moneyness:.2f}" if moneyness > 0 else f"OTM by ₹{abs(moneyness):.2f}"
+                status_color = "🟢" if moneyness > 0 else "🔴"
             
-            if current_ltp > 0:
-                # Calculate moneyness and status
-                if option_type == 'CE':
-                    moneyness = spot_price - strike_price
-                    if moneyness > 0:
-                        status = f"ITM by ₹{moneyness:.2f}"
-                        status_color = "🟢"
-                    else:
-                        status = f"OTM by ₹{abs(moneyness):.2f}"
-                        status_color = "🔴"
-                else:  # PE
-                    moneyness = strike_price - spot_price
-                    if moneyness > 0:
-                        status = f"ITM by ₹{moneyness:.2f}"
-                        status_color = "🟢"
-                    else:
-                        status = f"OTM by ₹{abs(moneyness):.2f}"
-                        status_color = "🔴"
+            st.subheader(f"Real LTP: ₹{current_ltp:.2f} {status_color} {status}")
+            st.caption(f"Data Points Collected: {len(live_data)}")
+            
+            # Create chart
+            chart_key = f"{strike_price}_{option_type}_{st_period}_{st_multiplier}"
+            
+            fig, trend_change = create_candlestick_chart(
+                live_data, strike_price, option_type, st_period, st_multiplier
+            )
+            
+            # Check for trend change and send alert
+            if trend_change is not None:
+                alert_key = f"{chart_key}_{trend_change}_{len(live_data)}"
                 
-                st.subheader(f"Current LTP: ₹{current_ltp:.2f} {status_color} {status}")
-                
-                # Generate historical data with option-specific behavior
-                historical_data = generate_historical_data(
-                    current_ltp, option_type, strike_price, spot_price
-                )
-                
-                # Create chart
-                chart_key = f"{strike_price}_{option_type}_{st_period}_{st_multiplier}"
-                
-                fig, trend_change = create_candlestick_chart(
-                    historical_data, strike_price, option_type, st_period, st_multiplier
-                )
-                
-                # Check for trend change and send alert
-                if trend_change is not None:
-                    alert_key = f"{chart_key}_{trend_change}_{ist_time[:5]}"  # Include time to avoid duplicate alerts
+                if alert_key not in st.session_state.alert_sent:
+                    trend_text = "BULLISH ⬆️" if trend_change == 1 else "BEARISH ⬇️"
                     
-                    if alert_key not in st.session_state.alert_sent:
-                        trend_text = "BULLISH ⬆️" if trend_change == 1 else "BEARISH ⬇️"
-                        
-                        message = f"""
+                    message = f"""
 <b>SuperTrend Alert!</b>
 
 <b>Strike:</b> {strike_price} {option_type}
 <b>Signal:</b> {trend_text}
-<b>Price:</b> ₹{current_ltp:.2f}
+<b>Real LTP:</b> ₹{current_ltp:.2f}
 <b>Time:</b> {ist_time} IST
 <b>Nifty:</b> ₹{spot_price:.2f}
+<b>Status:</b> {status}
 
 <i>Settings: Period={st_period}, Multiplier={st_multiplier}</i>
-                        """.strip()
-                        
-                        if telegram.send_message(message):
-                            st.success(f"Alert sent: {trend_text}")
-                            st.session_state.alert_sent.add(alert_key)
-                        else:
-                            st.warning("Telegram notification failed")
+                    """.strip()
+                    
+                    if telegram.send_message(message):
+                        st.success(f"Alert sent: {trend_text}")
+                        st.session_state.alert_sent.add(alert_key)
+                    else:
+                        st.warning("Telegram notification failed")
+            
+            # Display chart
+            st.plotly_chart(fig, use_container_width=True, key=chart_key)
+            
+            # Display real-time info
+            if len(live_data) > 1:
+                last_change = live_data[-1]['close'] - live_data[-2]['close']
+                change_pct = (last_change / live_data[-2]['close']) * 100
+                change_color = "🟢" if last_change > 0 else "🔴"
                 
-                # Display chart
-                st.plotly_chart(fig, use_container_width=True, key=chart_key)
-                
-                # Settings info
-                st.info(f"SuperTrend: Period={st_period}, Multiplier={st_multiplier} | Arrows show trend changes")
-                
-            else:
-                st.error(f"No price data for {strike_price} {option_type}")
+                st.info(f"Last Change: {change_color} ₹{last_change:.2f} ({change_pct:+.2f}%) | SuperTrend: Period={st_period}, Multiplier={st_multiplier}")
+            
         else:
-            st.error(f"Strike {strike_price} not found")
+            st.error(f"No real-time data available for {strike_price} {option_type}")
+    
     else:
         st.error("Failed to fetch option chain data")
     
