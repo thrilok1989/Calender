@@ -28,22 +28,6 @@ class DhanAPI:
             'Content-Type': 'application/json'
         }
     
-    def get_historical_data(self, security_id, exchange_segment, instrument, from_date, to_date, interval="5"):
-        url = f"{self.base_url}/charts/intraday"
-        payload = {
-            "securityId": str(security_id),
-            "exchangeSegment": exchange_segment,
-            "instrument": instrument,
-            "interval": interval,
-            "fromDate": from_date,
-            "toDate": to_date
-        }
-        try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
-            return response.json() if response.status_code == 200 else None
-        except:
-            return None
-    
     def get_option_chain(self, underlying_scrip, underlying_seg, expiry):
         url = f"{self.base_url}/optionchain"
         payload = {"UnderlyingScrip": underlying_scrip, "UnderlyingSeg": underlying_seg, "Expiry": expiry}
@@ -80,7 +64,7 @@ class TelegramBot:
             return False
 
 def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
-    if len(high) < period:
+    if len(high) < period + 1:
         return [], []
     
     # Calculate True Range
@@ -104,229 +88,243 @@ def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
     hl2 = [(h + l) / 2 for h, l in zip(high, low)]
     supertrend = []
     trend_direction = []
-    upper_band = []
-    lower_band = []
     
     for i in range(len(hl2)):
         if i < len(atr):
             ub = hl2[i] + multiplier * atr[i]
             lb = hl2[i] - multiplier * atr[i]
         else:
-            ub = hl2[i] + multiplier * (atr[-1] if atr else 0)
-            lb = hl2[i] - multiplier * (atr[-1] if atr else 0)
+            if atr:
+                ub = hl2[i] + multiplier * atr[-1]
+                lb = hl2[i] - multiplier * atr[-1]
+            else:
+                ub = hl2[i]
+                lb = hl2[i]
         
         if i == 0:
-            upper_band.append(ub)
-            lower_band.append(lb)
             supertrend.append(ub)
             trend_direction.append(1)
         else:
-            ub = ub if ub < upper_band[-1] or close[i-1] > upper_band[-1] else upper_band[-1]
-            lb = lb if lb > lower_band[-1] or close[i-1] < lower_band[-1] else lower_band[-1]
+            prev_ub = supertrend[-1] if trend_direction[-1] == -1 else ub
+            prev_lb = supertrend[-1] if trend_direction[-1] == 1 else lb
             
-            upper_band.append(ub)
-            lower_band.append(lb)
+            if ub < prev_ub or close[i-1] > prev_ub:
+                final_ub = ub
+            else:
+                final_ub = prev_ub
+                
+            if lb > prev_lb or close[i-1] < prev_lb:
+                final_lb = lb
+            else:
+                final_lb = prev_lb
             
-            if trend_direction[-1] == 1 and close[i] <= lb:
+            if trend_direction[-1] == 1 and close[i] <= final_lb:
                 trend_direction.append(-1)
-            elif trend_direction[-1] == -1 and close[i] >= ub:
+                supertrend.append(final_ub)
+            elif trend_direction[-1] == -1 and close[i] >= final_ub:
                 trend_direction.append(1)
+                supertrend.append(final_lb)
             else:
                 trend_direction.append(trend_direction[-1])
-            
-            supertrend.append(lb if trend_direction[-1] == 1 else ub)
+                if trend_direction[-1] == 1:
+                    supertrend.append(final_lb)
+                else:
+                    supertrend.append(final_ub)
     
     return supertrend, trend_direction
 
-def get_historical_option_data(api, strike_price, option_type, expiry):
-    """Get 1 day historical data for option"""
-    ist = pytz.timezone('Asia/Kolkata')
-    end_time = datetime.now(ist)
-    start_time = end_time - timedelta(days=1)
+def generate_historical_data(current_price, points=78):
+    """Generate 1 day of historical OHLC data (5-min intervals)"""
+    np.random.seed(42)  # For consistent data
     
-    from_date = start_time.strftime('%Y-%m-%d 09:15:00')
-    to_date = end_time.strftime('%Y-%m-%d %H:%M:%S')
-    
-    # For demo, we'll create synthetic historical data based on current price
-    # In real implementation, you'd need option security IDs for historical API
-    
-    timestamps = []
     prices = []
+    base_price = current_price * 0.8  # Start from 80% of current price
     
-    # Generate 1 day of 5-minute interval data
-    current_time = start_time.replace(hour=9, minute=15)
-    base_price = 50.0  # Base price for simulation
+    for i in range(points):
+        # Simulate price movement
+        change = np.random.normal(0, base_price * 0.02)
+        base_price = max(0.05, base_price + change)
+        prices.append(base_price)
     
-    while current_time <= end_time:
-        if 9 <= current_time.hour < 16:  # Market hours
-            # Simulate price movement
-            noise = np.random.normal(0, 2)
-            base_price = max(0.05, base_price + noise)
-            
-            timestamps.append(current_time)
-            prices.append(base_price)
-        
-        current_time += timedelta(minutes=5)
-    
-    return timestamps, prices
-
-def create_option_candlestick_chart(timestamps, prices, strike_price, option_type, st_period, st_multiplier):
-    """Create candlestick chart with SuperTrend"""
-    if len(prices) < 4:
-        return go.Figure()
-    
-    # Create OHLC data from prices (5-minute intervals)
+    # Generate OHLC data
     ohlc_data = []
-    for i in range(0, len(prices), 1):  # Each point becomes a candle
+    ist = pytz.timezone('Asia/Kolkata')
+    start_time = datetime.now(ist).replace(hour=9, minute=15, second=0, microsecond=0)
+    
+    for i, price in enumerate(prices):
+        timestamp = start_time + timedelta(minutes=i * 5)
+        
+        # Create OHLC with some randomness
+        volatility = 0.015
+        high = price * (1 + np.random.uniform(0, volatility))
+        low = price * (1 - np.random.uniform(0, volatility))
+        
         if i == 0:
-            open_price = prices[i]
+            open_price = price
         else:
             open_price = prices[i-1]
         
-        high = prices[i] * (1 + np.random.uniform(0, 0.02))
-        low = prices[i] * (1 - np.random.uniform(0, 0.02))
-        close = prices[i]
+        close_price = price
         
         # Ensure OHLC relationships
-        high = max(high, open_price, close)
-        low = min(low, open_price, close)
+        high = max(high, open_price, close_price)
+        low = min(low, open_price, close_price)
         
         ohlc_data.append({
-            'timestamp': timestamps[i],
-            'open': open_price,
-            'high': high,
-            'low': low,
-            'close': close
+            'timestamp': timestamp,
+            'open': float(open_price),
+            'high': float(high),
+            'low': float(low),
+            'close': float(close_price),
+            'time_str': timestamp.strftime('%H:%M')
         })
     
+    return ohlc_data
+
+def create_candlestick_chart(ohlc_data, strike_price, option_type, st_period, st_multiplier):
+    """Create candlestick chart with SuperTrend"""
+    
+    if len(ohlc_data) < 10:
+        fig = go.Figure()
+        fig.add_annotation(text="Insufficient data", x=0.5, y=0.5, showarrow=False)
+        return fig, None
+    
     df = pd.DataFrame(ohlc_data)
-    df['time_str'] = df['timestamp'].dt.strftime('%H:%M')
+    
+    # Ensure all OHLC values are numeric and valid
+    for col in ['open', 'high', 'low', 'close']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+        df[col] = df[col].fillna(method='ffill').fillna(0)
+    
+    # Validate OHLC relationships
+    df['high'] = df[['open', 'high', 'low', 'close']].max(axis=1)
+    df['low'] = df[['open', 'high', 'low', 'close']].min(axis=1)
     
     fig = go.Figure()
     
-    # Candlestick chart
+    # Add candlestick chart
     fig.add_trace(go.Candlestick(
-        x=df['time_str'],
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
+        x=list(range(len(df))),  # Use numeric index instead of time strings
+        open=df['open'].tolist(),
+        high=df['high'].tolist(),
+        low=df['low'].tolist(),
+        close=df['close'].tolist(),
         name=f"{strike_price} {option_type}",
         increasing_line_color='#00ff88',
         decreasing_line_color='#ff4444',
-        increasing_fillcolor='#00ff8840',
-        decreasing_fillcolor='#ff444440'
+        increasing_fillcolor='rgba(0,255,136,0.3)',
+        decreasing_fillcolor='rgba(255,68,68,0.3)'
     ))
     
-    # Calculate and add SuperTrend
-    if len(df) >= st_period:
+    # Calculate SuperTrend
+    if len(df) >= st_period + 5:
         supertrend, trend_direction = calculate_supertrend(
-            df['high'].tolist(), 
+            df['high'].tolist(),
             df['low'].tolist(), 
             df['close'].tolist(),
             period=st_period,
             multiplier=st_multiplier
         )
         
-        if supertrend:
+        if supertrend and len(supertrend) > 0:
             # Prepare SuperTrend data
             st_up = []
             st_down = []
-            arrows_up = []
-            arrows_down = []
+            trend_change_points = []
             
             for i, (st_val, trend) in enumerate(zip(supertrend, trend_direction)):
                 if trend == 1:  # Bullish
                     st_up.append(st_val)
                     st_down.append(None)
                     
-                    # Check for trend change (arrow)
+                    # Check for trend change
                     if i > 0 and trend_direction[i-1] == -1:
-                        arrows_up.append({'x': df['time_str'].iloc[i], 'y': st_val})
-                    else:
-                        arrows_up.append(None)
-                    arrows_down.append(None)
+                        trend_change_points.append({'index': i, 'value': st_val, 'type': 'bullish'})
                 else:  # Bearish
                     st_up.append(None)
                     st_down.append(st_val)
                     
-                    # Check for trend change (arrow)
+                    # Check for trend change
                     if i > 0 and trend_direction[i-1] == 1:
-                        arrows_down.append({'x': df['time_str'].iloc[i], 'y': st_val})
-                    else:
-                        arrows_down.append(None)
-                    arrows_up.append(None)
+                        trend_change_points.append({'index': i, 'value': st_val, 'type': 'bearish'})
             
             # Add SuperTrend lines
+            x_values = list(range(len(supertrend)))
+            
             fig.add_trace(go.Scatter(
-                x=df['time_str'],
+                x=x_values,
                 y=st_up,
                 mode='lines',
                 name='SuperTrend Up',
-                line=dict(color='#00ff88', width=2),
+                line=dict(color='#00ff88', width=3),
                 connectgaps=False
             ))
             
             fig.add_trace(go.Scatter(
-                x=df['time_str'],
+                x=x_values,
                 y=st_down,
                 mode='lines',
                 name='SuperTrend Down',
-                line=dict(color='#ff4444', width=2),
+                line=dict(color='#ff4444', width=3),
                 connectgaps=False
             ))
             
-            # Add arrows for trend changes
-            for arrow in arrows_up:
-                if arrow:
+            # Add trend change arrows
+            for point in trend_change_points:
+                if point['type'] == 'bullish':
                     fig.add_annotation(
-                        x=arrow['x'],
-                        y=arrow['y'],
+                        x=point['index'],
+                        y=point['value'],
                         text="▲",
                         showarrow=False,
-                        font=dict(color='#00ff88', size=20),
-                        bgcolor='rgba(0,255,136,0.3)',
-                        bordercolor='#00ff88'
+                        font=dict(color='#00ff88', size=16),
+                        bgcolor='rgba(0,255,136,0.2)',
+                        bordercolor='#00ff88',
+                        borderwidth=1
                     )
-            
-            for arrow in arrows_down:
-                if arrow:
+                else:
                     fig.add_annotation(
-                        x=arrow['x'],
-                        y=arrow['y'],
+                        x=point['index'],
+                        y=point['value'],
                         text="▼",
                         showarrow=False,
-                        font=dict(color='#ff4444', size=20),
-                        bgcolor='rgba(255,68,68,0.3)',
-                        bordercolor='#ff4444'
+                        font=dict(color='#ff4444', size=16),
+                        bgcolor='rgba(255,68,68,0.2)',
+                        bordercolor='#ff4444',
+                        borderwidth=1
                     )
             
-            # Check for recent trend change for Telegram alert
+            # Check for recent trend change
             if len(trend_direction) >= 2:
                 current_trend = trend_direction[-1]
                 previous_trend = trend_direction[-2]
                 
                 if current_trend != previous_trend:
-                    return fig, current_trend, df['close'].iloc[-1]
+                    return fig, current_trend
     
+    # Update layout
     fig.update_layout(
         title=f"{strike_price} {option_type} - 1 Day Chart with SuperTrend",
         template='plotly_dark',
         height=600,
-        xaxis_title="Time (IST)",
+        xaxis_title="Time Points",
         yaxis_title="Price (₹)",
         showlegend=True,
-        xaxis=dict(type='category')
+        xaxis=dict(
+            tickmode='array',
+            tickvals=list(range(0, len(df), 10)),
+            ticktext=[df['time_str'].iloc[i] for i in range(0, len(df), 10)]
+        )
     )
     
-    return fig, None, None
+    return fig, None
 
 def main():
     st.title("Nifty Options SuperTrend Trader")
     
     # Initialize session state
     if 'alert_sent' not in st.session_state:
-        st.session_state.alert_sent = {}
+        st.session_state.alert_sent = set()
     
     api = DhanAPI()
     telegram = TelegramBot()
@@ -344,7 +342,7 @@ def main():
     )
     option_type = st.sidebar.selectbox("Option Type", ['CE', 'PE'])
     
-    auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
+    auto_refresh = st.sidebar.checkbox("Auto Refresh", value=False)
     refresh_interval = st.sidebar.selectbox("Refresh Interval (seconds)", [10, 30, 60], index=1)
     
     # Get expiry dates
@@ -358,7 +356,7 @@ def main():
     if st.sidebar.button("Refresh Data"):
         st.rerun()
     
-    # Main content
+    # Get option chain data
     option_chain = api.get_option_chain(13, "IDX_I", expiry)
     
     if option_chain and 'data' in option_chain:
@@ -399,64 +397,51 @@ def main():
             if current_ltp > 0:
                 st.subheader(f"Current LTP: ₹{current_ltp:.2f}")
                 
-                # Get historical data and create chart
-                timestamps, historical_prices = get_historical_option_data(
-                    api, strike_price, option_type, expiry
+                # Generate historical data
+                historical_data = generate_historical_data(current_ltp)
+                
+                # Create chart
+                chart_key = f"{strike_price}_{option_type}_{st_period}_{st_multiplier}"
+                
+                fig, trend_change = create_candlestick_chart(
+                    historical_data, strike_price, option_type, st_period, st_multiplier
                 )
                 
-                # Add current price to historical data
-                timestamps.append(datetime.now(pytz.timezone('Asia/Kolkata')))
-                historical_prices.append(current_ltp)
-                
-                # Create chart with unique key to avoid duplicate element error
-                chart_key = f"{strike_price}_{option_type}_{expiry}"
-                
-                chart_result = create_option_candlestick_chart(
-                    timestamps, historical_prices, strike_price, option_type, 
-                    st_period, st_multiplier
-                )
-                
-                if isinstance(chart_result, tuple) and len(chart_result) == 3:
-                    fig, trend_change, current_price = chart_result
+                # Check for trend change and send alert
+                if trend_change is not None:
+                    alert_key = f"{chart_key}_{trend_change}_{ist_time[:5]}"  # Include time to avoid duplicate alerts
                     
-                    # Check for SuperTrend signal and send Telegram alert
-                    if trend_change is not None:
-                        alert_key = f"{chart_key}_{trend_change}_{len(timestamps)}"
+                    if alert_key not in st.session_state.alert_sent:
+                        trend_text = "BULLISH ⬆️" if trend_change == 1 else "BEARISH ⬇️"
                         
-                        if alert_key not in st.session_state.alert_sent:
-                            trend_text = "BULLISH ⬆️" if trend_change == 1 else "BEARISH ⬇️"
-                            
-                            message = f"""
-<b>🔔 SuperTrend Alert!</b>
+                        message = f"""
+<b>SuperTrend Alert!</b>
 
 <b>Strike:</b> {strike_price} {option_type}
 <b>Signal:</b> {trend_text}
-<b>Price:</b> ₹{current_price:.2f}
+<b>Price:</b> ₹{current_ltp:.2f}
 <b>Time:</b> {ist_time} IST
 <b>Nifty:</b> ₹{spot_price:.2f}
 
 <i>Settings: Period={st_period}, Multiplier={st_multiplier}</i>
-                            """.strip()
-                            
-                            if telegram.send_message(message):
-                                st.success(f"📱 Alert sent: {trend_text}")
-                                st.session_state.alert_sent[alert_key] = True
-                            else:
-                                st.warning("⚠️ Telegram notification failed")
-                else:
-                    fig = chart_result[0] if isinstance(chart_result, tuple) else chart_result
+                        """.strip()
+                        
+                        if telegram.send_message(message):
+                            st.success(f"Alert sent: {trend_text}")
+                            st.session_state.alert_sent.add(alert_key)
+                        else:
+                            st.warning("Telegram notification failed")
                 
-                # Display chart with unique key
+                # Display chart
                 st.plotly_chart(fig, use_container_width=True, key=chart_key)
                 
-                # Display SuperTrend settings
-                st.info(f"SuperTrend Settings: Period = {st_period}, Multiplier = {st_multiplier}")
+                # Settings info
+                st.info(f"SuperTrend: Period={st_period}, Multiplier={st_multiplier} | Arrows show trend changes")
                 
             else:
-                st.error(f"No price data available for {strike_price} {option_type}")
+                st.error(f"No price data for {strike_price} {option_type}")
         else:
-            st.error(f"Strike {strike_price} not found in option chain")
-    
+            st.error(f"Strike {strike_price} not found")
     else:
         st.error("Failed to fetch option chain data")
     
