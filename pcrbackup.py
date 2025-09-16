@@ -14,7 +14,7 @@ import json
 
 # Page config
 st.set_page_config(page_title="Nifty Analyzer", page_icon="ðŸ“ˆ", layout="wide")
-st_autorefresh(interval=25000, key="refresh")
+st_autorefresh(interval=75000, key="refresh")
 
 # Get credentials from secrets
 DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
