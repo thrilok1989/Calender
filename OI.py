@@ -146,99 +146,85 @@ def calculate_volume_profile(df, timeframe="30T", bins=20):
     if df.empty or len(df) < 10:
         return []
     
-    # Resample data to higher timeframe
-    df_temp = df.set_index('datetime')
-    try:
-        ohlc = df_temp.resample(timeframe).agg({
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-            "volume": "sum"
-        }).dropna()
-        
-        if len(ohlc) == 0:
-            return []
-        
-        profiles = []
-        
-        for idx, row in ohlc.iterrows():
-            high, low = row["high"], row["low"]
-            if high == low:  # Skip if no price movement
-                continue
-                
-            step = (high - low) / bins
-            price_bins = np.linspace(low, high, bins + 1)
-            
-            # Initialize volume histogram
-            volume_hist = np.zeros(bins)
-            
-            # Get data for this timeframe period
-            period_end = idx + pd.Timedelta(timeframe)
-            mask = (df_temp.index >= idx) & (df_temp.index < period_end)
-            sub_df = df_temp.loc[mask]
-            
-            if len(sub_df) == 0:
-                continue
-            
-            # Distribute volume across price levels
-            for _, r in sub_df.iterrows():
-                price = r["close"]
-                volume = r["volume"]
-                
-                # Find which bin this price belongs to
-                for i in range(bins):
-                    if price >= price_bins[i] and price < price_bins[i + 1]:
-                        volume_hist[i] += volume
-                        break
-                    elif i == bins - 1 and price >= price_bins[i]:  # Last bin edge case
-                        volume_hist[i] += volume
-                        break
-            
-            # Calculate Point of Control (POC) - price level with highest volume
-            if volume_hist.max() > 0:
-                poc_idx = np.argmax(volume_hist)
-                poc_price = (price_bins[poc_idx] + price_bins[poc_idx + 1]) / 2
-                
-                # Calculate Value Area (70% of total volume)
-                total_volume = volume_hist.sum()
-                if total_volume > 0:
-                    # Sort bins by volume to find value area
-                    sorted_indices = np.argsort(volume_hist)[::-1]
-                    cumulative_volume = 0
-                    value_area_indices = []
-                    
-                    for bin_idx in sorted_indices:
-                        cumulative_volume += volume_hist[bin_idx]
-                        value_area_indices.append(bin_idx)
-                        if cumulative_volume >= 0.7 * total_volume:
-                            break
-                    
-                    # Calculate Value Area High and Low
-                    if value_area_indices:
-                        va_high = max([price_bins[i + 1] for i in value_area_indices])
-                        va_low = min([price_bins[i] for i in value_area_indices])
-                    else:
-                        va_high = high
-                        va_low = low
-                
-                profiles.append({
-                    "time": idx,
-                    "high": high,
-                    "low": low,
-                    "poc": poc_price,
-                    "va_high": va_high,
-                    "va_low": va_low,
-                    "volume_hist": volume_hist,
-                    "price_bins": price_bins,
-                    "total_volume": total_volume
-                })
-        
-        return profiles
-        
-    except Exception as e:
-        st.error(f"Error calculating volume profile: {e}")
+    # Make a copy and ensure volume column exists
+    df_copy = df.copy()
+    if 'volume' not in df_copy.columns:
+        st.error("Volume data not available in the dataset")
         return []
+    
+    # Remove rows with zero or NaN volume
+    df_copy = df_copy[df_copy['volume'].notna() & (df_copy['volume'] > 0)]
+    
+    if df_copy.empty:
+        st.error("No valid volume data found")
+        return []
+    
+    # Calculate overall price range for the session
+    overall_high = df_copy['high'].max()
+    overall_low = df_copy['low'].min()
+    
+    if overall_high == overall_low:
+        return []
+    
+    # Create price bins for the entire session
+    price_bins = np.linspace(overall_low, overall_high, bins + 1)
+    volume_hist = np.zeros(bins)
+    
+    # Distribute volume across price levels using OHLC logic
+    for _, row in df_copy.iterrows():
+        if pd.isna(row['volume']) or row['volume'] <= 0:
+            continue
+            
+        # Use typical price (HLC/3) for volume distribution
+        typical_price = (row['high'] + row['low'] + row['close']) / 3
+        volume = row['volume']
+        
+        # Find which bin this typical price belongs to
+        bin_idx = np.digitize(typical_price, price_bins) - 1
+        bin_idx = max(0, min(bins - 1, bin_idx))  # Ensure within bounds
+        volume_hist[bin_idx] += volume
+    
+    if volume_hist.sum() == 0:
+        return []
+    
+    # Calculate Point of Control (POC)
+    poc_idx = np.argmax(volume_hist)
+    poc_price = (price_bins[poc_idx] + price_bins[poc_idx + 1]) / 2
+    
+    # Calculate Value Area (70% of total volume)
+    total_volume = volume_hist.sum()
+    sorted_indices = np.argsort(volume_hist)[::-1]
+    cumulative_volume = 0
+    value_area_indices = []
+    
+    for bin_idx in sorted_indices:
+        cumulative_volume += volume_hist[bin_idx]
+        value_area_indices.append(bin_idx)
+        if cumulative_volume >= 0.7 * total_volume:
+            break
+    
+    # Calculate Value Area High and Low
+    if value_area_indices:
+        va_high = max([price_bins[i + 1] for i in value_area_indices])
+        va_low = min([price_bins[i] for i in value_area_indices])
+    else:
+        va_high = overall_high
+        va_low = overall_low
+    
+    # Create session profile
+    profiles = [{
+        "time": df_copy['datetime'].iloc[0],
+        "high": overall_high,
+        "low": overall_low,
+        "poc": poc_price,
+        "va_high": va_high,
+        "va_low": va_low,
+        "volume_hist": volume_hist,
+        "price_bins": price_bins,
+        "total_volume": total_volume
+    }]
+    
+    return profiles
 
 def get_volume_profile_insights(profiles, current_price):
     """
@@ -326,86 +312,183 @@ def create_chart(df, title):
     if df.empty:
         return go.Figure()
     
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
-                       vertical_spacing=0.05, 
-                       row_heights=[0.6, 0.2, 0.2],
-                       subplot_titles=('Price', 'Volume', 'Volume Profile'))
+    # Debug: Check if volume data exists
+    if 'volume' not in df.columns:
+        st.error("Volume column missing from data")
+        return go.Figure()
+    
+    # Check if volume has valid data
+    valid_volume = df['volume'].notna() & (df['volume'] > 0)
+    if not valid_volume.any():
+        st.warning("No valid volume data found - Volume profile will not be displayed")
+    
+    fig = make_subplots(
+        rows=3, cols=2, 
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        column_widths=[0.8, 0.2],
+        row_heights=[0.6, 0.25, 0.15],
+        subplot_titles=('Price Chart', 'Volume Profile', 'Volume', '', 'Market Info', ''),
+        specs=[[{"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"secondary_y": False}]]
+    )
     
     # Candlestick chart
     fig.add_trace(go.Candlestick(
-        x=df['datetime'], open=df['open'], high=df['high'], 
-        low=df['low'], close=df['close'], name='Nifty',
-        increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
+        x=df['datetime'], 
+        open=df['open'], 
+        high=df['high'], 
+        low=df['low'], 
+        close=df['close'], 
+        name='Nifty',
+        increasing_line_color='#00ff88', 
+        decreasing_line_color='#ff4444',
+        showlegend=False
     ), row=1, col=1)
     
-    # Volume bars
-    volume_colors = ['#00ff88' if close >= open else '#ff4444' 
-                    for close, open in zip(df['close'], df['open'])]
-    fig.add_trace(go.Bar(
-        x=df['datetime'], y=df['volume'], name='Volume',
-        marker_color=volume_colors, opacity=0.7
-    ), row=2, col=1)
-    
-    # Calculate and add Volume Profile
-    if len(df) > 50:
-        profiles = calculate_volume_profile(df, VP_CONFIG["TIMEFRAME"], VP_CONFIG["BINS"])
+    # Volume bars (only if valid volume data exists)
+    if valid_volume.any():
+        volume_colors = ['#00ff88' if close >= open else '#ff4444' 
+                        for close, open in zip(df['close'], df['open'])]
         
-        # Add Volume Profile visualization
-        for profile in profiles[-5:]:  # Show last 5 profiles
-            time_start = profile["time"]
-            time_end = time_start + pd.Timedelta(VP_CONFIG["TIMEFRAME"])
-            
-            # Add POC line
-            fig.add_shape(
-                type="line",
-                x0=time_start, x1=time_end,
-                y0=profile["poc"], y1=profile["poc"],
-                line=dict(color=VP_CONFIG["POC_COLOR"], width=2, dash="dash"),
-                row=1, col=1
-            )
-            
-            # Add Value Area
-            fig.add_shape(
-                type="rect",
-                x0=time_start, x1=time_end,
-                y0=profile["va_low"], y1=profile["va_high"],
-                fillcolor="rgba(255, 215, 0, 0.1)",
-                line=dict(color="rgba(255, 215, 0, 0.3)", width=1),
-                row=1, col=1
-            )
-            
-            # Add volume histogram in third subplot
-            price_centers = (profile["price_bins"][:-1] + profile["price_bins"][1:]) / 2
-            max_vol = profile["volume_hist"].max()
-            if max_vol > 0:
-                # Normalize volume for display
-                normalized_vol = profile["volume_hist"] / max_vol * 100
+        fig.add_trace(go.Bar(
+            x=df['datetime'], 
+            y=df['volume'], 
+            name='Volume',
+            marker_color=volume_colors, 
+            opacity=0.7,
+            showlegend=False
+        ), row=2, col=1)
+        
+        # Calculate and display Volume Profile
+        if len(df) > 20:
+            try:
+                profiles = calculate_volume_profile(df, VP_CONFIG["TIMEFRAME"], VP_CONFIG["BINS"])
                 
-                fig.add_trace(go.Bar(
-                    x=[time_start] * len(price_centers),
-                    y=normalized_vol,
-                    name=f'VP {time_start.strftime("%H:%M")}',
-                    orientation='v',
-                    marker_color=VP_CONFIG["VOLUME_COLOR"],
-                    opacity=0.6,
-                    showlegend=False
-                ), row=3, col=1)
-        
-        # Add pivot lines
+                if profiles:
+                    profile = profiles[0]  # Use the session profile
+                    
+                    # Add POC line to main chart
+                    fig.add_hline(
+                        y=profile["poc"], 
+                        line_dash="dash", 
+                        line_color=VP_CONFIG["POC_COLOR"],
+                        line_width=2,
+                        annotation_text=f"POC: {profile['poc']:.1f}",
+                        annotation_position="bottom right",
+                        row=1, col=1
+                    )
+                    
+                    # Add Value Area to main chart
+                    fig.add_hrect(
+                        y0=profile["va_low"], 
+                        y1=profile["va_high"],
+                        fillcolor="rgba(255, 215, 0, 0.1)",
+                        line_color="rgba(255, 215, 0, 0.3)",
+                        line_width=1,
+                        row=1, col=1
+                    )
+                    
+                    # Add volume profile histogram (right side)
+                    price_centers = (profile["price_bins"][:-1] + profile["price_bins"][1:]) / 2
+                    volume_hist = profile["volume_hist"]
+                    
+                    if len(volume_hist) > 0 and volume_hist.max() > 0:
+                        # Normalize volume for better display
+                        max_vol = volume_hist.max()
+                        normalized_vol = volume_hist / max_vol * 100
+                        
+                        fig.add_trace(go.Bar(
+                            x=normalized_vol,
+                            y=price_centers,
+                            orientation='h',
+                            name='Volume Profile',
+                            marker_color=VP_CONFIG["VOLUME_COLOR"],
+                            opacity=0.7,
+                            showlegend=False
+                        ), row=1, col=2)
+                        
+                        # Highlight POC level in volume profile
+                        poc_idx = np.argmax(volume_hist)
+                        fig.add_trace(go.Bar(
+                            x=[normalized_vol[poc_idx]],
+                            y=[price_centers[poc_idx]],
+                            orientation='h',
+                            name='POC Level',
+                            marker_color=VP_CONFIG["POC_COLOR"],
+                            opacity=0.9,
+                            showlegend=False
+                        ), row=1, col=2)
+                    
+                    # Add VP summary to bottom right
+                    vp_text = f"""Volume Profile Summary:
+POC: ₹{profile['poc']:.1f}
+VA High: ₹{profile['va_high']:.1f}
+VA Low: ₹{profile['va_low']:.1f}
+Total Vol: {profile['total_volume']:,.0f}"""
+                    
+                    fig.add_annotation(
+                        text=vp_text,
+                        xref="paper", yref="paper",
+                        x=0.99, y=0.15,
+                        showarrow=False,
+                        align="right",
+                        bgcolor="rgba(0,0,0,0.7)",
+                        bordercolor="white",
+                        font=dict(color="white", size=10),
+                        row=3, col=2
+                    )
+            
+            except Exception as e:
+                st.error(f"Error creating volume profile: {e}")
+    else:
+        # Add message about missing volume data
+        fig.add_annotation(
+            text="Volume data not available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.3,
+            showarrow=False,
+            font=dict(size=14, color="gray"),
+            row=2, col=1
+        )
+    
+    # Add pivot levels (only if sufficient data)
+    if len(df) > 50:
         timeframes = ["5", "10", "15"]
         colors = ["#ff9900", "#ff44ff", "#4444ff"]
         
         for tf, color in zip(timeframes, colors):
-            pivots = get_pivots(df, tf)
-            x_start, x_end = df['datetime'].min(), df['datetime'].max()
-            
-            for pivot in pivots[-5:]:
-                fig.add_shape(type="line", x0=x_start, x1=x_end,
-                            y0=pivot['value'], y1=pivot['value'],
-                            line=dict(color=color, width=1, dash="dash"), row=1, col=1)
+            try:
+                pivots = get_pivots(df, tf)
+                for pivot in pivots[-3:]:  # Show last 3 pivots
+                    fig.add_hline(
+                        y=pivot['value'],
+                        line_dash="dot",
+                        line_color=color,
+                        line_width=1,
+                        opacity=0.7,
+                        row=1, col=1
+                    )
+            except:
+                continue
     
-    fig.update_layout(title=title, template='plotly_dark', height=800,
-                     xaxis_rangeslider_visible=False, showlegend=False)
+    # Update layout
+    fig.update_layout(
+        title=title, 
+        template='plotly_dark', 
+        height=800,
+        showlegend=False,
+        xaxis_rangeslider_visible=False
+    )
+    
+    # Update axes
+    fig.update_xaxes(title_text="Time", row=3, col=1)
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+    fig.update_yaxes(title_text="Volume", row=2, col=1)
+    fig.update_yaxes(title_text="Price", row=1, col=2)
+    fig.update_xaxes(title_text="Volume", row=1, col=2)
+    
     return fig
 
 def analyze_options(expiry):
@@ -677,7 +760,43 @@ def main():
                     st.info(f"📍 **Price Position**: {vp_insights['price_vs_poc']} | {vp_insights['price_vs_va']}")
                     st.info(f"💪 **Signal Strength**: {vp_insights['strength']} | **Total Volume**: {vp_insights['total_volume']:,.0f}")
         
-        if not df.empty:
+def debug_data_info(df):
+    """Debug function to show data information"""
+    if df.empty:
+        st.error("DataFrame is empty")
+        return
+    
+    st.subheader("🔍 Data Debug Info")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Records", len(df))
+        st.metric("Columns", len(df.columns))
+    
+    with col2:
+        if 'volume' in df.columns:
+            valid_volume = df['volume'].notna() & (df['volume'] > 0)
+            st.metric("Valid Volume Records", valid_volume.sum())
+            st.metric("Max Volume", f"{df['volume'].max():,.0f}" if df['volume'].max() > 0 else "0")
+        else:
+            st.error("Volume column missing!")
+    
+    with col3:
+        st.metric("Date Range", f"{(df['datetime'].max() - df['datetime'].min()).days} days")
+        st.metric("Price Range", f"₹{df['low'].min():.1f} - ₹{df['high'].max():.1f}")
+    
+    # Show sample data
+    st.subheader("Sample Data")
+    st.dataframe(df[['datetime', 'open', 'high', 'low', 'close', 'volume']].head(), use_container_width=True)
+    
+    # Volume statistics
+    if 'volume' in df.columns and df['volume'].sum() > 0:
+        st.subheader("Volume Statistics")
+        vol_stats = df['volume'].describe()
+        st.write(vol_stats)
+    else:
+        st.error("No valid volume data available for Volume Profile calculation!")
+
             fig = create_chart(df, f"Nifty {interval}min with Volume Profile")
             st.plotly_chart(fig, use_container_width=True)
         else:
