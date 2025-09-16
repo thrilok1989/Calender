@@ -1,335 +1,590 @@
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
-import requests
 import pandas as pd
-from datetime import datetime
-from pytz import timezone
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import requests
+import json
 import time
-import os
+from datetime import datetime, timedelta
+import pytz
 
-# Config
-st.set_page_config(page_title="RSI Dual Signal Bot", layout="wide")
-DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", os.getenv("DHAN_CLIENT_ID", ""))
-DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", os.getenv("DHAN_ACCESS_TOKEN", ""))
-TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
-TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID", ""))
+# Set page config
+st.set_page_config(
+    page_title="Nifty Options Trading Chart",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
-    st.error("Configure DHAN credentials in .streamlit/secrets.toml")
-    st.stop()
+# Custom CSS for dark theme
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #FFFFFF;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .metric-container {
+        background-color: #131722;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid #434651;
+    }
+    .status-positive {
+        color: #4CAF50;
+    }
+    .status-negative {
+        color: #F44336;
+    }
+    .strike-info {
+        background-color: #2a2e39;
+        padding: 0.5rem;
+        border-radius: 0.25rem;
+        margin: 0.25rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Session state
-if 'cooldowns' not in st.session_state:
-    st.session_state.cooldowns = {}
-if 'rsi_prices' not in st.session_state:
-    st.session_state.rsi_prices = []
-
-# Auto refresh
-st_autorefresh(interval=85000, key="refresh")
-
-def send_telegram(msg):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return False
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        return requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': msg, 'parse_mode': 'HTML'}).status_code == 200
-    except:
-        return False
-
-def dhan_api(endpoint, payload):
-    headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
-    try:
-        response = requests.post(f"https://api.dhan.co/v2{endpoint}", headers=headers, json=payload)
-        return response.json() if response.status_code == 200 else None
-    except:
-        return None
-
-def is_market_open():
-    now = datetime.now(timezone("Asia/Kolkata"))
-    return now.weekday() < 5 and datetime.strptime("09:15", "%H:%M").time() <= now.time() <= datetime.strptime("15:30", "%H:%M").time()
-
-def calculate_rsi(prices, period=7):
-    """Calculate RSI using Wilder's smoothing (TradingView method)"""
-    if len(prices) < period + 1:
-        return None
-    
-    changes = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-    gains = [max(0, change) for change in changes]
-    losses = [max(0, -change) for change in changes]
-    
-    # Initial averages
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-    
-    # Wilder's smoothing for remaining periods
-    for i in range(period, len(gains)):
-        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
-    
-    if avg_loss == 0:
-        return 100.0
-    
-    rs = avg_gain / avg_loss
-    return round(100 - (100 / (1 + rs)), 2)
-
-def get_current_ltp():
-    """Get current NIFTY LTP from market quote"""
-    try:
-        payload = {"IDX_I": [13]}
-        data = dhan_api("/marketfeed/ltp", payload)
-        if data and 'data' in data and 'IDX_I' in data['data'] and '13' in data['data']['IDX_I']:
-            return data['data']['IDX_I']['13']['last_price']
-        return None
-    except:
-        return None
-
-def update_rsi_prices():
-    """Update price history and calculate RSI"""
-    current_ltp = get_current_ltp()
-    if current_ltp is None:
-        return None, "N/A"
-    
-    # Add current price to history
-    if 'rsi_prices' not in st.session_state:
-        st.session_state.rsi_prices = []
-    
-    # Only add if price is different from last price (avoid duplicates)
-    if not st.session_state.rsi_prices or st.session_state.rsi_prices[-1] != current_ltp:
-        st.session_state.rsi_prices.append(current_ltp)
+class DhanAPI:
+    def __init__(self):
+        self.base_url = "https://api.dhan.co/v2"
+        self.access_token = st.secrets.get("DHAN_ACCESS_TOKEN", "")
+        self.client_id = st.secrets.get("DHAN_CLIENT_ID", "")
         
-        # Keep only last 50 prices for efficiency
-        if len(st.session_state.rsi_prices) > 50:
-            st.session_state.rsi_prices = st.session_state.rsi_prices[-50:]
+        if not self.access_token or not self.client_id:
+            st.error("Please configure DHAN_ACCESS_TOKEN and DHAN_CLIENT_ID in Streamlit secrets")
+            st.stop()
+        
+        self.headers = {
+            'access-token': self.access_token,
+            'client-id': self.client_id,
+            'Content-Type': 'application/json'
+        }
     
-    # Calculate RSI if we have enough data points
-    if len(st.session_state.rsi_prices) >= 8:
-        rsi = calculate_rsi(st.session_state.rsi_prices, 7)
-        if rsi is not None:
-            if rsi > 70:
-                level = "Overbought"
-            elif rsi < 30:
-                level = "Oversold"
+    def get_market_quote(self, instruments):
+        """Get market quote for multiple instruments"""
+        url = f"{self.base_url}/marketfeed/quote"
+        try:
+            response = requests.post(url, headers=self.headers, json=instruments, timeout=5)
+            if response.status_code == 200:
+                return response.json()
             else:
-                level = "Neutral"
-            return rsi, level
+                st.error(f"API Error: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            st.error(f"Connection Error: {str(e)}")
+            return None
     
-    return None, "N/A"
+    def get_option_chain(self, underlying_scrip, underlying_seg, expiry):
+        """Get option chain data"""
+        url = f"{self.base_url}/optionchain"
+        payload = {
+            "UnderlyingScrip": underlying_scrip,
+            "UnderlyingSeg": underlying_seg,
+            "Expiry": expiry
+        }
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                st.error(f"Option Chain API Error: {response.status_code}")
+                return None
+        except Exception as e:
+            st.error(f"Option Chain Error: {str(e)}")
+            return None
+    
+    def get_expiry_list(self, underlying_scrip, underlying_seg):
+        """Get available expiry dates"""
+        url = f"{self.base_url}/optionchain/expirylist"
+        payload = {
+            "UnderlyingScrip": underlying_scrip,
+            "UnderlyingSeg": underlying_seg
+        }
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=5)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return None
+        except Exception as e:
+            return None
 
-def get_rsi():
-    """Get RSI using live market data"""
-    return update_rsi_prices()
+class SuperTrendCalculator:
+    @staticmethod
+    def calculate_atr(high, low, close, period=14):
+        """Calculate Average True Range"""
+        tr = []
+        for i in range(1, len(high)):
+            tr_val = max(
+                high[i] - low[i],
+                abs(high[i] - close[i-1]),
+                abs(low[i] - close[i-1])
+            )
+            tr.append(tr_val)
+        
+        atr = []
+        if len(tr) >= period:
+            # First ATR
+            atr.append(sum(tr[:period]) / period)
+            
+            # Subsequent ATR values
+            for i in range(period, len(tr)):
+                atr_val = (atr[-1] * (period - 1) + tr[i]) / period
+                atr.append(atr_val)
+        
+        return atr
+    
+    @staticmethod
+    def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
+        """Calculate SuperTrend indicator"""
+        if len(high) < period:
+            return [], []
+        
+        hl2 = [(h + l) / 2 for h, l in zip(high, low)]
+        atr = SuperTrendCalculator.calculate_atr(high, low, close, period)
+        
+        upper_band = []
+        lower_band = []
+        supertrend = []
+        trend_direction = []
+        
+        for i in range(len(hl2)):
+            if i < len(atr):
+                ub = hl2[i] + multiplier * atr[i]
+                lb = hl2[i] - multiplier * atr[i]
+            else:
+                ub = hl2[i] + multiplier * (atr[-1] if atr else 0)
+                lb = hl2[i] - multiplier * (atr[-1] if atr else 0)
+            
+            if i == 0:
+                upper_band.append(ub)
+                lower_band.append(lb)
+                supertrend.append(ub)
+                trend_direction.append(1)
+            else:
+                # Update bands
+                ub = ub if ub < upper_band[-1] or close[i-1] > upper_band[-1] else upper_band[-1]
+                lb = lb if lb > lower_band[-1] or close[i-1] < lower_band[-1] else lower_band[-1]
+                
+                upper_band.append(ub)
+                lower_band.append(lb)
+                
+                # Determine trend
+                if trend_direction[-1] == 1 and close[i] <= lb:
+                    trend_direction.append(-1)
+                elif trend_direction[-1] == -1 and close[i] >= ub:
+                    trend_direction.append(1)
+                else:
+                    trend_direction.append(trend_direction[-1])
+                
+                st_val = lb if trend_direction[-1] == 1 else ub
+                supertrend.append(st_val)
+        
+        return supertrend, trend_direction
 
-def analyze_atm(df, spot):
-    atm = min(df['strikePrice'], key=lambda x: abs(x - spot))
-    row = df[df['strikePrice'] == atm].iloc[0]
+class OptionsDataManager:
+    def __init__(self):
+        if 'options_data' not in st.session_state:
+            st.session_state.options_data = {
+                'timestamps': [],
+                'spot_prices': [],
+                'strikes_data': {},
+                'supertrend_up': [],
+                'supertrend_down': []
+            }
+        
+        if 'selected_strikes' not in st.session_state:
+            st.session_state.selected_strikes = {
+                'call': ['ATM-1', 'ATM', 'ATM+1'],
+                'put': []
+            }
     
-    ce_oi = row.get('openInterest_CE', 0)
-    pe_oi = row.get('openInterest_PE', 0)
-    ce_oi_chg = row.get('changeinOpenInterest_CE', 0)
-    pe_oi_chg = row.get('changeinOpenInterest_PE', 0)
+    def get_atm_strike(self, spot_price):
+        """Calculate ATM strike price (nearest 50)"""
+        return round(spot_price / 50) * 50
     
-    # Biases
-    biases = {
-        'ChgOI': "Bullish" if pe_oi_chg > ce_oi_chg else "Bearish",
-        'Volume': "Bullish" if row.get('totalTradedVolume_PE', 0) > row.get('totalTradedVolume_CE', 0) else "Bearish",
-        'AskQty': "Bullish" if row.get('askQty_CE', 0) < row.get('askQty_PE', 0) else "Bearish",
-        'BidQty': "Bullish" if row.get('bidQty_PE', 0) < row.get('bidQty_CE', 0) else "Bearish"
-    }
+    def get_strike_price(self, atm_strike, reference):
+        """Convert ATM reference to actual strike price"""
+        if reference == 'ATM':
+            return atm_strike
+        elif reference.startswith('ATM+'):
+            offset = int(reference.replace('ATM+', ''))
+            return atm_strike + (offset * 50)
+        elif reference.startswith('ATM-'):
+            offset = int(reference.replace('ATM-', ''))
+            return atm_strike - (offset * 50)
+        return atm_strike
     
-    all_bullish = all(b == "Bullish" for b in biases.values())
-    all_bearish = all(b == "Bearish" for b in biases.values())
-    
-    # Primary conditions (OI Change ratios)
-    pe_chg_1_5x_ce = abs(pe_oi_chg) > 1.2 * abs(ce_oi_chg) if ce_oi_chg != 0 else abs(pe_oi_chg) > 1000
-    ce_chg_1_5x_pe = abs(ce_oi_chg) > 1.2 * abs(pe_oi_chg) if pe_oi_chg != 0 else abs(ce_oi_chg) > 1000
-    
-    # Secondary conditions (Absolute OI ratios)
-    pe_oi_1_3x_ce = pe_oi > ce_oi if ce_oi > 0 else False
-    ce_oi_1_3x_pe = ce_oi > pe_oi if pe_oi > 0 else False
-    
-    # RSI
-    rsi_value, rsi_level = get_rsi()
-    
-    return {
-        'atm': atm, 'spot': spot, 'biases': biases, 'all_bullish': all_bullish, 'all_bearish': all_bearish,
-        'pe_chg_1_5x_ce': pe_chg_1_5x_ce, 'ce_chg_1_5x_pe': ce_chg_1_5x_pe,
-        'pe_oi_1_3x_ce': pe_oi_1_3x_ce, 'ce_oi_1_3x_pe': ce_oi_1_3x_pe,
-        'ce_ltp': row.get('lastPrice_CE', 0), 'pe_ltp': row.get('lastPrice_PE', 0),
-        'ce_oi_chg': ce_oi_chg, 'pe_oi_chg': pe_oi_chg, 'ce_oi': ce_oi, 'pe_oi': pe_oi,
-        'rsi_value': rsi_value, 'rsi_level': rsi_level
-    }
+    def update_data(self, api, expiry_date):
+        """Update options data from API"""
+        try:
+            # Get option chain data
+            option_chain = api.get_option_chain(13, "IDX_I", expiry_date)
+            
+            if not option_chain or 'data' not in option_chain:
+                return False
+            
+            current_time = datetime.now(pytz.timezone('Asia/Kolkata'))
+            time_str = current_time.strftime('%H:%M:%S')
+            
+            spot_price = option_chain['data'].get('last_price', 25000)
+            atm_strike = self.get_atm_strike(spot_price)
+            
+            # Add timestamp and spot price
+            st.session_state.options_data['timestamps'].append(time_str)
+            st.session_state.options_data['spot_prices'].append(spot_price)
+            
+            # Process selected strikes
+            oc_data = option_chain['data'].get('oc', {})
+            
+            for strike_ref in st.session_state.selected_strikes['call']:
+                strike_price = self.get_strike_price(atm_strike, strike_ref)
+                strike_key = f"{strike_price}.000000"
+                key = f"{strike_ref}_CE"
+                
+                if strike_key in oc_data and 'ce' in oc_data[strike_key]:
+                    price = oc_data[strike_key]['ce'].get('last_price', 0)
+                    if key not in st.session_state.options_data['strikes_data']:
+                        st.session_state.options_data['strikes_data'][key] = []
+                    st.session_state.options_data['strikes_data'][key].append(price)
+            
+            for strike_ref in st.session_state.selected_strikes['put']:
+                strike_price = self.get_strike_price(atm_strike, strike_ref)
+                strike_key = f"{strike_price}.000000"
+                key = f"{strike_ref}_PE"
+                
+                if strike_key in oc_data and 'pe' in oc_data[strike_key]:
+                    price = oc_data[strike_key]['pe'].get('last_price', 0)
+                    if key not in st.session_state.options_data['strikes_data']:
+                        st.session_state.options_data['strikes_data'][key] = []
+                    st.session_state.options_data['strikes_data'][key].append(price)
+            
+            # Limit data points to last 100
+            max_points = 100
+            if len(st.session_state.options_data['timestamps']) > max_points:
+                st.session_state.options_data['timestamps'] = st.session_state.options_data['timestamps'][-max_points:]
+                st.session_state.options_data['spot_prices'] = st.session_state.options_data['spot_prices'][-max_points:]
+                
+                for key in st.session_state.options_data['strikes_data']:
+                    if len(st.session_state.options_data['strikes_data'][key]) > max_points:
+                        st.session_state.options_data['strikes_data'][key] = st.session_state.options_data['strikes_data'][key][-max_points:]
+            
+            # Calculate SuperTrend on ATM call option
+            atm_call_key = 'ATM_CE'
+            if (atm_call_key in st.session_state.options_data['strikes_data'] and 
+                len(st.session_state.options_data['strikes_data'][atm_call_key]) >= 10):
+                
+                prices = st.session_state.options_data['strikes_data'][atm_call_key]
+                high = [p * 1.02 for p in prices]  # Simulate high
+                low = [p * 0.98 for p in prices]   # Simulate low
+                close = prices
+                
+                period = st.session_state.get('st_period', 10)
+                multiplier = st.session_state.get('st_multiplier', 3.0)
+                
+                supertrend, trend_direction = SuperTrendCalculator.calculate_supertrend(
+                    high, low, close, period, multiplier
+                )
+                
+                # Split into up and down arrays
+                st.session_state.options_data['supertrend_up'] = []
+                st.session_state.options_data['supertrend_down'] = []
+                
+                for i, (st_val, direction) in enumerate(zip(supertrend, trend_direction)):
+                    if direction == 1:
+                        st.session_state.options_data['supertrend_up'].append(st_val)
+                        st.session_state.options_data['supertrend_down'].append(None)
+                    else:
+                        st.session_state.options_data['supertrend_up'].append(None)
+                        st.session_state.options_data['supertrend_down'].append(st_val)
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"Data update error: {str(e)}")
+            return False
 
-def check_signals(data):
-    current_time = time.time()
-    cooldown = 300
-    signals = []
+def create_chart():
+    """Create the main chart using Plotly"""
+    fig = make_subplots(
+        rows=1, cols=1,
+        subplot_titles=["Nifty Options LTP with SuperTrend"],
+        vertical_spacing=0.05
+    )
     
-    # Primary signals
-    if data['pe_chg_1_5x_ce'] and data['all_bullish'] and current_time - st.session_state.cooldowns.get('p_bull', 0) > cooldown:
-        signals.append(('PRIMARY_BULLISH', 'p_bull'))
+    # Color palette for strikes
+    colors = ['#FF4444', '#FF8800', '#2196F3', '#4CAF50', '#9C27B0', 
+              '#E91E63', '#00BCD4', '#FF9800', '#795548', '#607D8B']
     
-    if data['ce_chg_1_5x_pe'] and data['all_bearish'] and current_time - st.session_state.cooldowns.get('p_bear', 0) > cooldown:
-        signals.append(('PRIMARY_BEARISH', 'p_bear'))
+    data = st.session_state.options_data
+    timestamps = data['timestamps']
     
-    # Secondary signals
-    if data['pe_oi_1_3x_ce'] and data['all_bullish'] and current_time - st.session_state.cooldowns.get('s_bull', 0) > cooldown:
-        signals.append(('SECONDARY_BULLISH', 's_bull'))
+    if not timestamps:
+        fig.add_annotation(
+            text="No data available. Please wait for data update.",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="white")
+        )
+    else:
+        color_idx = 0
+        
+        # Add selected strikes
+        all_strikes = (st.session_state.selected_strikes['call'] + 
+                      st.session_state.selected_strikes['put'])
+        
+        for strike_ref in all_strikes:
+            option_type = 'CE' if strike_ref in st.session_state.selected_strikes['call'] else 'PE'
+            key = f"{strike_ref}_{option_type}"
+            
+            if key in data['strikes_data'] and data['strikes_data'][key]:
+                spot_price = data['spot_prices'][-1] if data['spot_prices'] else 25000
+                atm_strike = round(spot_price / 50) * 50
+                
+                if strike_ref == 'ATM':
+                    strike_price = atm_strike
+                elif strike_ref.startswith('ATM+'):
+                    offset = int(strike_ref.replace('ATM+', ''))
+                    strike_price = atm_strike + (offset * 50)
+                elif strike_ref.startswith('ATM-'):
+                    offset = int(strike_ref.replace('ATM-', ''))
+                    strike_price = atm_strike - (offset * 50)
+                else:
+                    strike_price = atm_strike
+                
+                fig.add_trace(
+                    go.Scatter(
+                        x=list(range(len(timestamps))),
+                        y=data['strikes_data'][key],
+                        mode='lines',
+                        name=f"{strike_price} {option_type}",
+                        line=dict(color=colors[color_idx % len(colors)], width=2),
+                        hovertemplate=f"{strike_price} {option_type}<br>Price: ₹%{{y:.2f}}<br>Time: %{{text}}<extra></extra>",
+                        text=timestamps
+                    )
+                )
+                color_idx += 1
+        
+        # Add SuperTrend
+        if data['supertrend_up'] and len(data['supertrend_up']) > 0:
+            fig.add_trace(
+                go.Scatter(
+                    x=list(range(len(data['supertrend_up']))),
+                    y=data['supertrend_up'],
+                    mode='lines',
+                    name='SuperTrend Up',
+                    line=dict(color='#E91E63', width=3),
+                    connectgaps=False
+                )
+            )
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=list(range(len(data['supertrend_down']))),
+                    y=data['supertrend_down'],
+                    mode='lines',
+                    name='SuperTrend Down',
+                    line=dict(color='#9C27B0', width=3),
+                    connectgaps=False
+                )
+            )
     
-    if data['ce_oi_1_3x_pe'] and data['all_bearish'] and current_time - st.session_state.cooldowns.get('s_bear', 0) > cooldown:
-        signals.append(('SECONDARY_BEARISH', 's_bear'))
+    # Update layout
+    fig.update_layout(
+        template='plotly_dark',
+        height=600,
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        xaxis=dict(
+            title="Time Points",
+            showgrid=True,
+            gridcolor='#2a2e39'
+        ),
+        yaxis=dict(
+            title="Option Price (₹)",
+            showgrid=True,
+            gridcolor='#2a2e39'
+        ),
+        plot_bgcolor='#131722',
+        paper_bgcolor='#131722'
+    )
     
-    return signals
+    return fig
 
 def main():
-    st.title("RSI Dual Signal Dhan Bot")
+    st.markdown('<h1 class="main-header">📈 Nifty Options Trading Chart</h1>', unsafe_allow_html=True)
     
-    if not is_market_open():
-        st.warning("Market Closed")
-        return
+    # Initialize components
+    api = DhanAPI()
+    data_manager = OptionsDataManager()
     
-    # Sidebar
-    with st.sidebar:
-        st.header("Config")
-        st.write(f"Client: {DHAN_CLIENT_ID[:8]}...")
-        st.write(f"Telegram: {'✅' if TELEGRAM_BOT_TOKEN else '❌'}")
-        
-        st.subheader("RSI-7")
-        st.write("Method: Wilder's (TradingView)")
-        st.write("Oversold: < 30, Overbought: > 70")
-        
-        st.subheader("Signals")
-        st.write("**Primary:** OI Change > 1.5x + All Biases")
-        st.write("**Secondary:** OI > 1.3x + All Biases")
-        
-        if TELEGRAM_BOT_TOKEN and st.button("Test Telegram", use_container_width=True):
-            if send_telegram(f"🧪 Test from RSI Bot\nTime: {datetime.now().strftime('%H:%M:%S')}"):
-                st.success("✅ Working!")
+    # Sidebar controls
+    st.sidebar.header("⚙️ Chart Controls")
+    
+    # SuperTrend parameters
+    st.sidebar.subheader("SuperTrend Settings")
+    st.session_state.st_period = st.sidebar.selectbox(
+        "Period", [10, 14, 21], index=0, key="st_period_select"
+    )
+    st.session_state.st_multiplier = st.sidebar.selectbox(
+        "Multiplier", [2.0, 3.0, 4.0], index=1, key="st_multiplier_select"
+    )
+    
+    # Time interval
+    time_interval = st.sidebar.selectbox(
+        "Update Interval", ["5 seconds", "10 seconds", "30 seconds"], index=1
+    )
+    
+    # Strike selection
+    st.sidebar.subheader("📊 Strike Selection")
+    
+    strikes_available = ['ATM-2', 'ATM-1', 'ATM', 'ATM+1', 'ATM+2']
+    
+    st.sidebar.write("**Call Options (CE)**")
+    selected_calls = st.sidebar.multiselect(
+        "Select Call Strikes",
+        strikes_available,
+        default=st.session_state.selected_strikes['call'],
+        key="call_strikes"
+    )
+    
+    st.sidebar.write("**Put Options (PE)**")
+    selected_puts = st.sidebar.multiselect(
+        "Select Put Strikes",
+        strikes_available,
+        default=st.session_state.selected_strikes['put'],
+        key="put_strikes"
+    )
+    
+    # Update selection
+    st.session_state.selected_strikes['call'] = selected_calls
+    st.session_state.selected_strikes['put'] = selected_puts
+    
+    # Get expiry dates
+    expiry_data = api.get_expiry_list(13, "IDX_I")
+    if expiry_data and 'data' in expiry_data:
+        expiry_dates = expiry_data['data']
+        selected_expiry = st.sidebar.selectbox(
+            "Expiry Date", expiry_dates, index=0 if expiry_dates else None
+        )
+    else:
+        st.sidebar.error("Could not fetch expiry dates")
+        selected_expiry = "2024-10-31"  # Fallback
+    
+    # Control buttons
+    st.sidebar.subheader("🎯 Controls")
+    auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
+    
+    if st.sidebar.button("🔄 Manual Refresh", type="primary"):
+        with st.spinner("Fetching latest data..."):
+            success = data_manager.update_data(api, selected_expiry)
+            if success:
+                st.sidebar.success("Data updated!")
             else:
-                st.error("❌ Failed!")
+                st.sidebar.error("Failed to update data")
     
-    # Get data
-    expiry_data = dhan_api("/optionchain/expirylist", {"UnderlyingScrip": 13, "UnderlyingSeg": "IDX_I"})
-    if not expiry_data:
-        st.error("Failed to fetch expiry")
-        return
+    if st.sidebar.button("🗑️ Clear Data"):
+        st.session_state.options_data = {
+            'timestamps': [],
+            'spot_prices': [],
+            'strikes_data': {},
+            'supertrend_up': [],
+            'supertrend_down': []
+        }
+        st.sidebar.success("Data cleared!")
     
-    oc_data = dhan_api("/optionchain", {"UnderlyingScrip": 13, "UnderlyingSeg": "IDX_I", "Expiry": expiry_data['data'][0]})
-    if not oc_data:
-        st.error("Failed to fetch option chain")
-        return
-    
-    # Process data
-    spot = oc_data['data']['last_price']
-    oc = oc_data['data']['oc']
-    
-    df_data = []
-    for strike, data in oc.items():
-        if 'ce' in data and 'pe' in data:
-            row = {'strikePrice': float(strike)}
-            for suffix, option_data in [('_CE', data['ce']), ('_PE', data['pe'])]:
-                row[f'lastPrice{suffix}'] = option_data.get('last_price', 0)
-                row[f'openInterest{suffix}'] = option_data.get('oi', 0)
-                row[f'previousOpenInterest{suffix}'] = option_data.get('previous_oi', 0)
-                row[f'totalTradedVolume{suffix}'] = option_data.get('volume', 0)
-                row[f'bidQty{suffix}'] = option_data.get('top_bid_quantity', 0)
-                row[f'askQty{suffix}'] = option_data.get('top_ask_quantity', 0)
-            df_data.append(row)
-    
-    df = pd.DataFrame(df_data)
-    df['changeinOpenInterest_CE'] = df['openInterest_CE'] - df['previousOpenInterest_CE']
-    df['changeinOpenInterest_PE'] = df['openInterest_PE'] - df['previousOpenInterest_PE']
-    
-    # Analysis
-    analysis = analyze_atm(df, spot)
-    signals = check_signals(analysis)
-    
-    # Display
+    # Main content area
     col1, col2, col3, col4 = st.columns(4)
-    with col1: st.metric("NIFTY", f"{spot:.2f}")
-    with col2: st.metric("ATM", analysis['atm'])
-    with col3:
-        if analysis['rsi_value']:
-            rsi_color = "🔴" if analysis['rsi_level'] == "Overbought" else "🟢" if analysis['rsi_level'] == "Oversold" else "🟡"
-            st.metric("RSI-7", f"{rsi_color} {analysis['rsi_value']}")
-        else:
-            st.metric("RSI-7", "N/A")
-    with col4: st.metric("Time", datetime.now().strftime("%H:%M:%S"))
     
-    # RSI Status
-    if analysis['rsi_value']:
-        if analysis['rsi_level'] == "Overbought":
-            st.error(f"RSI-7: {analysis['rsi_value']} (Overbought)")
-        elif analysis['rsi_level'] == "Oversold":
-            st.success(f"RSI-7: {analysis['rsi_value']} (Oversold)")
-        else:
-            st.info(f"RSI-7: {analysis['rsi_value']} (Neutral)")
+    # Display current metrics
+    data = st.session_state.options_data
     
-    # Biases
-    st.subheader("ATM Biases")
-    bias_df = pd.DataFrame([{"Bias": k, "Value": v, "Status": "✅" if v == "Bullish" else "❌"} 
-                           for k, v in analysis['biases'].items()])
-    st.dataframe(bias_df, hide_index=True)
-    
-    # Conditions
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Primary")
-        chg_ratio = abs(analysis['pe_oi_chg'] / analysis['ce_oi_chg']) if analysis['ce_oi_chg'] != 0 else float('inf')
-        st.metric("PE/CE Change", f"{chg_ratio:.2f}x")
-        if analysis['pe_chg_1_5x_ce'] and analysis['all_bullish']: st.success("✅ CALL Ready")
-        if analysis['ce_chg_1_5x_pe'] and analysis['all_bearish']: st.error("✅ PUT Ready")
-    
-    with col2:
-        st.subheader("Secondary")
-        oi_ratio = analysis['pe_oi'] / analysis['ce_oi'] if analysis['ce_oi'] > 0 else float('inf')
-        st.metric("PE/CE OI", f"{oi_ratio:.2f}x")
-        if analysis['pe_oi_1_3x_ce'] and analysis['all_bullish']: st.success("✅ CALL Ready")
-        if analysis['ce_oi_1_3x_pe'] and analysis['all_bearish']: st.error("✅ PUT Ready")
-    
-    # Process signals
-    for signal_type, cooldown_key in signals:
-        rsi_text = f"RSI-7: {analysis['rsi_value']} ({analysis['rsi_level']})" if analysis['rsi_value'] else "RSI-7: N/A"
+    if data['spot_prices']:
+        current_spot = data['spot_prices'][-1]
+        atm_strike = round(current_spot / 50) * 50
         
-        if 'BULLISH' in signal_type:
-            st.success(f"🚨 {signal_type.replace('_', ' ')} SIGNAL!")
-            stop_loss = analysis['ce_ltp'] * 0.8
-            signal_prefix = "PRIMARY" if "PRIMARY" in signal_type else "SECONDARY"
-            
-            msg = f"""
-🟢 <b>{signal_prefix} BULLISH - BUY CALL</b>
-
-Strike: {analysis['atm']}
-Entry: ₹{analysis['ce_ltp']:.2f}
-Stop Loss: ₹{stop_loss:.2f} (20%)
-{rsi_text}
-
-Condition: {"PE OI Change > 1.2x CE" if "PRIMARY" in signal_type else "PUT OI > CALL OI"}
-All Biases: Bullish
-
-Time: {datetime.now().strftime("%H:%M:%S")}
-            """
-            
-        else:
-            st.error(f"🚨 {signal_type.replace('_', ' ')} SIGNAL!")
-            stop_loss = analysis['pe_ltp'] * 0.8
-            signal_prefix = "PRIMARY" if "PRIMARY" in signal_type else "SECONDARY"
-            
-            msg = f"""
-🔴 <b>{signal_prefix} BEARISH - BUY PUT</b>
-
-Strike: {analysis['atm']}
-Entry: ₹{analysis['pe_ltp']:.2f}
-Stop Loss: ₹{stop_loss:.2f} (20%)
-{rsi_text}
-
-Condition: {"CE OI Change > 1.2x PE" if "PRIMARY" in signal_type else "CALL OI > PUT OI"}
-All Biases: Bearish
-
-Time: {datetime.now().strftime("%H:%M:%S")}
-            """
+        with col1:
+            st.metric("Nifty Spot", f"₹{current_spot:.2f}")
         
-        st.code(msg)
-        send_telegram(msg.strip())
+        with col2:
+            st.metric("ATM Strike", f"{atm_strike}")
+        
+        with col3:
+            if data['timestamps']:
+                st.metric("Last Update", data['timestamps'][-1])
+        
+        with col4:
+            total_selected = len(selected_calls) + len(selected_puts)
+            st.metric("Active Options", f"{total_selected} ({len(selected_calls)} CE, {len(selected_puts)} PE)")
+        
+        # SuperTrend signal
+        if data['supertrend_up'] and data['supertrend_down']:
+            last_up = data['supertrend_up'][-1] if data['supertrend_up'] else None
+            last_down = data['supertrend_down'][-1] if data['supertrend_down'] else None
+            
+            if last_up is not None:
+                signal = "🟢 BULLISH"
+                signal_class = "status-positive"
+            elif last_down is not None:
+                signal = "🔴 BEARISH"
+                signal_class = "status-negative"
+            else:
+                signal = "⚪ NEUTRAL"
+                signal_class = ""
+            
+            st.markdown(f'<p class="{signal_class}"><strong>SuperTrend Signal: {signal}</strong></p>', 
+                       unsafe_allow_html=True)
+    
+    # Main chart
+    chart_placeholder = st.empty()
+    
+    with chart_placeholder.container():
+        fig = create_chart()
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Auto refresh logic
+    if auto_refresh:
+        interval_map = {
+            "5 seconds": 5,
+            "10 seconds": 10,
+            "30 seconds": 30
+        }
+        
+        refresh_interval = interval_map.get(time_interval, 10)
+        
+        # Auto refresh using st.empty and time.sleep in a loop
+        if 'last_update_time' not in st.session_state:
+            st.session_state.last_update_time = time.time()
+        
+        current_time = time.time()
+        if current_time - st.session_state.last_update_time >= refresh_interval:
+            with st.spinner("Updating data..."):
+                success = data_manager.update_data(api, selected_expiry)
+                if success:
+                    st.session_state.last_update_time = current_time
+                    st.rerun()
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+    **📋 Instructions:**
+    1. Configure your DhanHQ API credentials in Streamlit secrets
+    2. Select desired Call/Put strikes from the sidebar
+    3. Adjust SuperTrend parameters as needed
+    4. Enable auto-refresh for real-time updates
+    
+    **🔗 API Integration:** This app uses DhanHQ v2 API for real-time options data
+    """)
 
 if __name__ == "__main__":
     main()
