@@ -20,6 +20,16 @@ class DhanAPI:
             'Content-Type': 'application/json'
         }
     
+    def get_market_quote_ohlc(self, instruments_dict):
+        """Get OHLC data for multiple instruments using Market Quote API"""
+        url = f"{self.base_url}/marketfeed/ohlc"
+        try:
+            response = requests.post(url, headers=self.headers, json=instruments_dict, timeout=10)
+            return response.json() if response.status_code == 200 else None
+        except Exception as e:
+            st.error(f"Market Quote API Error: {e}")
+            return None
+    
     def get_option_chain(self, underlying_scrip, underlying_seg, expiry):
         url = f"{self.base_url}/optionchain"
         payload = {"UnderlyingScrip": underlying_scrip, "UnderlyingSeg": underlying_seg, "Expiry": expiry}
@@ -225,7 +235,21 @@ def main():
                     if info['pe']:
                         st.write(f"PE: {info['pe']}")
             
-            # Collect live data
+            # Prepare instruments for Market Quote OHLC API
+            # Note: We need security IDs for options, which are not directly available from option chain
+            # For now, let's get real OHLC for Nifty spot and use it as reference
+            market_quote_request = {"NSE_EQ": [13]}  # Nifty 50 index
+            
+            # Get real OHLC data
+            ohlc_data = api.get_market_quote_ohlc(market_quote_request)
+            
+            # Show OHLC data status
+            if ohlc_data and 'data' in ohlc_data:
+                st.info("Using real Nifty OHLC data to enhance option price simulation")
+            else:
+                st.warning("Using simulated OHLC data - Nifty market quote unavailable")
+            
+            # Collect live data with real OHLC simulation
             current_time = ist_now
             
             for option in active_options:
@@ -235,30 +259,74 @@ def main():
                 if option_key not in st.session_state.options_data:
                     st.session_state.options_data[option_key] = []
                 
-                # Create OHLC point
-                if len(st.session_state.options_data[option_key]) == 0:
-                    # First data point
-                    ohlc_point = {
-                        'timestamp': current_time,
-                        'open': option['ltp'],
-                        'high': option['ltp'],
-                        'low': option['ltp'],
-                        'close': option['ltp'],
-                        'time_str': current_time.strftime('%H:%M:%S')
-                    }
-                else:
-                    # Use previous close as open
-                    prev_close = st.session_state.options_data[option_key][-1]['close']
-                    volatility = max(0.005, abs(option['ltp'] - prev_close) / prev_close) if prev_close > 0 else 0.01
+                # Get reference OHLC from Nifty if available
+                if ohlc_data and 'data' in ohlc_data and 'NSE_EQ' in ohlc_data['data'] and '13' in ohlc_data['data']['NSE_EQ']:
+                    nifty_ohlc = ohlc_data['data']['NSE_EQ']['13'].get('ohlc', {})
+                    nifty_ltp = ohlc_data['data']['NSE_EQ']['13'].get('last_price', spot_price)
                     
-                    ohlc_point = {
-                        'timestamp': current_time,
-                        'open': prev_close,
-                        'high': max(option['ltp'] * (1 + volatility * 0.5), prev_close, option['ltp']),
-                        'low': min(option['ltp'] * (1 - volatility * 0.5), prev_close, option['ltp']),
-                        'close': option['ltp'],
-                        'time_str': current_time.strftime('%H:%M:%S')
-                    }
+                    # Create realistic OHLC for option based on LTP and Nifty movement
+                    if len(st.session_state.options_data[option_key]) == 0:
+                        # First data point - use current LTP
+                        ohlc_point = {
+                            'timestamp': current_time,
+                            'open': option['ltp'],
+                            'high': option['ltp'],
+                            'low': option['ltp'],
+                            'close': option['ltp'],
+                            'time_str': current_time.strftime('%H:%M:%S')
+                        }
+                    else:
+                        # Use previous close and create realistic OHLC
+                        prev_close = st.session_state.options_data[option_key][-1]['close']
+                        
+                        # Calculate volatility based on Nifty movement
+                        nifty_open = nifty_ohlc.get('open', nifty_ltp)
+                        nifty_high = nifty_ohlc.get('high', nifty_ltp)
+                        nifty_low = nifty_ohlc.get('low', nifty_ltp)
+                        
+                        if nifty_open > 0:
+                            nifty_volatility = max((nifty_high - nifty_low) / nifty_open, 0.005)
+                        else:
+                            nifty_volatility = 0.02
+                        
+                        # Scale volatility for options (typically 3-5x of underlying)
+                        option_volatility = nifty_volatility * 4
+                        
+                        # Create OHLC based on current LTP and volatility
+                        high = max(option['ltp'], prev_close) * (1 + option_volatility * 0.5)
+                        low = min(option['ltp'], prev_close) * (1 - option_volatility * 0.5)
+                        
+                        ohlc_point = {
+                            'timestamp': current_time,
+                            'open': prev_close,
+                            'high': max(high, option['ltp'], prev_close),
+                            'low': min(low, option['ltp'], prev_close),
+                            'close': option['ltp'],
+                            'time_str': current_time.strftime('%H:%M:%S')
+                        }
+                else:
+                    # Fallback to simple OHLC creation
+                    if len(st.session_state.options_data[option_key]) == 0:
+                        ohlc_point = {
+                            'timestamp': current_time,
+                            'open': option['ltp'],
+                            'high': option['ltp'],
+                            'low': option['ltp'],
+                            'close': option['ltp'],
+                            'time_str': current_time.strftime('%H:%M:%S')
+                        }
+                    else:
+                        prev_close = st.session_state.options_data[option_key][-1]['close']
+                        volatility = max(0.01, abs(option['ltp'] - prev_close) / prev_close) if prev_close > 0 else 0.02
+                        
+                        ohlc_point = {
+                            'timestamp': current_time,
+                            'open': prev_close,
+                            'high': max(option['ltp'] * (1 + volatility * 0.5), prev_close, option['ltp']),
+                            'low': min(option['ltp'] * (1 - volatility * 0.5), prev_close, option['ltp']),
+                            'close': option['ltp'],
+                            'time_str': current_time.strftime('%H:%M:%S')
+                        }
                 
                 # Add new data point
                 st.session_state.options_data[option_key].append(ohlc_point)
