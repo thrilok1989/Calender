@@ -100,208 +100,12 @@ def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
     
     return supertrend, trend_direction
 
-def find_active_strikes_around_atm(oc_data, atm_strike, max_range=2):
-    """Find active strikes within ATM±2 range"""
-    active_strikes = {}
-    
-    for offset in range(-max_range, max_range + 1):
-        strike = atm_strike + (offset * 50)
-        strike_key = f"{strike}.000000"
-        
-        if strike_key in oc_data:
-            strike_data = oc_data[strike_key]
-            ce_ltp = strike_data.get('ce', {}).get('last_price', 0)
-            pe_ltp = strike_data.get('pe', {}).get('last_price', 0)
-            
-            if ce_ltp > 0 or pe_ltp > 0:  # At least one option type is active
-                active_strikes[offset] = {
-                    'strike': strike,
-                    'ce_ltp': ce_ltp,
-                    'pe_ltp': pe_ltp,
-                    'ce_active': ce_ltp > 0,
-                    'pe_active': pe_ltp > 0
-                }
-    
-    return active_strikes
-
-def collect_live_data_multiple(api, active_strikes, expiry, max_points=50):
-    """Collect data for multiple strikes"""
-    if 'multi_data' not in st.session_state:
-        st.session_state.multi_data = {}
-    
-    option_chain = api.get_option_chain(13, "IDX_I", expiry)
-    if not option_chain or 'data' not in option_chain:
-        return {}
-    
-    oc_data = option_chain['data'].get('oc', {})
-    ist_now = datetime.now(pytz.timezone('Asia/Kolkata'))
-    
-    current_data = {}
-    
-    for offset, strike_info in active_strikes.items():
-        strike = strike_info['strike']
-        strike_key = f"{strike}.000000"
-        
-        if strike_key in oc_data:
-            strike_data = oc_data[strike_key]
-            
-            for option_type in ['ce', 'pe']:
-                if strike_info[f'{option_type}_active']:
-                    current_ltp = strike_data.get(option_type, {}).get('last_price', 0)
-                    
-                    if current_ltp > 0:
-                        data_key = f"{strike}_{option_type.upper()}"
-                        
-                        if data_key not in st.session_state.multi_data:
-                            st.session_state.multi_data[data_key] = []
-                        
-                        # Create OHLC point
-                        if len(st.session_state.multi_data[data_key]) == 0:
-                            ohlc_point = {
-                                'timestamp': ist_now,
-                                'open': current_ltp,
-                                'high': current_ltp,
-                                'low': current_ltp,
-                                'close': current_ltp,
-                                'time_str': ist_now.strftime('%H:%M:%S')
-                            }
-                        else:
-                            prev_close = st.session_state.multi_data[data_key][-1]['close']
-                            volatility = max(0.01, abs(current_ltp - prev_close) / prev_close)
-                            
-                            ohlc_point = {
-                                'timestamp': ist_now,
-                                'open': prev_close,
-                                'high': max(current_ltp * (1 + volatility * 0.3), prev_close, current_ltp),
-                                'low': min(current_ltp * (1 - volatility * 0.3), prev_close, current_ltp),
-                                'close': current_ltp,
-                                'time_str': ist_now.strftime('%H:%M:%S')
-                            }
-                        
-                        st.session_state.multi_data[data_key].append(ohlc_point)
-                        
-                        # Keep only last max_points
-                        if len(st.session_state.multi_data[data_key]) > max_points:
-                            st.session_state.multi_data[data_key] = st.session_state.multi_data[data_key][-max_points:]
-                        
-                        current_data[data_key] = {
-                            'ltp': current_ltp,
-                            'data': st.session_state.multi_data[data_key],
-                            'offset': offset,
-                            'strike': strike,
-                            'type': option_type.upper()
-                        }
-    
-    return current_data
-
-def create_multiple_charts(current_data, st_period, st_multiplier):
-    """Create subplots for multiple options"""
-    if not current_data:
-        fig = go.Figure()
-        fig.add_annotation(text="No active options found", x=0.5, y=0.5, showarrow=False)
-        return fig, []
-    
-    # Separate CE and PE
-    ce_data = {k: v for k, v in current_data.items() if v['type'] == 'CE'}
-    pe_data = {k: v for k, v in current_data.items() if v['type'] == 'PE'}
-    
-    # Create subplots
-    rows = 2 if pe_data else 1
-    fig = make_subplots(
-        rows=rows, cols=1,
-        subplot_titles=["Call Options (CE)" + (" with SuperTrend" if ce_data else ""), 
-                       "Put Options (PE)" + (" with SuperTrend" if pe_data else "")] if rows == 2 else ["Call Options (CE) with SuperTrend"],
-        vertical_spacing=0.1
-    )
-    
-    colors = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#9C27B0']
-    trend_changes = []
-    
-    # Plot CE options
-    for i, (key, data_info) in enumerate(ce_data.items()):
-        df = pd.DataFrame(data_info['data'])
-        if len(df) >= 4:
-            fig.add_trace(go.Candlestick(
-                x=list(range(len(df))),
-                open=df['open'],
-                high=df['high'],
-                low=df['low'],
-                close=df['close'],
-                name=f"{data_info['strike']} CE",
-                increasing_line_color=colors[i % len(colors)],
-                decreasing_line_color=colors[i % len(colors)],
-                showlegend=True
-            ), row=1, col=1)
-            
-            # Add SuperTrend for first CE option
-            if i == 0 and len(df) >= st_period + 2:
-                supertrend, trend_direction = calculate_supertrend(
-                    df['high'].tolist(), df['low'].tolist(), df['close'].tolist(),
-                    period=st_period, multiplier=st_multiplier
-                )
-                
-                if supertrend:
-                    st_up = [st if td == 1 else None for st, td in zip(supertrend, trend_direction)]
-                    st_down = [st if td == -1 else None for st, td in zip(supertrend, trend_direction)]
-                    
-                    fig.add_trace(go.Scatter(
-                        x=list(range(len(st_up))),
-                        y=st_up,
-                        mode='lines',
-                        name='SuperTrend Up',
-                        line=dict(color='#00ff88', width=2),
-                        connectgaps=False
-                    ), row=1, col=1)
-                    
-                    fig.add_trace(go.Scatter(
-                        x=list(range(len(st_down))),
-                        y=st_down,
-                        mode='lines',
-                        name='SuperTrend Down',
-                        line=dict(color='#ff4444', width=2),
-                        connectgaps=False
-                    ), row=1, col=1)
-                    
-                    # Check for trend change
-                    if len(trend_direction) >= 2 and trend_direction[-1] != trend_direction[-2]:
-                        trend_changes.append({
-                            'option': key,
-                            'trend': trend_direction[-1],
-                            'ltp': data_info['ltp']
-                        })
-    
-    # Plot PE options
-    if pe_data:
-        for i, (key, data_info) in enumerate(pe_data.items()):
-            df = pd.DataFrame(data_info['data'])
-            if len(df) >= 4:
-                fig.add_trace(go.Candlestick(
-                    x=list(range(len(df))),
-                    open=df['open'],
-                    high=df['high'],
-                    low=df['low'],
-                    close=df['close'],
-                    name=f"{data_info['strike']} PE",
-                    increasing_line_color=colors[i % len(colors)],
-                    decreasing_line_color=colors[i % len(colors)],
-                    showlegend=True
-                ), row=2, col=1)
-    
-    # Update layout
-    fig.update_layout(
-        template='plotly_dark',
-        height=800 if rows == 2 else 600,
-        title="ATM±2 Nifty Options - Real-time LTP with SuperTrend",
-        showlegend=True,
-        xaxis_rangeslider_visible=False,
-        xaxis2_rangeslider_visible=False if rows == 2 else None
-    )
-    
-    return fig, trend_changes
-
 def main():
     st.title("ATM±2 Nifty Options SuperTrend Trader")
     
+    # Initialize session state for data storage
+    if 'options_data' not in st.session_state:
+        st.session_state.options_data = {}
     if 'alert_sent' not in st.session_state:
         st.session_state.alert_sent = set()
     
@@ -329,7 +133,7 @@ def main():
             st.rerun()
     with col2:
         if st.button("Clear Data"):
-            st.session_state.multi_data = {}
+            st.session_state.options_data = {}
             st.success("Cleared!")
             st.rerun()
     
@@ -357,62 +161,247 @@ def main():
             market_status = "OPEN" if market_open <= ist_now <= market_close else "CLOSED"
             st.metric("Market", market_status)
         
-        # Find active strikes around ATM
+        # Find and display active strikes
         oc_data = option_chain['data'].get('oc', {})
-        active_strikes = find_active_strikes_around_atm(oc_data, atm_strike)
         
-        if active_strikes:
-            st.subheader("Active ATM±2 Strikes Found:")
+        # Check ATM±2 strikes
+        active_options = []
+        for offset in range(-2, 3):  # ATM-2 to ATM+2
+            strike = atm_strike + (offset * 50)
+            strike_key = f"{strike}.000000"
             
-            # Show active strikes info
-            strike_info_cols = st.columns(len(active_strikes))
-            for i, (offset, strike_info) in enumerate(active_strikes.items()):
-                with strike_info_cols[i]:
-                    atm_label = f"ATM{offset:+d}" if offset != 0 else "ATM"
-                    st.write(f"**{strike_info['strike']} ({atm_label})**")
-                    if strike_info['ce_active']:
-                        st.write(f"CE: ₹{strike_info['ce_ltp']:.2f}")
-                    if strike_info['pe_active']:
-                        st.write(f"PE: ₹{strike_info['pe_ltp']:.2f}")
+            if strike_key in oc_data:
+                strike_data = oc_data[strike_key]
+                ce_ltp = strike_data.get('ce', {}).get('last_price', 0)
+                pe_ltp = strike_data.get('pe', {}).get('last_price', 0)
+                
+                if ce_ltp > 0:
+                    active_options.append({
+                        'strike': strike,
+                        'type': 'CE',
+                        'ltp': ce_ltp,
+                        'offset': offset,
+                        'volume': strike_data.get('ce', {}).get('volume', 0),
+                        'oi': strike_data.get('ce', {}).get('oi', 0)
+                    })
+                
+                if pe_ltp > 0:
+                    active_options.append({
+                        'strike': strike,
+                        'type': 'PE', 
+                        'ltp': pe_ltp,
+                        'offset': offset,
+                        'volume': strike_data.get('pe', {}).get('volume', 0),
+                        'oi': strike_data.get('pe', {}).get('oi', 0)
+                    })
+        
+        if active_options:
+            st.subheader(f"Active ATM±2 Strikes Found: {len(active_options)} options")
             
-            # Collect and display data
-            current_data = collect_live_data_multiple(api, active_strikes, expiry)
+            # Show strikes in columns
+            strikes_display = {}
+            for opt in active_options:
+                strike_key = opt['strike']
+                if strike_key not in strikes_display:
+                    atm_label = f"ATM{opt['offset']:+d}" if opt['offset'] != 0 else "ATM"
+                    strikes_display[strike_key] = {
+                        'label': f"{strike_key} ({atm_label})",
+                        'ce': None,
+                        'pe': None
+                    }
+                
+                if opt['type'] == 'CE':
+                    strikes_display[strike_key]['ce'] = f"₹{opt['ltp']:.2f}"
+                else:
+                    strikes_display[strike_key]['pe'] = f"₹{opt['ltp']:.2f}"
             
-            if current_data:
-                fig, trend_changes = create_multiple_charts(current_data, st_period, st_multiplier)
+            # Display strikes
+            strike_cols = st.columns(len(strikes_display))
+            for i, (strike, info) in enumerate(strikes_display.items()):
+                with strike_cols[i]:
+                    st.write(f"**{info['label']}**")
+                    if info['ce']:
+                        st.write(f"CE: {info['ce']}")
+                    if info['pe']:
+                        st.write(f"PE: {info['pe']}")
+            
+            # Collect live data
+            current_time = ist_now
+            
+            for option in active_options:
+                option_key = f"{option['strike']}_{option['type']}"
+                
+                # Initialize data storage
+                if option_key not in st.session_state.options_data:
+                    st.session_state.options_data[option_key] = []
+                
+                # Create OHLC point
+                if len(st.session_state.options_data[option_key]) == 0:
+                    # First data point
+                    ohlc_point = {
+                        'timestamp': current_time,
+                        'open': option['ltp'],
+                        'high': option['ltp'],
+                        'low': option['ltp'],
+                        'close': option['ltp'],
+                        'time_str': current_time.strftime('%H:%M:%S')
+                    }
+                else:
+                    # Use previous close as open
+                    prev_close = st.session_state.options_data[option_key][-1]['close']
+                    volatility = max(0.005, abs(option['ltp'] - prev_close) / prev_close) if prev_close > 0 else 0.01
+                    
+                    ohlc_point = {
+                        'timestamp': current_time,
+                        'open': prev_close,
+                        'high': max(option['ltp'] * (1 + volatility * 0.5), prev_close, option['ltp']),
+                        'low': min(option['ltp'] * (1 - volatility * 0.5), prev_close, option['ltp']),
+                        'close': option['ltp'],
+                        'time_str': current_time.strftime('%H:%M:%S')
+                    }
+                
+                # Add new data point
+                st.session_state.options_data[option_key].append(ohlc_point)
+                
+                # Keep only last 100 points
+                if len(st.session_state.options_data[option_key]) > 100:
+                    st.session_state.options_data[option_key] = st.session_state.options_data[option_key][-100:]
+            
+            # Create charts
+            ce_options = [opt for opt in active_options if opt['type'] == 'CE']
+            pe_options = [opt for opt in active_options if opt['type'] == 'PE']
+            
+            if ce_options or pe_options:
+                # Create subplots
+                rows = 2 if (ce_options and pe_options) else 1
+                fig = make_subplots(
+                    rows=rows, 
+                    cols=1,
+                    subplot_titles=[
+                        "Call Options (CE)" if ce_options else None,
+                        "Put Options (PE)" if pe_options else None
+                    ],
+                    vertical_spacing=0.1
+                )
+                
+                colors = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#9C27B0']
+                
+                # Plot CE options
+                if ce_options:
+                    for i, option in enumerate(ce_options):
+                        option_key = f"{option['strike']}_{option['type']}"
+                        data = st.session_state.options_data.get(option_key, [])
+                        
+                        if len(data) >= 1:
+                            df = pd.DataFrame(data)
+                            
+                            fig.add_trace(go.Candlestick(
+                                x=list(range(len(df))),
+                                open=df['open'],
+                                high=df['high'],
+                                low=df['low'],
+                                close=df['close'],
+                                name=f"{option['strike']} CE",
+                                increasing_line_color=colors[i % len(colors)],
+                                decreasing_line_color=colors[i % len(colors)],
+                                showlegend=True
+                            ), row=1, col=1)
+                            
+                            # Add SuperTrend to first CE option
+                            if i == 0 and len(df) >= st_period + 2:
+                                supertrend, trend_direction = calculate_supertrend(
+                                    df['high'].tolist(), df['low'].tolist(), df['close'].tolist(),
+                                    period=st_period, multiplier=st_multiplier
+                                )
+                                
+                                if supertrend:
+                                    st_up = [st if td == 1 else None for st, td in zip(supertrend, trend_direction)]
+                                    st_down = [st if td == -1 else None for st, td in zip(supertrend, trend_direction)]
+                                    
+                                    fig.add_trace(go.Scatter(
+                                        x=list(range(len(st_up))),
+                                        y=st_up,
+                                        mode='lines',
+                                        name='SuperTrend Up',
+                                        line=dict(color='#00ff88', width=2),
+                                        connectgaps=False
+                                    ), row=1, col=1)
+                                    
+                                    fig.add_trace(go.Scatter(
+                                        x=list(range(len(st_down))),
+                                        y=st_down,
+                                        mode='lines',
+                                        name='SuperTrend Down',
+                                        line=dict(color='#ff4444', width=2),
+                                        connectgaps=False
+                                    ), row=1, col=1)
+                                    
+                                    # Check trend change
+                                    if len(trend_direction) >= 2 and trend_direction[-1] != trend_direction[-2]:
+                                        trend_text = "BULLISH" if trend_direction[-1] == 1 else "BEARISH"
+                                        alert_key = f"{option_key}_{trend_direction[-1]}_{ist_time[:5]}"
+                                        
+                                        if alert_key not in st.session_state.alert_sent:
+                                            message = f"""
+<b>SuperTrend Alert!</b>
+Option: {option['strike']} CE
+Signal: {trend_text}
+LTP: ₹{option['ltp']:.2f}
+Time: {ist_time} IST
+                                            """.strip()
+                                            
+                                            if telegram.send_message(message):
+                                                st.success(f"Alert: {option['strike']} CE - {trend_text}")
+                                                st.session_state.alert_sent.add(alert_key)
+                
+                # Plot PE options  
+                if pe_options:
+                    row_num = 2 if (ce_options and pe_options) else 1
+                    for i, option in enumerate(pe_options):
+                        option_key = f"{option['strike']}_{option['type']}"
+                        data = st.session_state.options_data.get(option_key, [])
+                        
+                        if len(data) >= 1:
+                            df = pd.DataFrame(data)
+                            
+                            fig.add_trace(go.Candlestick(
+                                x=list(range(len(df))),
+                                open=df['open'],
+                                high=df['high'],
+                                low=df['low'],
+                                close=df['close'],
+                                name=f"{option['strike']} PE",
+                                increasing_line_color=colors[i % len(colors)],
+                                decreasing_line_color=colors[i % len(colors)],
+                                showlegend=True
+                            ), row=row_num, col=1)
+                
+                # Update layout
+                fig.update_layout(
+                    template='plotly_dark',
+                    height=800 if rows == 2 else 600,
+                    title="ATM±2 Nifty Options - Real-time LTP with SuperTrend",
+                    showlegend=True,
+                    xaxis_rangeslider_visible=False,
+                    xaxis2_rangeslider_visible=False if rows == 2 else None
+                )
+                
+                # Display chart
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # Handle trend change alerts
-                for change in trend_changes:
-                    alert_key = f"{change['option']}_{change['trend']}_{ist_time[:5]}"
-                    if alert_key not in st.session_state.alert_sent:
-                        trend_text = "BULLISH" if change['trend'] == 1 else "BEARISH"
-                        message = f"""
-<b>SuperTrend Alert!</b>
-Option: {change['option']}
-Signal: {trend_text}
-LTP: ₹{change['ltp']:.2f}
-Time: {ist_time} IST
-Nifty: ₹{spot_price:.2f}
-                        """.strip()
-                        
-                        if telegram.send_message(message):
-                            st.success(f"Alert: {change['option']} - {trend_text}")
-                            st.session_state.alert_sent.add(alert_key)
-                
-                # Show summary
-                total_points = sum(len(data['data']) for data in current_data.values())
-                st.info(f"Tracking {len(current_data)} active options | Total data points: {total_points}")
+                # Show data summary
+                total_data_points = sum(len(data) for data in st.session_state.options_data.values())
+                st.info(f"Tracking {len(active_options)} active options | Total data points collected: {total_data_points}")
             
             else:
-                st.warning("Found strikes but no live data available")
+                st.warning("No chart data available yet")
         
         else:
-            st.error("No active strikes found in ATM±2 range")
-            st.write("This usually means:")
-            st.write("• Market is closed")
-            st.write("• No trading activity in nearby strikes")
-            st.write("• Try different expiry date")
+            st.error("No active options found in ATM±2 range")
+            st.write("This could mean:")
+            st.write("- Market is closed")
+            st.write("- No trading activity in nearby strikes")
+            st.write("- Try a different expiry date")
     
     else:
         st.error("Failed to fetch option chain data")
