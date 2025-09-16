@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
@@ -8,8 +7,7 @@ import time
 from datetime import datetime, timedelta
 import pytz
 
-# Page config
-st.set_page_config(page_title="ATM±2 Options SuperTrend", layout="wide")
+st.set_page_config(page_title="Single Strike Options SuperTrend", layout="wide")
 
 class DhanAPI:
     def __init__(self):
@@ -21,7 +19,6 @@ class DhanAPI:
         }
     
     def get_historical_data(self, security_id, exchange_segment, instrument, from_date, to_date, interval="5"):
-        """Get historical intraday data"""
         url = f"{self.base_url}/charts/intraday"
         payload = {
             "securityId": str(security_id),
@@ -71,95 +68,82 @@ class TelegramBot:
         except:
             return False
 
-def get_3day_historical_data(api, active_options):
-    """Get 5 calendar days of historical data, then filter last 3 trading days locally"""
+def get_3day_historical_data(api, active_option):
     ist = pytz.timezone('Asia/Kolkata')
-    
     end_date = datetime.now(ist)
-    start_date = end_date - timedelta(days=5)  # Fetch more to ensure 3 trading days
+    start_date = end_date - timedelta(days=5)
     
     from_date = start_date.strftime('%Y-%m-%d 09:15:00')
     to_date = end_date.strftime('%Y-%m-%d %H:%M:%S')
     
     nifty_data = api.get_historical_data(
-        security_id=13,  # Nifty 50
+        security_id=13,
         exchange_segment="IDX_I",
         instrument="INDEX",
         from_date=from_date,
         to_date=to_date,
-        interval="5"  # 5-minute intervals
+        interval="5"
     )
     
     if not nifty_data or 'timestamp' not in nifty_data:
         st.error("Failed to fetch historical data")
-        return {}
-    
-    historical_options_data = {}
+        return []
     
     timestamps = nifty_data['timestamp']
     closes = nifty_data['close']
     highs = nifty_data['high']
     lows = nifty_data['low']
-    opens = nifty_data['open']
+    opens_ = nifty_data['open']
     
-    # Convert timestamps to datetime for filtering
     dt_timestamps = [datetime.fromtimestamp(ts, ist) for ts in timestamps]
-
-    # Calculate 3 days cutoff datetime
     cutoff_date = max(dt_timestamps) - timedelta(days=3)
-
-    for option in active_options:
-        option_key = f"{option['strike']}_{option['type']}"
-        option_data_points = []
-        
-        for i, dt_ts in enumerate(dt_timestamps):
-            if dt_ts < cutoff_date:
-                continue  # Skip data older than 3 days
-            
-            spot_price = closes[i]
-            spot_open = opens[i] if i < len(opens) else spot_price
-            spot_high = highs[i] if i < len(highs) else spot_price
-            spot_low = lows[i] if i < len(lows) else spot_price
-            
-            strike = option['strike']
-            option_type = option['type']
-            
-            if option_type == 'CE':
-                intrinsic = max(0, spot_price - strike)
-                moneyness = (spot_price - strike) / strike
-            else:  # PE
-                intrinsic = max(0, strike - spot_price)
-                moneyness = (strike - spot_price) / strike
-            
-            days_to_expiry = max(1, (end_date - dt_ts).days)
-            time_value = max(1, abs(moneyness) * 50 * (days_to_expiry / 7))
-            
-            option_ltp = intrinsic + time_value
-            
-            underlying_range = (spot_high - spot_low) / spot_price if spot_price > 0 else 0
-            option_volatility = underlying_range * 3
-            
-            option_open = option_ltp * (spot_open / spot_price) if spot_price > 0 else option_ltp
-            option_high = option_ltp * (1 + option_volatility)
-            option_low = option_ltp * (1 - option_volatility)
-            
-            option_high = max(option_high, option_open, option_ltp)
-            option_low = min(option_low, option_open, option_ltp)
-            
-            option_data_points.append({
-                'timestamp': dt_ts,
-                'open': float(option_open),
-                'high': float(option_high),
-                'low': float(option_low),
-                'close': float(option_ltp),
-                'time_str': dt_ts.strftime('%m-%d %H:%M'),
-                'spot_price': spot_price
-            })
-        
-        if option_data_points:
-            historical_options_data[option_key] = option_data_points
     
-    return historical_options_data
+    filtered_data = []
+    for i, dt_ts in enumerate(dt_timestamps):
+        if dt_ts < cutoff_date:
+            continue
+        
+        spot_price = closes[i]
+        spot_open = opens_[i] if i < len(opens_) else spot_price
+        spot_high = highs[i] if i < len(highs) else spot_price
+        spot_low = lows[i] if i < len(lows) else spot_price
+        
+        strike = active_option['strike']
+        option_type = active_option['type']
+        
+        if option_type == 'CE':
+            intrinsic = max(0, spot_price - strike)
+            moneyness = (spot_price - strike) / strike
+        else:
+            intrinsic = max(0, strike - spot_price)
+            moneyness = (strike - spot_price) / strike
+        
+        days_to_expiry = max(1, (end_date - dt_ts).days)
+        time_value = max(1, abs(moneyness) * 50 * (days_to_expiry / 7))
+        
+        option_ltp = intrinsic + time_value
+        
+        underlying_range = (spot_high - spot_low) / spot_price if spot_price > 0 else 0
+        option_volatility = underlying_range * 3
+        
+        option_open = option_ltp * (spot_open / spot_price) if spot_price > 0 else option_ltp
+        option_high = option_ltp * (1 + option_volatility)
+        option_low = option_ltp * (1 - option_volatility)
+        
+        option_high = max(option_high, option_open, option_ltp)
+        option_low = min(option_low, option_open, option_ltp)
+        
+        filtered_data.append({
+            'timestamp': dt_ts,
+            'open': float(option_open),
+            'high': float(option_high),
+            'low': float(option_low),
+            'close': float(option_ltp),
+            'time_str': dt_ts.strftime('%m-%d %H:%M'),
+            'spot_price': spot_price
+        })
+    
+    return filtered_data
 
 def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
     if len(high) < period + 1:
@@ -193,7 +177,6 @@ def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
         else:
             prev_st = supertrend[-1]
             prev_dir = trend_direction[-1]
-            
             final_ub = ub if ub < prev_st or close[i-1] > prev_st else prev_st
             final_lb = lb if lb > prev_st or close[i-1] < prev_st else prev_st
             
@@ -210,265 +193,154 @@ def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
     return supertrend, trend_direction
 
 def main():
-    st.title("ATM±2 Nifty Options SuperTrend Trader")
+    st.title("Single Strike Call & Put Options SuperTrend")
     
-    # Session state init
-    if 'options_data' not in st.session_state:
-        st.session_state.options_data = {}
+    if 'option_data' not in st.session_state:
+        st.session_state.option_data = {}
     if 'alert_sent' not in st.session_state:
         st.session_state.alert_sent = set()
     
     api = DhanAPI()
     telegram = TelegramBot()
-
-    # Sidebar settings
+    
     st.sidebar.header("SuperTrend Settings")
     st_period = st.sidebar.slider("Period", 5, 25, 10)
     st_multiplier = st.sidebar.slider("Multiplier", 1.0, 5.0, 3.0, 0.1)
     auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
     refresh_interval = st.sidebar.selectbox("Refresh (seconds)", [5, 10, 15, 30], index=1)
     
-    # Get expiry list
     expiry_data = api.get_expiry_list(13, "IDX_I")
     if expiry_data and 'data' in expiry_data:
         expiry = st.sidebar.selectbox("Expiry", expiry_data['data'])
     else:
         expiry = "2024-10-31"
     
-    # Controls
+    # Buttons
     col1, col2 = st.sidebar.columns(2)
     with col1:
         if st.button("Refresh"):
             st.experimental_rerun()
     with col2:
         if st.button("Clear Data"):
-            st.session_state.options_data = {}
+            st.session_state.option_data = {}
             st.success("Cleared!")
             st.experimental_rerun()
     
-    # Option chain fetch
     option_chain = api.get_option_chain(13, "IDX_I", expiry)
     
-    if option_chain and 'data' in option_chain:
-        spot_price = option_chain['data'].get('last_price', 25000)
-        atm_strike = round(spot_price / 50) * 50
-        
-        # Show key metrics
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Nifty Spot", f"₹{spot_price:.2f}")
-        with col2:
-            st.metric("ATM Strike", atm_strike)
-        with col3:
-            ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S')
-            st.metric("IST Time", ist_time)
-        with col4:
-            # Market status
-            ist_now = datetime.now(pytz.timezone('Asia/Kolkata'))
-            market_open = ist_now.replace(hour=9, minute=15, second=0, microsecond=0)
-            market_close = ist_now.replace(hour=15, minute=30, second=0, microsecond=0)
-            market_status = "OPEN" if market_open <= ist_now <= market_close else "CLOSED"
-            st.metric("Market", market_status)
-        
-        # Get ATM±2 options
-        oc_data = option_chain['data'].get('oc', {})
-        active_options = []
-        for offset in range(-2, 3):
-            strike = atm_strike + (offset * 50)
-            strike_key = f"{strike}.000000"
-            if strike_key in oc_data:
-                strike_data = oc_data[strike_key]
-                ce_ltp = strike_data.get('ce', {}).get('last_price', 0)
-                pe_ltp = strike_data.get('pe', {}).get('last_price', 0)
-                if ce_ltp > 0:
-                    active_options.append({'strike': strike, 'type': 'CE', 'ltp': ce_ltp, 'offset': offset})
-                if pe_ltp > 0:
-                    active_options.append({'strike': strike, 'type': 'PE', 'ltp': pe_ltp, 'offset': offset})
-        
-        if active_options:
-            st.subheader(f"Active ATM±2 Strikes Found: {len(active_options)} options")
-            
-            # Display strikes info
-            strikes_display = {}
-            for opt in active_options:
-                strike_key = opt['strike']
-                if strike_key not in strikes_display:
-                    atm_label = f"ATM{opt['offset']:+d}" if opt['offset'] != 0 else "ATM"
-                    strikes_display[strike_key] = {'label': f"{strike_key} ({atm_label})", 'ce': None, 'pe': None}
-                if opt['type'] == 'CE':
-                    strikes_display[strike_key]['ce'] = f"₹{opt['ltp']:.2f}"
-                else:
-                    strikes_display[strike_key]['pe'] = f"₹{opt['ltp']:.2f}"
-            
-            strike_cols = st.columns(len(strikes_display))
-            for i, (strike, info) in enumerate(strikes_display.items()):
-                with strike_cols[i]:
-                    st.write(f"**{info['label']}**")
-                    if info['ce']:
-                        st.write(f"CE: {info['ce']}")
-                    if info['pe']:
-                        st.write(f"PE: {info['pe']}")
-            
-            # Load and filter 3-day data
-            with st.spinner("Loading 3 days historical data..."):
-                historical_data = get_3day_historical_data(api, active_options)
-            
-            if historical_data:
-                st.success(f"Loaded 3 days of historical data for {len(historical_data)} options")
-                
-                for option_key, data_points in historical_data.items():
-                    st.session_state.options_data[option_key] = data_points
-                
-                # Add live data point
-                current_time = ist_now
-                for option in active_options:
-                    option_key = f"{option['strike']}_{option['type']}"
-                    if option_key in st.session_state.options_data:
-                        last_data = st.session_state.options_data[option_key][-1]
-                        prev_close = last_data['close']
-                        price_change = abs(option['ltp'] - prev_close) / prev_close if prev_close > 0 else 0.02
-                        volatility = max(0.01, price_change)
-                        
-                        current_ohlc = {
-                            'timestamp': current_time,
-                            'open': prev_close,
-                            'high': max(option['ltp'] * (1 + volatility), prev_close, option['ltp']),
-                            'low': min(option['ltp'] * (1 - volatility), prev_close, option['ltp']),
-                            'close': option['ltp'],
-                            'time_str': current_time.strftime('%m-%d %H:%M'),
-                        }
-                        st.session_state.options_data[option_key].append(current_ohlc)
-            else:
-                st.error("Failed to load historical data")
-                return
-            
-            ce_options = [opt for opt in active_options if opt['type'] == 'CE']
-            pe_options = [opt for opt in active_options if opt['type'] == 'PE']
-            
-            if ce_options or pe_options:
-                rows = 2 if (ce_options and pe_options) else 1
-                fig = make_subplots(
-                    rows=rows, cols=1,
-                    subplot_titles=[
-                        "Call Options (CE)" if ce_options else None,
-                        "Put Options (PE)" if pe_options else None
-                    ],
-                    vertical_spacing=0.1
-                )
-                colors = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#9C27B0']
-                
-                # Plot CE with SuperTrend on first CE
-                if ce_options:
-                    for i, option in enumerate(ce_options):
-                        option_key = f"{option['strike']}_{option['type']}"
-                        data = st.session_state.options_data.get(option_key, [])
-                        if len(data) >= 1:
-                            df = pd.DataFrame(data)
-                            fig.add_trace(go.Candlestick(
-                                x=df['timestamp'],
-                                open=df['open'],
-                                high=df['high'],
-                                low=df['low'],
-                                close=df['close'],
-                                name=f"{option['strike']} CE",
-                                increasing_line_color=colors[i % len(colors)],
-                                decreasing_line_color=colors[i % len(colors)],
-                                showlegend=True
-                            ), row=1, col=1)
-                            
-                            if i == 0 and len(df) >= st_period + 2:
-                                supertrend, trend_direction = calculate_supertrend(
-                                    df['high'].tolist(), df['low'].tolist(), df['close'].tolist(),
-                                    period=st_period, multiplier=st_multiplier
-                                )
-                                
-                                if supertrend:
-                                    st_up = [st if td == 1 else None for st, td in zip(supertrend, trend_direction)]
-                                    st_down = [st if td == -1 else None for st, td in zip(supertrend, trend_direction)]
-                                    
-                                    fig.add_trace(go.Scatter(
-                                        x=df['timestamp'],
-                                        y=st_up,
-                                        mode='lines',
-                                        name='SuperTrend Up',
-                                        line=dict(color='#00ff88', width=2),
-                                        connectgaps=False
-                                    ), row=1, col=1)
-                                    
-                                    fig.add_trace(go.Scatter(
-                                        x=df['timestamp'],
-                                        y=st_down,
-                                        mode='lines',
-                                        name='SuperTrend Down',
-                                        line=dict(color='#ff4444', width=2),
-                                        connectgaps=False
-                                    ), row=1, col=1)
-                                    
-                                    # Alert on trend change
-                                    if len(trend_direction) >= 2 and trend_direction[-1] != trend_direction[-2]:
-                                        trend_text = "BULLISH" if trend_direction[-1] == 1 else "BEARISH"
-                                        alert_key = f"{option_key}_{trend_direction[-1]}_{ist_time[:5]}"
-                                        if alert_key not in st.session_state.alert_sent:
-                                            message = f"""
-<b>SuperTrend Alert!</b>
-Option: {option['strike']} CE
-Signal: {trend_text}
-LTP: ₹{option['ltp']:.2f}
-Time: {ist_time} IST
-                                            """.strip()
-                                            if telegram.send_message(message):
-                                                st.success(f"Alert: {option['strike']} CE - {trend_text}")
-                                                st.session_state.alert_sent.add(alert_key)
-                
-                # Plot PE options
-                if pe_options:
-                    row_num = 2 if (ce_options and pe_options) else 1
-                    for i, option in enumerate(pe_options):
-                        option_key = f"{option['strike']}_{option['type']}"
-                        data = st.session_state.options_data.get(option_key, [])
-                        if len(data) >= 1:
-                            df = pd.DataFrame(data)
-                            fig.add_trace(go.Candlestick(
-                                x=df['timestamp'],
-                                open=df['open'],
-                                high=df['high'],
-                                low=df['low'],
-                                close=df['close'],
-                                name=f"{option['strike']} PE",
-                                increasing_line_color=colors[i % len(colors)],
-                                decreasing_line_color=colors[i % len(colors)],
-                                showlegend=True
-                            ), row=row_num, col=1)
-                
-                fig.update_layout(
-                    template='plotly_dark',
-                    height=800 if rows == 2 else 600,
-                    title="ATM±2 Nifty Options - 3 Days Historical LTP with SuperTrend",
-                    showlegend=True,
-                    xaxis_rangeslider_visible=False,
-                    xaxis2_rangeslider_visible=False if rows == 2 else None
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Show data summary
-                total_points = sum(len(data) for data in st.session_state.options_data.values())
-                all_times = [pt['timestamp'] for data in st.session_state.options_data.values() for pt in data if data]
-                if all_times:
-                    first_time = min(all_times).strftime('%d-%m %H:%M')
-                    last_time = max(all_times).strftime('%d-%m %H:%M')
-                    st.info(f"📊 Showing 3-day historical data: {first_time} to {last_time} | Total points: {total_points}")
-                else:
-                    st.info(f"Tracking {len(active_options)} active options | Total data points: {total_points}")
-            else:
-                st.warning("No chart data available yet")
-        else:
-            st.error("No active options found in ATM±2 range")
-            st.write("- Market closed or no activity")
-            st.write("- Try different expiry")
-    else:
+    if not (option_chain and 'data' in option_chain):
         st.error("Failed to fetch option chain data")
+        return
     
+    spot_price = option_chain['data'].get('last_price', 25000)
+    atm_strike = round(spot_price / 50) * 50
+    
+    # Show metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Nifty Spot", f"₹{spot_price:.2f}")
+    with col2:
+        st.metric("ATM Strike", atm_strike)
+    with col3:
+        ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S')
+        st.metric("IST Time", ist_time)
+    with col4:
+        ist_now = datetime.now(pytz.timezone('Asia/Kolkata'))
+        market_open = ist_now.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close = ist_now.replace(hour=15, minute=30, second=0, microsecond=0)
+        market_status = "OPEN" if market_open <= ist_now <= market_close else "CLOSED"
+        st.metric("Market", market_status)
+    
+    oc_data = option_chain['data'].get('oc', {})
+    
+    # Prepare one strike data (ATM selected by user)
+    strikes_options = []
+    strike_key = f"{atm_strike}.000000"
+    
+    if strike_key not in oc_data:
+        st.error(f"No data found for strike {atm_strike}")
+        return
+    
+    strike_data = oc_data[strike_key]
+    # Collect CE and PE options data if available and LTP > 0
+    if strike_data.get('ce', {}).get('last_price', 0) > 0:
+        strikes_options.append({'strike': atm_strike, 'type': 'CE', 'ltp': strike_data['ce']['last_price']})
+    if strike_data.get('pe', {}).get('last_price', 0) > 0:
+        strikes_options.append({'strike': atm_strike, 'type': 'PE', 'ltp': strike_data['pe']['last_price']})
+    
+    if not strikes_options:
+        st.error("No active CE or PE options found at ATM strike")
+        return
+    
+    with st.spinner("Loading 3 days historical data..."):
+        for opt in strikes_options:
+            option_key = f"{opt['strike']}_{opt['type']}"
+            historical_data = get_3day_historical_data(api, opt)
+            if historical_data:
+                st.session_state.option_data[option_key] = historical_data
+            else:
+                st.warning(f"No historical data for {option_key}")
+    
+    # Plot options chart with SuperTrend for CE only
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                        subplot_titles=["Call Option (CE)", "Put Option (PE)"])
+    colors = ['#2196F3', '#FF9800']
+    
+    # Plot CE
+    ce_data = st.session_state.option_data.get(f"{atm_strike}_CE", [])
+    if ce_data:
+        df_ce = pd.DataFrame(ce_data)
+        fig.add_trace(go.Candlestick(
+            x=df_ce['timestamp'],
+            open=df_ce['open'], high=df_ce['high'], low=df_ce['low'], close=df_ce['close'],
+            name=f"{atm_strike} CE",
+            increasing_line_color=colors[0], decreasing_line_color=colors[0],
+            showlegend=True), row=1, col=1)
+        
+        if len(df_ce) >= st_period + 2:
+            supertrend, trend_direction = calculate_supertrend(
+                df_ce['high'].tolist(), df_ce['low'].tolist(), df_ce['close'].tolist(),
+                period=st_period, multiplier=st_multiplier)
+            st_up = [st if td == 1 else None for st, td in zip(supertrend, trend_direction)]
+            st_down = [st if td == -1 else None for st, td in zip(supertrend, trend_direction)]
+            fig.add_trace(go.Scatter(
+                x=df_ce['timestamp'], y=st_up, mode='lines',
+                name='SuperTrend Up', line=dict(color='#00ff88', width=2), connectgaps=False), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=df_ce['timestamp'], y=st_down, mode='lines',
+                name='SuperTrend Down', line=dict(color='#ff4444', width=2), connectgaps=False), row=1, col=1)
+    
+    # Plot PE
+    pe_data = st.session_state.option_data.get(f"{atm_strike}_PE", [])
+    if pe_data:
+        df_pe = pd.DataFrame(pe_data)
+        fig.add_trace(go.Candlestick(
+            x=df_pe['timestamp'],
+            open=df_pe['open'], high=df_pe['high'], low=df_pe['low'], close=df_pe['close'],
+            name=f"{atm_strike} PE",
+            increasing_line_color=colors[1], decreasing_line_color=colors[1],
+            showlegend=True), row=2, col=1)
+    
+    fig.update_layout(
+        template='plotly_dark',
+        height=800,
+        title=f"Strike {atm_strike} Call & Put Options - 3 Days Historical LTP with SuperTrend",
+        showlegend=True,
+        xaxis_rangeslider_visible=False,
+        xaxis2_rangeslider_visible=False
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    total_points = sum(len(data) for data in st.session_state.option_data.values())
+    all_times = [pt['timestamp'] for data in st.session_state.option_data.values() for pt in data if data]
+    if all_times:
+        first_time = min(all_times).strftime('%d-%m %H:%M')
+        last_time = max(all_times).strftime('%d-%m %H:%M')
+        st.info(f"📊 Showing 3-day historical data: {first_time} to {last_time} | Total points: {total_points}")
+    else:
+        st.info(f"Tracking strike {atm_strike} call & put options | Total data points: {total_points}")
+
     if auto_refresh:
         time.sleep(refresh_interval)
         st.experimental_rerun()
