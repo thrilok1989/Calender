@@ -13,7 +13,27 @@ from datetime import datetime, timedelta
 
 # Page config
 st.set_page_config(page_title="Nifty Analyzer", page_icon="📈", layout="wide")
-st_autorefresh(interval=80000, key="refresh")
+
+# Function to check if it's market hours
+def is_market_hours():
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    
+    # Check if it's a weekday (Monday to Friday)
+    if now.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+    
+    # Check if current time is between 9:00 AM and 3:45 PM IST
+    market_start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    market_end = now.replace(hour=15, minute=45, second=0, microsecond=0)
+    
+    return market_start <= now <= market_end
+
+# Only run autorefresh during market hours
+if is_market_hours():
+    st_autorefresh(interval=80000, key="refresh")
+else:
+    st.info("Market is closed. Auto-refresh disabled.")
 
 # Credentials
 DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
@@ -340,6 +360,14 @@ ChgOI: CE {ce_chg_oi:,} | PE {pe_chg_oi:,}
 def main():
     st.title("📈 Nifty Trading Analyzer")
     
+    # Show market status
+    ist = pytz.timezone('Asia/Kolkata')
+    current_time = datetime.now(ist)
+    
+    if not is_market_hours():
+        st.warning(f"⚠️ Market is closed. Current time: {current_time.strftime('%H:%M:%S IST')}")
+        st.info("Market hours: Monday-Friday, 9:00 AM to 3:45 PM IST")
+    
     st.sidebar.header("Settings")
     interval = st.sidebar.selectbox("Timeframe", ["1", "3", "5", "10", "15"], index=2)
     proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
@@ -399,14 +427,13 @@ def main():
                 st.info(f"Spot: ₹{underlying_price:.2f}")
                 st.dataframe(option_summary, use_container_width=True)
                 
-                if enable_signals and not df.empty:
+                if enable_signals and not df.empty and is_market_hours():
                     check_signals(df, option_summary, underlying_price, proximity)
             else:
                 st.error("Options data unavailable")
         else:
             st.error("Expiry data unavailable")
     
-    ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist).strftime("%H:%M:%S IST")
     st.sidebar.info(f"Updated: {current_time}")
     
