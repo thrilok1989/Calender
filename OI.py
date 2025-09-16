@@ -797,10 +797,10 @@ def debug_data_info(df):
     else:
         st.error("No valid volume data available for Volume Profile calculation!")
 
-            fig = create_chart(df, f"Nifty {interval}min with Volume Profile")
-            st.plotly_chart(fig, use_container_width=True)
+        fig = create_chart(df, f"Nifty {interval}min with Volume Profile")
+        st.plotly_chart(fig, use_container_width=True)
         else:
-            st.error("No chart data available")
+        st.error("No chart data available")
     
     with col2:
         st.header("Options Analysis")
