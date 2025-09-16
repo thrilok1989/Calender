@@ -188,8 +188,24 @@ def create_chart(df, title):
                             y0=pivot['value'], y1=pivot['value'],
                             line=dict(color=color, width=1, dash="dash"), row=1, col=1)
     
-    fig.update_layout(title=title, template='plotly_dark', height=600,
-                     xaxis_rangeslider_visible=False, showlegend=False)
+    fig.update_layout(
+        title=title, 
+        template='plotly_dark', 
+        height=600,
+        xaxis_rangeslider_visible=False, 
+        showlegend=False
+    )
+    
+    # Configure x-axis to not show gaps for non-trading periods
+    fig.update_xaxes(
+        type='category',  # This removes gaps by treating each datetime as a category
+        row=1, col=1
+    )
+    fig.update_xaxes(
+        type='category',
+        row=2, col=1
+    )
+    
     return fig
 
 def analyze_options(expiry):
