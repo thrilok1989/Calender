@@ -799,7 +799,7 @@ def debug_data_info(df):
 
         fig = create_chart(df, f"Nifty {interval}min with Volume Profile")
         st.plotly_chart(fig, use_container_width=True)
-    else:
+else:
         st.error("No chart data available")
     
     with col2:
