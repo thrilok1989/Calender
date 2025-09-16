@@ -139,7 +139,7 @@ def get_3day_historical_data(api, active_options, current_spot):
                     moneyness = (strike - spot_price) / strike
                 
                 # Time value decreases as we approach current time
-                days_to_expiry = max(1, (end_date - datetime.fromtimestamp(timestamp, ist)).days)
+                days_to_expiry = max(1, (end_date - datetime.fromtimestamp(timestamp/1000, ist)).days)
                 time_value = max(1, abs(moneyness) * 50 * (days_to_expiry / 7))  # Rough time value
                 
                 option_ltp = intrinsic + time_value
@@ -156,7 +156,7 @@ def get_3day_historical_data(api, active_options, current_spot):
                 option_high = max(option_high, option_open, option_ltp)
                 option_low = min(option_low, option_open, option_ltp)
                 
-                dt = datetime.fromtimestamp(timestamp, ist)
+                dt = datetime.fromtimestamp(timestamp/1000, ist)
                 option_data_points.append({
                     'timestamp': dt,
                     'open': float(option_open),
@@ -246,7 +246,7 @@ def main():
     if expiry_data and 'data' in expiry_data:
         expiry = st.sidebar.selectbox("Expiry", expiry_data['data'])
     else:
-        expiry = "2024-10-31"
+        expiry = "2025-10-31"
     
     # Control buttons
     col1, col2 = st.sidebar.columns(2)
@@ -410,17 +410,16 @@ def main():
                     if len(data) > 0:
                         df = pd.DataFrame(data)
                         
-                        # Create figure
+                        # Create figure with LTP line chart instead of candlestick
                         fig = go.Figure()
                         
-                        # Add candlestick
-                        fig.add_trace(go.Candlestick(
+                        # Add LTP line
+                        fig.add_trace(go.Scatter(
                             x=df['timestamp'],
-                            open=df['open'],
-                            high=df['high'],
-                            low=df['low'],
-                            close=df['close'],
-                            name=f"{strike} {opt_type} LTP"
+                            y=df['close'],
+                            mode='lines',
+                            name=f"{strike} {opt_type} LTP",
+                            line=dict(color='#2196F3', width=2)
                         ))
                         
                         # Calculate and add SuperTrend
@@ -458,17 +457,30 @@ Time: {ist_time} IST
                                             st.success(f"Alert: {strike} {opt_type} - {trend_text}")
                                             st.session_state.alert_sent.add(alert_key)
                         
-                        # Update layout
+                        # Update layout for better readability
                         fig.update_layout(
-                            template='plotly_dark',
-                            height=600,
+                            template='plotly_white',
+                            height=500,
                             title=f"{strike} {opt_type} - LTP Chart with SuperTrend",
+                            xaxis_title="Time",
+                            yaxis_title="Price (₹)",
                             xaxis_rangeslider_visible=False,
-                            showlegend=True
+                            showlegend=True,
+                            font=dict(size=12)
+                        )
+                        
+                        # Format x-axis to show proper dates
+                        fig.update_xaxes(
+                            tickformat="%m-%d %H:%M",
+                            tickangle=45
                         )
                         
                         # Display chart
                         st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Show current LTP value
+                        current_ltp = df['close'].iloc[-1] if len(df) > 0 else 0
+                        st.metric(f"Current {strike} {opt_type} LTP", f"₹{current_ltp:.2f}")
                         
                         # Show data summary
                         total_points = len(data)
