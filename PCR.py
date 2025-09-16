@@ -314,7 +314,7 @@ def main():
                         'ltp': pe_ltp,
                         'offset': offset,
                         'volume': strike_data.get('pe', {}).get('volume', 0),
-                        'oi': stake_data.get('pe', {}).get('oi', 0)
+                        'oi': strike_data.get('pe', {}).get('oi', 0)  # Fixed the typo here
                     })
         
         if active_options:
