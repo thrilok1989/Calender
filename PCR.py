@@ -156,6 +156,7 @@ def get_3day_historical_data(api, active_options, current_spot):
                 option_high = max(option_high, option_open, option_ltp)
                 option_low = min(option_low, option_open, option_ltp)
                 
+                # Convert timestamp to IST datetime properly
                 dt = datetime.fromtimestamp(timestamp/1000, ist)
                 option_data_points.append({
                     'timestamp': dt,
@@ -314,7 +315,7 @@ def main():
                         'ltp': pe_ltp,
                         'offset': offset,
                         'volume': strike_data.get('pe', {}).get('volume', 0),
-                        'oi': strike_data.get('pe', {}).get('oi', 0)  # Fixed the typo here
+                        'oi': strike_data.get('pe', {}).get('oi', 0)
                     })
         
         if active_options:
@@ -409,6 +410,9 @@ def main():
                     
                     if len(data) > 0:
                         df = pd.DataFrame(data)
+                        
+                        # Ensure timestamps are properly formatted for Plotly
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
                         
                         # Create figure with candlestick chart
                         fig = go.Figure()
@@ -538,13 +542,16 @@ Time: {ist_time} IST
                             hovermode='x unified'
                         )
                         
-                        # Format x-axis to show proper dates
+                        # Format x-axis to show proper dates with IST timezone
                         fig.update_xaxes(
-                            tickformat="%H:%M",
+                            tickformat="%d-%m\n%H:%M",
                             tickangle=0,
                             showgrid=True,
                             gridwidth=1,
-                            gridcolor='lightgray'
+                            gridcolor='lightgray',
+                            type='date',
+                            tickmode='auto',
+                            nticks=20
                         )
                         
                         fig.update_yaxes(
