@@ -211,6 +211,77 @@ def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
     
     return supertrend, trend
 
+def create_option_data_from_underlying(underlying_data, strike, option_type, current_spot, current_ltp):
+    """Create realistic option OHLCV data from underlying index data"""
+    timestamps = underlying_data['timestamp']
+    underlying_prices = {
+        'open': underlying_data['open'],
+        'high': underlying_data['high'], 
+        'low': underlying_data['low'],
+        'close': underlying_data['close']
+    }
+    
+    option_data = {
+        'timestamp': timestamps,
+        'open': [],
+        'high': [],
+        'low': [],
+        'close': [],
+        'volume': underlying_data.get('volume', [100] * len(timestamps))
+    }
+    
+    for i in range(len(timestamps)):
+        # Get underlying OHLC for this timeframe
+        underlying_ohlc = {
+            'open': underlying_prices['open'][i],
+            'high': underlying_prices['high'][i],
+            'low': underlying_prices['low'][i],
+            'close': underlying_prices['close'][i]
+        }
+        
+        # Calculate option prices for each OHLC point
+        option_ohlc = {}
+        for price_type, underlying_price in underlying_ohlc.items():
+            
+            # Calculate intrinsic value
+            if option_type == "CE":
+                intrinsic = max(0, underlying_price - strike)
+                # Add time value based on moneyness and volatility
+                moneyness = (underlying_price - strike) / strike
+                time_value = max(0.5, abs(moneyness * 100) + 10)
+            else:  # PE
+                intrinsic = max(0, strike - underlying_price)
+                moneyness = (strike - underlying_price) / strike
+                time_value = max(0.5, abs(moneyness * 100) + 10)
+            
+            # Total option price
+            option_price = intrinsic + time_value
+            
+            # Scale to make it realistic relative to current LTP
+            if i == len(timestamps) - 1 and price_type == 'close' and current_ltp > 0:
+                # Last close should match current LTP
+                option_ohlc[price_type] = current_ltp
+            else:
+                # Scale other prices proportionally
+                if current_ltp > 0:
+                    scale_factor = current_ltp / (max(0.1, intrinsic + time_value))
+                    option_price *= scale_factor
+                option_ohlc[price_type] = max(0.05, option_price)
+        
+        # Ensure OHLC relationships are maintained
+        option_ohlc['high'] = max(option_ohlc['open'], option_ohlc['high'], 
+                                 option_ohlc['low'], option_ohlc['close'])
+        option_ohlc['low'] = min(option_ohlc['open'], option_ohlc['high'], 
+                                option_ohlc['low'], option_ohlc['close'])
+        
+        # Add to arrays
+        option_data['open'].append(option_ohlc['open'])
+        option_data['high'].append(option_ohlc['high'])
+        option_data['low'].append(option_ohlc['low'])
+        option_data['close'].append(option_ohlc['close'])
+    
+    return option_data
+
 def get_trading_days_range(days_back=3):
     """Get date range for last N trading days (excluding weekends)"""
     ist = pytz.timezone('Asia/Kolkata')
@@ -411,24 +482,30 @@ def main():
                     st.metric("Market Status", market_status)
                 
                 # Fetch historical data
-                st.subheader(f"📈 {selected_strike} {option_type_short} - Last 3 Trading Days")
+                st.subheader(f"📈 {selected_strike} {option_type_short} - Simulated Historical Data")
                 
-                with st.spinner("Fetching historical data..."):
+                # Since option-specific security IDs are not available from option chain,
+                # we'll create realistic option data based on underlying movement
+                with st.spinner("Generating option data from underlying movement..."):
                     from_date, to_date = get_trading_days_range(3)
                     
-                    # For demo purposes, we'll use Nifty data as option-specific security IDs
-                    # are not readily available from option chain API
-                    # In practice, you'd need the specific option security ID
-                    
-                    # Use underlying data as proxy
+                    # Get underlying historical data first
                     underlying_info = api.underlyings[underlying]
-                    hist_data = api.get_historical_data(
+                    underlying_hist = api.get_historical_data(
                         underlying_info["id"],
                         underlying_info["segment"],
                         "INDEX",
                         from_date,
                         to_date
                     )
+                    
+                    # Create option data from underlying data
+                    if underlying_hist and 'timestamp' in underlying_hist:
+                        hist_data = create_option_data_from_underlying(
+                            underlying_hist, selected_strike, option_type_short, spot_price, current_ltp
+                        )
+                    else:
+                        hist_data = None
                 
                 if hist_data and 'timestamp' in hist_data:
                     # Create DataFrame
@@ -438,91 +515,90 @@ def main():
                         'high': hist_data['high'],
                         'low': hist_data['low'],
                         'close': hist_data['close'],
-                        'volume': hist_data.get('volume', [0] * len(hist_data['timestamp']))
+                        'volume': hist_data.get('volume', [100] * len(hist_data['timestamp']))
                     })
                     
                     # Convert timestamp to datetime
                     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
                     df.set_index('datetime', inplace=True)
                     
-                    # Filter for trading hours only (9:15 AM to 3:30 PM IST)
+                    # Convert to IST timezone
                     ist = pytz.timezone('Asia/Kolkata')
                     df.index = df.index.tz_localize('UTC').tz_convert(ist)
+                    
+                    # Filter for trading hours only (9:15 AM to 3:30 PM IST)
                     df = df.between_time('09:15', '15:30')
                     
-                    if len(df) > 0:
-                        # Scale data to simulate option prices based on moneyness
-                        if option_type_short == "CE":
-                            # Call option simulation
-                            moneyness_factor = max(0.1, (spot_price - selected_strike) / selected_strike)
-                            base_multiplier = 0.01 + abs(moneyness_factor) * 0.5
-                        else:
-                            # Put option simulation  
-                            moneyness_factor = max(0.1, (selected_strike - spot_price) / selected_strike)
-                            base_multiplier = 0.01 + abs(moneyness_factor) * 0.5
-                        
-                        # Apply scaling to create option-like price movement
-                        df_option = df.copy()
-                        for col in ['open', 'high', 'low', 'close']:
-                            df_option[col] = df[col] * base_multiplier + max(1, current_ltp * 0.5)
-                        
+                    # Remove any invalid data
+                    df = df.dropna()
+                    df = df[df['close'] > 0]  # Remove zero prices
+                    
+                    if len(df) > st_period + 5:  # Ensure we have enough data
                         # Calculate SuperTrend
-                        if len(df_option) >= st_period + 1:
-                            supertrend_values, trend_values = calculate_supertrend(
-                                df_option['high'].tolist(),
-                                df_option['low'].tolist(), 
-                                df_option['close'].tolist(),
-                                period=st_period,
-                                multiplier=st_multiplier
-                            )
+                        supertrend_values, trend_values = calculate_supertrend(
+                            df['high'].tolist(),
+                            df['low'].tolist(), 
+                            df['close'].tolist(),
+                            period=st_period,
+                            multiplier=st_multiplier
+                        )
+                        
+                        if supertrend_values and trend_values and len(supertrend_values) > 0:
+                            # Pad arrays to match DataFrame length
+                            if len(supertrend_values) < len(df):
+                                pad_length = len(df) - len(supertrend_values)
+                                supertrend_values = [None] * pad_length + supertrend_values
+                                trend_values = [None] * pad_length + trend_values
                             
-                            if supertrend_values and trend_values:
-                                df_option['supertrend'] = supertrend_values
-                                df_option['trend'] = trend_values
-                                
-                                # Create and display chart
-                                symbol = f"{selected_strike} {option_type_short}"
-                                fig = create_supertrend_chart(df_option, symbol)
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                # Display latest trend
-                                latest_trend = trend_values[-1]
-                                trend_text = "🟢 Uptrend" if latest_trend == 1 else "🔴 Downtrend"
+                            df['supertrend'] = supertrend_values[:len(df)]
+                            df['trend'] = trend_values[:len(df)]
+                            
+                            # Create and display chart
+                            symbol = f"{selected_strike} {option_type_short}"
+                            fig = create_supertrend_chart(df, symbol)
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Display latest trend (only if we have valid trend data)
+                            valid_trends = [t for t in trend_values if t is not None]
+                            if valid_trends:
+                                latest_trend = valid_trends[-1]
+                                trend_text = "Uptrend" if latest_trend == 1 else "Downtrend"
+                                trend_color = "🟢" if latest_trend == 1 else "🔴"
                                 
                                 col_trend1, col_trend2 = st.columns(2)
                                 with col_trend1:
-                                    st.metric("Current Trend Direction", trend_text)
+                                    st.metric("Current Trend Direction", f"{trend_color} {trend_text}")
                                 
                                 with col_trend2:
-                                    latest_st_value = supertrend_values[-1]
-                                    st.metric("SuperTrend Value", f"₹{latest_st_value:.2f}")
-                                
-                                # Show data summary
-                                st.info(f"📊 Loaded {len(df_option)} data points from {df_option.index[0].strftime('%d-%m %H:%M')} to {df_option.index[-1].strftime('%d-%m %H:%M')} IST")
-                                
-                                # Show latest values
-                                with st.expander("Latest OHLC Values"):
-                                    latest = df_option.iloc[-1]
-                                    col1, col2, col3, col4 = st.columns(4)
-                                    with col1:
-                                        st.metric("Open", f"₹{latest['open']:.2f}")
-                                    with col2:
-                                        st.metric("High", f"₹{latest['high']:.2f}")
-                                    with col3:
-                                        st.metric("Low", f"₹{latest['low']:.2f}")
-                                    with col4:
-                                        st.metric("Close", f"₹{latest['close']:.2f}")
+                                    valid_st_values = [s for s in supertrend_values if s is not None]
+                                    if valid_st_values:
+                                        latest_st_value = valid_st_values[-1]
+                                        st.metric("SuperTrend Value", f"₹{latest_st_value:.2f}")
                             
-                            else:
-                                st.error("Failed to calculate SuperTrend. Insufficient data.")
+                            # Show data summary
+                            st.success(f"📊 Generated {len(df)} option data points from {df.index[0].strftime('%d-%m %H:%M')} to {df.index[-1].strftime('%d-%m %H:%M')} IST")
+                            
+                            # Show latest values
+                            with st.expander("Latest OHLC Values"):
+                                latest = df.iloc[-1]
+                                col1, col2, col3, col4 = st.columns(4)
+                                with col1:
+                                    st.metric("Open", f"₹{latest['open']:.2f}")
+                                with col2:
+                                    st.metric("High", f"₹{latest['high']:.2f}")
+                                with col3:
+                                    st.metric("Low", f"₹{latest['low']:.2f}")
+                                with col4:
+                                    st.metric("Close", f"₹{latest['close']:.2f}")
+                        
                         else:
-                            st.warning(f"Insufficient data for SuperTrend calculation. Need at least {st_period + 1} data points, got {len(df_option)}.")
+                            st.error("Failed to calculate SuperTrend. Please try different parameters.")
                     
                     else:
-                        st.warning("No data available for the selected time range.")
+                        st.warning(f"Insufficient data points. Need at least {st_period + 5}, got {len(df)}. Try reducing SuperTrend period.")
                 
                 else:
-                    st.error("Failed to fetch historical data. Please try again.")
+                    st.error("Failed to generate option data from underlying. Please check API connection.")
             
             else:
                 st.error("No strikes available for the selected expiry.")
