@@ -108,22 +108,6 @@ def process_candle_data(data):
     
     ist = pytz.timezone('Asia/Kolkata')
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
-    
-    # Filter for trading hours only (9:15 AM to 3:30 PM IST) and weekdays only
-    df['time'] = df['datetime'].dt.time
-    df['weekday'] = df['datetime'].dt.weekday  # Monday=0, Sunday=6
-    
-    market_start = datetime.strptime('09:15:00', '%H:%M:%S').time()
-    market_end = datetime.strptime('15:30:00', '%H:%M:%S').time()
-    
-    # Filter: trading hours + Monday to Friday only (weekday < 5)
-    df = df[
-        (df['time'] >= market_start) & 
-        (df['time'] <= market_end) & 
-        (df['weekday'] < 5)
-    ]
-    
-    df = df.drop(['time', 'weekday'], axis=1)
     return df
 
 def get_pivots(df, timeframe="5", length=4):
@@ -188,24 +172,8 @@ def create_chart(df, title):
                             y0=pivot['value'], y1=pivot['value'],
                             line=dict(color=color, width=1, dash="dash"), row=1, col=1)
     
-    fig.update_layout(
-        title=title, 
-        template='plotly_dark', 
-        height=600,
-        xaxis_rangeslider_visible=False, 
-        showlegend=False
-    )
-    
-    # Configure x-axis to not show gaps for non-trading periods
-    fig.update_xaxes(
-        type='category',  # This removes gaps by treating each datetime as a category
-        row=1, col=1
-    )
-    fig.update_xaxes(
-        type='category',
-        row=2, col=1
-    )
-    
+    fig.update_layout(title=title, template='plotly_dark', height=600,
+                     xaxis_rangeslider_visible=False, showlegend=False)
     return fig
 
 def analyze_options(expiry):
