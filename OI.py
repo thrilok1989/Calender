@@ -799,7 +799,7 @@ def debug_data_info(df):
 
         fig = create_chart(df, f"Nifty {interval}min with Volume Profile")
         st.plotly_chart(fig, use_container_width=True)
-        else:
+    else:
         st.error("No chart data available")
     
     with col2:
@@ -816,9 +816,9 @@ def debug_data_info(df):
                 st.info(f"Spot: ₹{underlying_price:.2f}")
                 st.dataframe(option_summary, use_container_width=True)
                 
-                if enable_signals and not df.empty and is_market_hours():
+            if enable_signals and not df.empty and is_market_hours():
                     check_signals(df, option_summary, underlying_price, proximity)
-            else:
+        else:
                 st.error("Options data unavailable")
         else:
             st.error("Expiry data unavailable")
