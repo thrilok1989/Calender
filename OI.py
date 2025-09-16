@@ -7,33 +7,10 @@ from plotly.subplots import make_subplots
 import datetime
 import pytz
 import numpy as np
-import math
-from scipy.stats import norm
 from datetime import datetime, timedelta
 
 # Page config
 st.set_page_config(page_title="Nifty Analyzer", page_icon="📈", layout="wide")
-
-# Function to check if it's market hours
-def is_market_hours():
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist)
-    
-    # Check if it's a weekday (Monday to Friday)
-    if now.weekday() >= 5:  # 5=Saturday, 6=Sunday
-        return False
-    
-    # Check if current time is between 9:00 AM and 3:45 PM IST
-    market_start = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    market_end = now.replace(hour=15, minute=45, second=0, microsecond=0)
-    
-    return market_start <= now <= market_end
-
-# Only run autorefresh during market hours
-if is_market_hours():
-    st_autorefresh(interval=80000, key="refresh")
-else:
-    st.info("Market is closed. Auto-refresh disabled.")
 
 # Credentials
 DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
@@ -43,14 +20,18 @@ TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
 NIFTY_SCRIP = 13
 NIFTY_SEG = "IDX_I"
 
-# Volume Profile Configuration
-VP_CONFIG = {
-    "BINS": 20,
-    "TIMEFRAME": "30T",  # 30 minutes for intraday analysis
-    "POC_COLOR": "#FFD700",  # Gold color for POC
-    "VOLUME_COLOR": "#1f77b4",
-    "HIGH_VOLUME_COLOR": "#ff7f0e"
-}
+VP_CONFIG = {"BINS": 20, "TIMEFRAME": "30T", "POC_COLOR": "#FFD700", "VOLUME_COLOR": "#1f77b4"}
+
+def is_market_hours():
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    if now.weekday() >= 5: return False
+    market_start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    market_end = now.replace(hour=15, minute=45, second=0, microsecond=0)
+    return market_start <= now <= market_end
+
+if is_market_hours():
+    st_autorefresh(interval=80000, key="refresh")
 
 class DhanAPI:
     def __init__(self):
@@ -80,8 +61,7 @@ class DhanAPI:
         try:
             response = requests.post(url, headers=self.headers, json=payload)
             return response.json() if response.status_code == 200 else None
-        except:
-            return None
+        except: return None
     
     def get_ltp_data(self):
         url = "https://api.dhan.co/v2/marketfeed/ltp"
@@ -89,8 +69,7 @@ class DhanAPI:
         try:
             response = requests.post(url, headers=self.headers, json=payload)
             return response.json() if response.status_code == 200 else None
-        except:
-            return None
+        except: return None
 
 def get_option_chain(expiry):
     url = "https://api.dhan.co/v2/optionchain"
@@ -99,8 +78,7 @@ def get_option_chain(expiry):
     try:
         response = requests.post(url, headers=headers, json=payload)
         return response.json() if response.status_code == 200 else None
-    except:
-        return None
+    except: return None
 
 def get_expiry_list():
     url = "https://api.dhan.co/v2/optionchain/expirylist"
@@ -109,89 +87,52 @@ def get_expiry_list():
     try:
         response = requests.post(url, headers=headers, json=payload)
         return response.json() if response.status_code == 200 else None
-    except:
-        return None
+    except: return None
 
 def send_telegram(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        requests.post(url, json=payload, timeout=10)
-    except:
-        pass
+    try: requests.post(url, json=payload, timeout=10)
+    except: pass
 
 def process_candle_data(data):
-    if not data or 'open' not in data:
-        return pd.DataFrame()
+    if not data or 'open' not in data: return pd.DataFrame()
     
     df = pd.DataFrame({
-        'timestamp': data['timestamp'],
-        'open': data['open'],
-        'high': data['high'],
-        'low': data['low'],
-        'close': data['close'],
-        'volume': data['volume']
+        'timestamp': data['timestamp'], 'open': data['open'], 'high': data['high'],
+        'low': data['low'], 'close': data['close'], 'volume': data['volume']
     })
     
     ist = pytz.timezone('Asia/Kolkata')
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
     return df
 
-def calculate_volume_profile(df, timeframe="30T", bins=20):
-    """
-    Calculate Volume Profile / Money Flow indicator
-    """
-    if df.empty or len(df) < 10:
-        return []
+def calculate_volume_profile(df, bins=20):
+    if df.empty or len(df) < 10 or 'volume' not in df.columns: return []
     
-    # Make a copy and ensure volume column exists
-    df_copy = df.copy()
-    if 'volume' not in df_copy.columns:
-        st.error("Volume data not available in the dataset")
-        return []
+    df_copy = df[df['volume'].notna() & (df['volume'] > 0)]
+    if df_copy.empty: return []
     
-    # Remove rows with zero or NaN volume
-    df_copy = df_copy[df_copy['volume'].notna() & (df_copy['volume'] > 0)]
+    overall_high, overall_low = df_copy['high'].max(), df_copy['low'].min()
+    if overall_high == overall_low: return []
     
-    if df_copy.empty:
-        st.error("No valid volume data found")
-        return []
-    
-    # Calculate overall price range for the session
-    overall_high = df_copy['high'].max()
-    overall_low = df_copy['low'].min()
-    
-    if overall_high == overall_low:
-        return []
-    
-    # Create price bins for the entire session
     price_bins = np.linspace(overall_low, overall_high, bins + 1)
     volume_hist = np.zeros(bins)
     
-    # Distribute volume across price levels using OHLC logic
     for _, row in df_copy.iterrows():
-        if pd.isna(row['volume']) or row['volume'] <= 0:
-            continue
-            
-        # Use typical price (HLC/3) for volume distribution
+        if pd.isna(row['volume']) or row['volume'] <= 0: continue
         typical_price = (row['high'] + row['low'] + row['close']) / 3
         volume = row['volume']
-        
-        # Find which bin this typical price belongs to
         bin_idx = np.digitize(typical_price, price_bins) - 1
-        bin_idx = max(0, min(bins - 1, bin_idx))  # Ensure within bounds
+        bin_idx = max(0, min(bins - 1, bin_idx))
         volume_hist[bin_idx] += volume
     
-    if volume_hist.sum() == 0:
-        return []
+    if volume_hist.sum() == 0: return []
     
-    # Calculate Point of Control (POC)
     poc_idx = np.argmax(volume_hist)
     poc_price = (price_bins[poc_idx] + price_bins[poc_idx + 1]) / 2
     
-    # Calculate Value Area (70% of total volume)
     total_volume = volume_hist.sum()
     sorted_indices = np.argsort(volume_hist)[::-1]
     cumulative_volume = 0
@@ -200,56 +141,29 @@ def calculate_volume_profile(df, timeframe="30T", bins=20):
     for bin_idx in sorted_indices:
         cumulative_volume += volume_hist[bin_idx]
         value_area_indices.append(bin_idx)
-        if cumulative_volume >= 0.7 * total_volume:
-            break
+        if cumulative_volume >= 0.7 * total_volume: break
     
-    # Calculate Value Area High and Low
     if value_area_indices:
         va_high = max([price_bins[i + 1] for i in value_area_indices])
         va_low = min([price_bins[i] for i in value_area_indices])
     else:
-        va_high = overall_high
-        va_low = overall_low
+        va_high, va_low = overall_high, overall_low
     
-    # Create session profile
-    profiles = [{
-        "time": df_copy['datetime'].iloc[0],
-        "high": overall_high,
-        "low": overall_low,
-        "poc": poc_price,
-        "va_high": va_high,
-        "va_low": va_low,
-        "volume_hist": volume_hist,
-        "price_bins": price_bins,
-        "total_volume": total_volume
+    return [{
+        "time": df_copy['datetime'].iloc[0], "high": overall_high, "low": overall_low,
+        "poc": poc_price, "va_high": va_high, "va_low": va_low,
+        "volume_hist": volume_hist, "price_bins": price_bins, "total_volume": total_volume
     }]
-    
-    return profiles
 
 def get_volume_profile_insights(profiles, current_price):
-    """
-    Analyze volume profile and provide trading insights
-    """
-    if not profiles or current_price is None:
-        return {}
+    if not profiles or current_price is None: return {}
     
-    # Get the latest profile
-    latest_profile = profiles[-1] if profiles else None
-    if not latest_profile:
-        return {}
-    
+    profile = profiles[0]
     insights = {
-        "poc": latest_profile["poc"],
-        "va_high": latest_profile["va_high"],
-        "va_low": latest_profile["va_low"],
-        "total_volume": latest_profile["total_volume"],
-        "price_vs_poc": "",
-        "price_vs_va": "",
-        "bias": "NEUTRAL",
-        "strength": "WEAK"
+        "poc": profile["poc"], "va_high": profile["va_high"], "va_low": profile["va_low"],
+        "total_volume": profile["total_volume"], "bias": "NEUTRAL", "strength": "WEAK"
     }
     
-    # Analyze current price vs POC
     poc_diff = current_price - insights["poc"]
     poc_diff_pct = (poc_diff / insights["poc"]) * 100 if insights["poc"] > 0 else 0
     
@@ -263,15 +177,12 @@ def get_volume_profile_insights(profiles, current_price):
         insights["price_vs_poc"] = f"BELOW POC ({poc_diff:.1f}, {poc_diff_pct:.2f}%)"
         insights["bias"] = "BEARISH"
     
-    # Analyze current price vs Value Area
     if current_price > insights["va_high"]:
         insights["price_vs_va"] = f"ABOVE VA (+{current_price - insights['va_high']:.1f})"
-        if insights["bias"] == "BULLISH":
-            insights["strength"] = "STRONG"
+        if insights["bias"] == "BULLISH": insights["strength"] = "STRONG"
     elif current_price < insights["va_low"]:
         insights["price_vs_va"] = f"BELOW VA (-{insights['va_low'] - current_price:.1f})"
-        if insights["bias"] == "BEARISH":
-            insights["strength"] = "STRONG"
+        if insights["bias"] == "BEARISH": insights["strength"] = "STRONG"
     else:
         insights["price_vs_va"] = "INSIDE VALUE AREA"
         insights["strength"] = "MODERATE" if insights["bias"] != "NEUTRAL" else "WEAK"
@@ -279,8 +190,7 @@ def get_volume_profile_insights(profiles, current_price):
     return insights
 
 def get_pivots(df, timeframe="5", length=4):
-    if df.empty:
-        return []
+    if df.empty: return []
     
     rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min"}
     rule = rule_map.get(timeframe, "5min")
@@ -291,8 +201,7 @@ def get_pivots(df, timeframe="5", length=4):
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).dropna()
         
-        if len(resampled) < length * 2 + 1:
-            return []
+        if len(resampled) < length * 2 + 1: return []
         
         max_vals = resampled['high'].rolling(window=length*2+1, center=True).max()
         min_vals = resampled['low'].rolling(window=length*2+1, center=True).min()
@@ -305,196 +214,75 @@ def get_pivots(df, timeframe="5", length=4):
             pivots.append({'type': 'low', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
         
         return pivots
-    except:
-        return []
+    except: return []
 
 def create_chart(df, title):
-    if df.empty:
-        return go.Figure()
+    if df.empty: return go.Figure()
     
-    # Debug: Check if volume data exists
-    if 'volume' not in df.columns:
-        st.error("Volume column missing from data")
-        return go.Figure()
+    fig = make_subplots(rows=2, cols=2, shared_xaxes=True, vertical_spacing=0.05,
+                       column_widths=[0.8, 0.2], row_heights=[0.7, 0.3],
+                       specs=[[{"secondary_y": False}, {"secondary_y": False}],
+                              [{"secondary_y": False}, {"secondary_y": False}]])
     
-    # Check if volume has valid data
-    valid_volume = df['volume'].notna() & (df['volume'] > 0)
-    if not valid_volume.any():
-        st.warning("No valid volume data found - Volume profile will not be displayed")
-    
-    fig = make_subplots(
-        rows=3, cols=2, 
-        shared_xaxes=True,
-        vertical_spacing=0.05,
-        column_widths=[0.8, 0.2],
-        row_heights=[0.6, 0.25, 0.15],
-        subplot_titles=('Price Chart', 'Volume Profile', 'Volume', '', 'Market Info', ''),
-        specs=[[{"secondary_y": False}, {"secondary_y": False}],
-               [{"secondary_y": False}, {"secondary_y": False}],
-               [{"secondary_y": False}, {"secondary_y": False}]]
-    )
-    
-    # Candlestick chart
+    # Candlestick
     fig.add_trace(go.Candlestick(
-        x=df['datetime'], 
-        open=df['open'], 
-        high=df['high'], 
-        low=df['low'], 
-        close=df['close'], 
-        name='Nifty',
-        increasing_line_color='#00ff88', 
-        decreasing_line_color='#ff4444',
+        x=df['datetime'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
+        name='Nifty', increasing_line_color='#00ff88', decreasing_line_color='#ff4444',
         showlegend=False
     ), row=1, col=1)
     
-    # Volume bars (only if valid volume data exists)
-    if valid_volume.any():
-        volume_colors = ['#00ff88' if close >= open else '#ff4444' 
-                        for close, open in zip(df['close'], df['open'])]
-        
+    # Volume
+    if 'volume' in df.columns:
+        volume_colors = ['#00ff88' if c >= o else '#ff4444' for c, o in zip(df['close'], df['open'])]
         fig.add_trace(go.Bar(
-            x=df['datetime'], 
-            y=df['volume'], 
-            name='Volume',
-            marker_color=volume_colors, 
-            opacity=0.7,
-            showlegend=False
+            x=df['datetime'], y=df['volume'], marker_color=volume_colors,
+            opacity=0.7, showlegend=False
         ), row=2, col=1)
         
-        # Calculate and display Volume Profile
+        # Volume Profile
         if len(df) > 20:
             try:
-                profiles = calculate_volume_profile(df, VP_CONFIG["TIMEFRAME"], VP_CONFIG["BINS"])
-                
+                profiles = calculate_volume_profile(df, VP_CONFIG["BINS"])
                 if profiles:
-                    profile = profiles[0]  # Use the session profile
+                    profile = profiles[0]
                     
-                    # Add POC line to main chart
-                    fig.add_hline(
-                        y=profile["poc"], 
-                        line_dash="dash", 
-                        line_color=VP_CONFIG["POC_COLOR"],
-                        line_width=2,
-                        annotation_text=f"POC: {profile['poc']:.1f}",
-                        annotation_position="bottom right",
-                        row=1, col=1
-                    )
+                    # POC line
+                    fig.add_hline(y=profile["poc"], line_dash="dash", line_color=VP_CONFIG["POC_COLOR"],
+                                line_width=2, row=1, col=1)
                     
-                    # Add Value Area to main chart
-                    fig.add_hrect(
-                        y0=profile["va_low"], 
-                        y1=profile["va_high"],
-                        fillcolor="rgba(255, 215, 0, 0.1)",
-                        line_color="rgba(255, 215, 0, 0.3)",
-                        line_width=1,
-                        row=1, col=1
-                    )
+                    # Value Area
+                    fig.add_hrect(y0=profile["va_low"], y1=profile["va_high"],
+                                fillcolor="rgba(255, 215, 0, 0.1)", line_color="rgba(255, 215, 0, 0.3)",
+                                row=1, col=1)
                     
-                    # Add volume profile histogram (right side)
+                    # VP Histogram
                     price_centers = (profile["price_bins"][:-1] + profile["price_bins"][1:]) / 2
                     volume_hist = profile["volume_hist"]
                     
                     if len(volume_hist) > 0 and volume_hist.max() > 0:
-                        # Normalize volume for better display
-                        max_vol = volume_hist.max()
-                        normalized_vol = volume_hist / max_vol * 100
-                        
-                        fig.add_trace(go.Bar(
-                            x=normalized_vol,
-                            y=price_centers,
-                            orientation='h',
-                            name='Volume Profile',
-                            marker_color=VP_CONFIG["VOLUME_COLOR"],
-                            opacity=0.7,
-                            showlegend=False
-                        ), row=1, col=2)
-                        
-                        # Highlight POC level in volume profile
-                        poc_idx = np.argmax(volume_hist)
-                        fig.add_trace(go.Bar(
-                            x=[normalized_vol[poc_idx]],
-                            y=[price_centers[poc_idx]],
-                            orientation='h',
-                            name='POC Level',
-                            marker_color=VP_CONFIG["POC_COLOR"],
-                            opacity=0.9,
-                            showlegend=False
-                        ), row=1, col=2)
-                    
-                    # Add VP summary to bottom right
-                    vp_text = f"""Volume Profile Summary:
-POC: ₹{profile['poc']:.1f}
-VA High: ₹{profile['va_high']:.1f}
-VA Low: ₹{profile['va_low']:.1f}
-Total Vol: {profile['total_volume']:,.0f}"""
-                    
-                    fig.add_annotation(
-                        text=vp_text,
-                        xref="paper", yref="paper",
-                        x=0.99, y=0.15,
-                        showarrow=False,
-                        align="right",
-                        bgcolor="rgba(0,0,0,0.7)",
-                        bordercolor="white",
-                        font=dict(color="white", size=10),
-                        row=3, col=2
-                    )
-            
-            except Exception as e:
-                st.error(f"Error creating volume profile: {e}")
-    else:
-        # Add message about missing volume data
-        fig.add_annotation(
-            text="Volume data not available",
-            xref="paper", yref="paper",
-            x=0.5, y=0.3,
-            showarrow=False,
-            font=dict(size=14, color="gray"),
-            row=2, col=1
-        )
+                        normalized_vol = volume_hist / volume_hist.max() * 100
+                        fig.add_trace(go.Bar(x=normalized_vol, y=price_centers, orientation='h',
+                                           marker_color=VP_CONFIG["VOLUME_COLOR"], opacity=0.7,
+                                           showlegend=False), row=1, col=2)
+            except: pass
     
-    # Add pivot levels (only if sufficient data)
+    # Pivots
     if len(df) > 50:
-        timeframes = ["5", "10", "15"]
-        colors = ["#ff9900", "#ff44ff", "#4444ff"]
-        
-        for tf, color in zip(timeframes, colors):
+        for tf, color in zip(["5", "10", "15"], ["#ff9900", "#ff44ff", "#4444ff"]):
             try:
                 pivots = get_pivots(df, tf)
-                for pivot in pivots[-3:]:  # Show last 3 pivots
-                    fig.add_hline(
-                        y=pivot['value'],
-                        line_dash="dot",
-                        line_color=color,
-                        line_width=1,
-                        opacity=0.7,
-                        row=1, col=1
-                    )
-            except:
-                continue
+                for pivot in pivots[-3:]:
+                    fig.add_hline(y=pivot['value'], line_dash="dot", line_color=color,
+                                line_width=1, opacity=0.7, row=1, col=1)
+            except: continue
     
-    # Update layout
-    fig.update_layout(
-        title=title, 
-        template='plotly_dark', 
-        height=800,
-        showlegend=False,
-        xaxis_rangeslider_visible=False
-    )
-    
-    # Update axes
-    fig.update_xaxes(title_text="Time", row=3, col=1)
-    fig.update_yaxes(title_text="Price", row=1, col=1)
-    fig.update_yaxes(title_text="Volume", row=2, col=1)
-    fig.update_yaxes(title_text="Price", row=1, col=2)
-    fig.update_xaxes(title_text="Volume", row=1, col=2)
-    
+    fig.update_layout(title=title, template='plotly_dark', height=600,
+                     xaxis_rangeslider_visible=False, showlegend=False)
     return fig
 
 def analyze_options(expiry):
     option_data = get_option_chain(expiry)
-    if not option_data or 'data' not in option_data:
-        return None, None
+    if not option_data or 'data' not in option_data: return None, None
     
     data = option_data['data']
     underlying = data['last_price']
@@ -550,13 +338,9 @@ def analyze_options(expiry):
         level = "Support" if pe_oi > 1.12 * ce_oi else "Resistance" if ce_oi > 1.12 * pe_oi else "Neutral"
         
         bias_results.append({
-            "Strike": row['strikePrice'],
-            "Zone": row['Zone'],
-            "Level": level,
-            "ChgOI_Bias": chg_oi_bias,
-            "Volume_Bias": volume_bias,
-            "Ask_Bias": ask_bias,
-            "Bid_Bias": bid_bias,
+            "Strike": row['strikePrice'], "Zone": row['Zone'], "Level": level,
+            "ChgOI_Bias": chg_oi_bias, "Volume_Bias": volume_bias,
+            "Ask_Bias": ask_bias, "Bid_Bias": bid_bias,
             "PCR": round(pe_oi / ce_oi if ce_oi > 0 else 0, 2),
             "changeinOpenInterest_CE": row['changeinOpenInterest_CE'],
             "changeinOpenInterest_PE": row['changeinOpenInterest_PE']
@@ -565,34 +349,24 @@ def analyze_options(expiry):
     return underlying, pd.DataFrame(bias_results)
 
 def check_signals(df, option_data, current_price, proximity=5):
-    if df.empty or option_data is None or not current_price:
-        return
+    if df.empty or option_data is None or not current_price: return
     
-    # Calculate Volume Profile insights
-    profiles = calculate_volume_profile(df, VP_CONFIG["TIMEFRAME"], VP_CONFIG["BINS"])
+    profiles = calculate_volume_profile(df, VP_CONFIG["BINS"])
     vp_insights = get_volume_profile_insights(profiles, current_price)
     
     atm_data = option_data[option_data['Zone'] == 'ATM']
-    if atm_data.empty:
-        return
+    if atm_data.empty: return
     
     row = atm_data.iloc[0]
     
-    ce_chg_oi = abs(row.get('changeinOpenInterest_CE', 0))
-    pe_chg_oi = abs(row.get('changeinOpenInterest_PE', 0))
-    
     bias_aligned_bullish = (
-        row['ChgOI_Bias'] == 'Bullish' and 
-        row['Volume_Bias'] == 'Bullish' and
-        row['Ask_Bias'] == 'Bullish' and
-        row['Bid_Bias'] == 'Bullish'
+        row['ChgOI_Bias'] == 'Bullish' and row['Volume_Bias'] == 'Bullish' and
+        row['Ask_Bias'] == 'Bullish' and row['Bid_Bias'] == 'Bullish'
     )
     
     bias_aligned_bearish = (
-        row['ChgOI_Bias'] == 'Bearish' and 
-        row['Volume_Bias'] == 'Bearish' and
-        row['Ask_Bias'] == 'Bearish' and
-        row['Bid_Bias'] == 'Bearish'
+        row['ChgOI_Bias'] == 'Bearish' and row['Volume_Bias'] == 'Bearish' and
+        row['Ask_Bias'] == 'Bearish' and row['Bid_Bias'] == 'Bearish'
     )
     
     # PRIMARY SIGNAL
@@ -610,7 +384,6 @@ def check_signals(df, option_data, current_price, proximity=5):
         primary_bullish_signal = (row['Level'] == 'Support' and bias_aligned_bullish)
         primary_bearish_signal = (row['Level'] == 'Resistance' and bias_aligned_bearish)
         
-        # Add Volume Profile confirmation
         vp_confirmation = ""
         if vp_insights:
             if primary_bullish_signal and vp_insights["bias"] == "BULLISH":
@@ -631,10 +404,8 @@ def check_signals(df, option_data, current_price, proximity=5):
 📌 Pivot: {pivot_level['timeframe']}M at ₹{pivot_level['value']:.2f}
 🎯 ATM: {row['Strike']}
 
-💰 VOLUME PROFILE ANALYSIS:
-{vp_confirmation}
+💰 VOLUME PROFILE: {vp_confirmation}
 📊 POC: ₹{vp_insights.get('poc', 0):.1f} | VA: ₹{vp_insights.get('va_low', 0):.1f}-₹{vp_insights.get('va_high', 0):.1f}
-🔄 Price vs VA: {vp_insights.get('price_vs_va', 'N/A')}
 
 Conditions: {row['Level']}, All Bias Aligned
 ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
@@ -645,6 +416,9 @@ ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}
             st.success(f"🔔 PRIMARY {signal_type} signal sent!")
     
     # SECONDARY SIGNAL
+    ce_chg_oi = abs(row.get('changeinOpenInterest_CE', 0))
+    pe_chg_oi = abs(row.get('changeinOpenInterest_PE', 0))
+    
     put_dominance = pe_chg_oi > 1.3 * ce_chg_oi if ce_chg_oi > 0 else False
     call_dominance = ce_chg_oi > 1.3 * pe_chg_oi if pe_chg_oi > 0 else False
     
@@ -655,7 +429,6 @@ ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}
         signal_type = "CALL" if secondary_bullish_signal else "PUT"
         dominance_ratio = pe_chg_oi / ce_chg_oi if secondary_bullish_signal and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
         
-        # Add Volume Profile insights
         vp_info = ""
         if vp_insights:
             vp_info = f"""
@@ -683,27 +456,19 @@ ChgOI: CE {ce_chg_oi:,} | PE {pe_chg_oi:,}
 def main():
     st.title("📈 Nifty Trading Analyzer with Volume Profile")
     
-    # Show market status
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist)
     
     if not is_market_hours():
-        st.warning(f"⚠️ Market is closed. Current time: {current_time.strftime('%H:%M:%S IST')}")
-        st.info("Market hours: Monday-Friday, 9:00 AM to 3:45 PM IST")
+        st.warning(f"⚠️ Market closed. Time: {current_time.strftime('%H:%M:%S IST')}")
     
     st.sidebar.header("Settings")
     interval = st.sidebar.selectbox("Timeframe", ["1", "3", "5", "10", "15"], index=2)
     proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
     enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
-    
-    # Volume Profile Settings
-    st.sidebar.subheader("Volume Profile")
-    vp_timeframe = st.sidebar.selectbox("VP Timeframe", ["15T", "30T", "60T"], index=1)
-    VP_CONFIG["TIMEFRAME"] = vp_timeframe
     VP_CONFIG["BINS"] = st.sidebar.slider("VP Bins", 10, 30, 20)
     
     api = DhanAPI()
-    
     col1, col2 = st.columns([2, 1])
     
     with col1:
@@ -723,7 +488,6 @@ def main():
         if current_price is None and not df.empty:
             current_price = df['close'].iloc[-1]
         
-        # Display metrics and Volume Profile insights
         if not df.empty and len(df) > 1:
             prev_close = df['close'].iloc[-2]
             change = current_price - prev_close
@@ -737,69 +501,34 @@ def main():
             with col3_m:
                 st.metric("Low", f"₹{df['low'].min():,.2f}")
             
-            # Calculate and display Volume Profile insights
-            if len(df) > 50:
-                profiles = calculate_volume_profile(df, VP_CONFIG["TIMEFRAME"], VP_CONFIG["BINS"])
-                vp_insights = get_volume_profile_insights(profiles, current_price)
-                
-                if vp_insights:
-                    st.subheader("💰 Volume Profile Analysis")
-                    col_vp1, col_vp2, col_vp3, col_vp4 = st.columns(4)
+            # Volume Profile insights
+            if len(df) > 20:
+                try:
+                    profiles = calculate_volume_profile(df, VP_CONFIG["BINS"])
+                    vp_insights = get_volume_profile_insights(profiles, current_price)
                     
-                    with col_vp1:
-                        st.metric("POC", f"₹{vp_insights['poc']:,.1f}")
-                    with col_vp2:
-                        st.metric("VA High", f"₹{vp_insights['va_high']:,.1f}")
-                    with col_vp3:
-                        st.metric("VA Low", f"₹{vp_insights['va_low']:,.1f}")
-                    with col_vp4:
-                        bias_color = "🟢" if vp_insights['bias'] == 'BULLISH' else "🔴" if vp_insights['bias'] == 'BEARISH' else "⚪"
-                        st.metric("VP Bias", f"{bias_color} {vp_insights['bias']}")
-                    
-                    # Display detailed insights
-                    st.info(f"📍 **Price Position**: {vp_insights['price_vs_poc']} | {vp_insights['price_vs_va']}")
-                    st.info(f"💪 **Signal Strength**: {vp_insights['strength']} | **Total Volume**: {vp_insights['total_volume']:,.0f}")
+                    if vp_insights:
+                        st.subheader("💰 Volume Profile Analysis")
+                        col_vp1, col_vp2, col_vp3, col_vp4 = st.columns(4)
+                        
+                        with col_vp1:
+                            st.metric("POC", f"₹{vp_insights['poc']:,.1f}")
+                        with col_vp2:
+                            st.metric("VA High", f"₹{vp_insights['va_high']:,.1f}")
+                        with col_vp3:
+                            st.metric("VA Low", f"₹{vp_insights['va_low']:,.1f}")
+                        with col_vp4:
+                            bias_color = "🟢" if vp_insights['bias'] == 'BULLISH' else "🔴" if vp_insights['bias'] == 'BEARISH' else "⚪"
+                            st.metric("VP Bias", f"{bias_color} {vp_insights['bias']}")
+                        
+                        st.info(f"📍 **Position**: {vp_insights['price_vs_poc']} | {vp_insights['price_vs_va']}")
+                        st.info(f"💪 **Strength**: {vp_insights['strength']} | **Volume**: {vp_insights['total_volume']:,.0f}")
+                except: pass
         
-def debug_data_info(df):
-    """Debug function to show data information"""
-    if df.empty:
-        st.error("DataFrame is empty")
-        return
-    
-    st.subheader("🔍 Data Debug Info")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Total Records", len(df))
-        st.metric("Columns", len(df.columns))
-    
-    with col2:
-        if 'volume' in df.columns:
-            valid_volume = df['volume'].notna() & (df['volume'] > 0)
-            st.metric("Valid Volume Records", valid_volume.sum())
-            st.metric("Max Volume", f"{df['volume'].max():,.0f}" if df['volume'].max() > 0 else "0")
+        if not df.empty:
+            fig = create_chart(df, f"Nifty {interval}min with Volume Profile")
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.error("Volume column missing!")
-    
-    with col3:
-        st.metric("Date Range", f"{(df['datetime'].max() - df['datetime'].min()).days} days")
-        st.metric("Price Range", f"₹{df['low'].min():.1f} - ₹{df['high'].max():.1f}")
-    
-    # Show sample data
-    st.subheader("Sample Data")
-    st.dataframe(df[['datetime', 'open', 'high', 'low', 'close', 'volume']].head(), use_container_width=True)
-    
-    # Volume statistics
-    if 'volume' in df.columns and df['volume'].sum() > 0:
-        st.subheader("Volume Statistics")
-        vol_stats = df['volume'].describe()
-        st.write(vol_stats)
-    else:
-        st.error("No valid volume data available for Volume Profile calculation!")
-
-        fig = create_chart(df, f"Nifty {interval}min with Volume Profile")
-        st.plotly_chart(fig, use_container_width=True)
-else:
             st.error("No chart data available")
     
     with col2:
@@ -823,15 +552,14 @@ else:
         else:
             st.error("Expiry data unavailable")
         
-        # Volume Profile Summary for Options Analysis
+        # Volume Profile Trading Levels
         if not df.empty and len(df) > 20:
             st.subheader("📊 VP Trading Levels")
             try:
-                profiles = calculate_volume_profile(df, VP_CONFIG["TIMEFRAME"], VP_CONFIG["BINS"])
+                profiles = calculate_volume_profile(df, VP_CONFIG["BINS"])
                 vp_insights = get_volume_profile_insights(profiles, current_price)
                 
                 if vp_insights:
-                    # Create a summary table of key levels
                     levels_data = {
                         "Level": ["POC", "VA High", "VA Low"],
                         "Price": [f"₹{vp_insights['poc']:,.1f}", 
@@ -844,7 +572,6 @@ else:
                     }
                     st.dataframe(pd.DataFrame(levels_data), use_container_width=True)
                     
-                    # Trading recommendations based on VP
                     st.subheader("🎯 VP Trading Strategy")
                     if vp_insights['bias'] == 'BULLISH' and vp_insights['strength'] in ['STRONG', 'MODERATE']:
                         st.success("💡 **Bullish Setup**: Price above POC with strong volume support. Look for CALL options on dips to VA Low.")
@@ -854,22 +581,21 @@ else:
                         st.info("💡 **Range Trading**: Price inside Value Area. Wait for breakout above VA High (bullish) or below VA Low (bearish).")
                     else:
                         st.warning("💡 **Neutral**: No clear VP signal. Wait for price to interact with key VP levels.")
-                else:
-                    st.info("Volume Profile data not available")
             except Exception as e:
                 st.error(f"VP Analysis error: {e}")
     
     current_time = datetime.now(ist).strftime("%H:%M:%S IST")
     st.sidebar.info(f"Updated: {current_time}")
     
-    # Enhanced test telegram with VP info
+    # Enhanced test telegram
     if st.sidebar.button("Test Telegram"):
-        if not df.empty and len(df) > 50:
-            profiles = calculate_volume_profile(df, VP_CONFIG["TIMEFRAME"], VP_CONFIG["BINS"])
-            vp_insights = get_volume_profile_insights(profiles, current_price)
-            
-            test_message = f"""
-🔔 TEST MESSAGE - Nifty Analyzer with Volume Profile
+        if not df.empty and len(df) > 20:
+            try:
+                profiles = calculate_volume_profile(df, VP_CONFIG["BINS"])
+                vp_insights = get_volume_profile_insights(profiles, current_price)
+                
+                test_message = f"""
+🔔 TEST - Nifty Analyzer with Volume Profile
 
 📍 Current Price: ₹{current_price:.2f}
 💰 Volume Profile Analysis:
@@ -881,33 +607,13 @@ else:
 
 🕐 {current_time}
 """
+            except:
+                test_message = "🔔 Test message from Enhanced Nifty Analyzer with Volume Profile"
         else:
             test_message = "🔔 Test message from Enhanced Nifty Analyzer with Volume Profile"
         
         send_telegram(test_message)
         st.sidebar.success("Test sent!")
-    
-    # Add Volume Profile explanation
-    with st.expander("📚 Volume Profile Explanation"):
-        st.markdown("""
-        ### Volume Profile Analysis
-        
-        **Point of Control (POC)**: Price level with highest traded volume - acts as strong support/resistance
-        
-        **Value Area (VA)**: Price range containing 70% of total volume
-        - **VA High**: Upper boundary of value area (resistance)
-        - **VA Low**: Lower boundary of value area (support)
-        
-        **Trading Signals**:
-        - 🟢 **Bullish**: Price above POC with strong volume
-        - 🔴 **Bearish**: Price below POC with strong volume
-        - ⚪ **Neutral**: Price near POC or mixed signals
-        
-        **Strength Levels**:
-        - **STRONG**: Price outside Value Area
-        - **MODERATE**: Price at VA boundaries
-        - **WEAK**: Price inside Value Area
-        """)
 
 if __name__ == "__main__":
     main()
