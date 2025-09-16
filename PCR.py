@@ -411,7 +411,7 @@ def main():
                     if len(data) > 0:
                         df = pd.DataFrame(data)
                         
-                        # Ensure timestamps are properly formatted for Plotly
+                        # Convert timestamps to proper datetime format
                         df['timestamp'] = pd.to_datetime(df['timestamp'])
                         
                         # Create figure with candlestick chart
@@ -490,43 +490,6 @@ def main():
                                         ),
                                         hovertemplate='Sell Signal<extra></extra>'
                                     ))
-                                
-                                # Add current SuperTrend value annotation
-                                current_st = supertrend[-1]
-                                fig.add_annotation(
-                                    x=df['timestamp'].iloc[-1],
-                                    y=current_st,
-                                    text=f"SuperTrend: {current_st:.2f}",
-                                    showarrow=True,
-                                    arrowhead=2,
-                                    arrowsize=1,
-                                    arrowwidth=2,
-                                    arrowcolor="#7B1FA2",
-                                    ax=0,
-                                    ay=-40,
-                                    bgcolor="rgba(255,255,255,0.8)",
-                                    bordercolor="#7B1FA2",
-                                    borderwidth=1,
-                                    borderpad=4
-                                )
-                                
-                                # Check trend change
-                                if len(trend_direction) >= 2 and trend_direction[-1] != trend_direction[-2]:
-                                    trend_text = "BULLISH" if trend_direction[-1] == 1 else "BEARISH"
-                                    alert_key = f"{option_key}_{trend_direction[-1]}_{ist_time[:5]}"
-                                    
-                                    if alert_key not in st.session_state.alert_sent:
-                                        message = f"""
-<b>SuperTrend Alert!</b>
-Option: {strike} {opt_type}
-Signal: {trend_text}
-LTP: ₹{df['close'].iloc[-1]:.2f}
-Time: {ist_time} IST
-                                        """.strip()
-                                        
-                                        if telegram.send_message(message):
-                                            st.success(f"Alert: {strike} {opt_type} - {trend_text}")
-                                            st.session_state.alert_sent.add(alert_key)
                         
                         # Update layout for TBT-like appearance
                         fig.update_layout(
@@ -544,14 +507,14 @@ Time: {ist_time} IST
                         
                         # Format x-axis to show proper dates with IST timezone
                         fig.update_xaxes(
-                            tickformat="%d-%m\n%H:%M",
+                            tickformat="%H:%M\n%d-%m",
                             tickangle=0,
                             showgrid=True,
                             gridwidth=1,
                             gridcolor='lightgray',
-                            type='date',
                             tickmode='auto',
-                            nticks=20
+                            nticks=min(20, len(df)),
+                            ticklabelmode="period"
                         )
                         
                         fig.update_yaxes(
@@ -586,6 +549,12 @@ Time: {ist_time} IST
                         last_time = data[-1]['timestamp'].strftime('%d-%m %H:%M') if data else "N/A"
                         
                         st.info(f"📊 Showing data for {strike} {opt_type}: {first_time} to {last_time} | Total points: {total_points}")
+                        
+                        # Debug info
+                        with st.expander("Debug Info"):
+                            st.write(f"Data points: {len(df)}")
+                            st.write(f"Time range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+                            st.write(f"Sample timestamps: {df['timestamp'].head(5).tolist()}")
                 else:
                     st.warning(f"No data available for {strike} {opt_type}")
             
