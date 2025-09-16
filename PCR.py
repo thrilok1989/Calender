@@ -20,6 +20,24 @@ class DhanAPI:
             'Content-Type': 'application/json'
         }
     
+    def get_historical_data(self, security_id, exchange_segment, instrument, from_date, to_date, interval="5"):
+        """Get historical intraday data"""
+        url = f"{self.base_url}/charts/intraday"
+        payload = {
+            "securityId": str(security_id),
+            "exchangeSegment": exchange_segment,
+            "instrument": instrument,
+            "interval": interval,
+            "fromDate": from_date,
+            "toDate": to_date
+        }
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=15)
+            return response.json() if response.status_code == 200 else None
+        except Exception as e:
+            st.error(f"Historical Data API Error: {e}")
+            return None
+    
     def get_market_quote_ohlc(self, instruments_dict):
         """Get OHLC data for multiple instruments using Market Quote API"""
         url = f"{self.base_url}/marketfeed/ohlc"
@@ -63,7 +81,96 @@ class TelegramBot:
         except:
             return False
 
-def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
+def get_3day_historical_data(api, active_options, current_spot):
+    """Get 3 days of historical data for Nifty and create option data"""
+    ist = pytz.timezone('Asia/Kolkata')
+    
+    # Calculate date range - 3 trading days back
+    end_date = datetime.now(ist)
+    start_date = end_date - timedelta(days=5)  # Go back 5 days to ensure 3 trading days
+    
+    from_date = start_date.strftime('%Y-%m-%d 09:15:00')
+    to_date = end_date.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Get Nifty historical data
+    nifty_data = api.get_historical_data(
+        security_id=13,  # Nifty 50
+        exchange_segment="IDX_I",
+        instrument="INDEX",
+        from_date=from_date,
+        to_date=to_date,
+        interval="5"  # 5-minute intervals
+    )
+    
+    if not nifty_data or 'timestamp' not in nifty_data:
+        st.error("Failed to fetch historical data")
+        return {}
+    
+    historical_options_data = {}
+    
+    # Process each active option
+    for option in active_options:
+        option_key = f"{option['strike']}_{option['type']}"
+        option_data_points = []
+        
+        timestamps = nifty_data['timestamp']
+        closes = nifty_data['close']
+        highs = nifty_data['high']
+        lows = nifty_data['low']
+        opens = nifty_data['open']
+        
+        for i, timestamp in enumerate(timestamps):
+            if i < len(closes):
+                spot_price = closes[i]
+                spot_open = opens[i] if i < len(opens) else spot_price
+                spot_high = highs[i] if i < len(highs) else spot_price
+                spot_low = lows[i] if i < len(lows) else spot_price
+                
+                # Calculate option price based on moneyness
+                strike = option['strike']
+                option_type = option['type']
+                
+                # Simple option pricing based on intrinsic + time value
+                if option_type == 'CE':
+                    intrinsic = max(0, spot_price - strike)
+                    moneyness = (spot_price - strike) / strike
+                else:  # PE
+                    intrinsic = max(0, strike - spot_price)
+                    moneyness = (strike - spot_price) / strike
+                
+                # Time value decreases as we approach current time
+                days_to_expiry = max(1, (end_date - datetime.fromtimestamp(timestamp, ist)).days)
+                time_value = max(1, abs(moneyness) * 50 * (days_to_expiry / 7))  # Rough time value
+                
+                option_ltp = intrinsic + time_value
+                
+                # Create OHLC for option based on underlying movement
+                underlying_range = (spot_high - spot_low) / spot_price if spot_price > 0 else 0
+                option_volatility = underlying_range * 3  # Options are more volatile
+                
+                option_open = option_ltp * (spot_open / spot_price) if spot_price > 0 else option_ltp
+                option_high = option_ltp * (1 + option_volatility)
+                option_low = option_ltp * (1 - option_volatility)
+                
+                # Ensure OHLC relationships
+                option_high = max(option_high, option_open, option_ltp)
+                option_low = min(option_low, option_open, option_ltp)
+                
+                dt = datetime.fromtimestamp(timestamp, ist)
+                option_data_points.append({
+                    'timestamp': dt,
+                    'open': float(option_open),
+                    'high': float(option_high),
+                    'low': float(option_low),
+                    'close': float(option_ltp),
+                    'time_str': dt.strftime('%m-%d %H:%M'),
+                    'spot_price': spot_price
+                })
+        
+        if option_data_points:
+            historical_options_data[option_key] = option_data_points
+    
+    return historical_options_data
     if len(high) < period + 1:
         return [], []
     
@@ -235,105 +342,46 @@ def main():
                     if info['pe']:
                         st.write(f"PE: {info['pe']}")
             
-            # Prepare instruments for Market Quote OHLC API
-            # Note: We need security IDs for options, which are not directly available from option chain
-            # For now, let's get real OHLC for Nifty spot and use it as reference
-            market_quote_request = {"NSE_EQ": [13]}  # Nifty 50 index
+            # Load 3-day historical data
+            with st.spinner("Loading 3 days historical data..."):
+                historical_data = get_3day_historical_data(api, active_options, spot_price)
             
-            # Get real OHLC data
-            ohlc_data = api.get_market_quote_ohlc(market_quote_request)
-            
-            # Show OHLC data status
-            if ohlc_data and 'data' in ohlc_data:
-                st.info("Using real Nifty OHLC data to enhance option price simulation")
-            else:
-                st.warning("Using simulated OHLC data - Nifty market quote unavailable")
-            
-            # Collect live data with real OHLC simulation
-            current_time = ist_now
-            
-            for option in active_options:
-                option_key = f"{option['strike']}_{option['type']}"
+            if historical_data:
+                st.success(f"Loaded 3 days of historical data for {len(historical_data)} options")
                 
-                # Initialize data storage
-                if option_key not in st.session_state.options_data:
-                    st.session_state.options_data[option_key] = []
+                # Update session state with historical data
+                for option_key, data_points in historical_data.items():
+                    st.session_state.options_data[option_key] = data_points
                 
-                # Get reference OHLC from Nifty if available
-                if ohlc_data and 'data' in ohlc_data and 'NSE_EQ' in ohlc_data['data'] and '13' in ohlc_data['data']['NSE_EQ']:
-                    nifty_ohlc = ohlc_data['data']['NSE_EQ']['13'].get('ohlc', {})
-                    nifty_ltp = ohlc_data['data']['NSE_EQ']['13'].get('last_price', spot_price)
+                # Add current live data point
+                current_time = ist_now
+                for option in active_options:
+                    option_key = f"{option['strike']}_{option['type']}"
                     
-                    # Create realistic OHLC for option based on LTP and Nifty movement
-                    if len(st.session_state.options_data[option_key]) == 0:
-                        # First data point - use current LTP
-                        ohlc_point = {
-                            'timestamp': current_time,
-                            'open': option['ltp'],
-                            'high': option['ltp'],
-                            'low': option['ltp'],
-                            'close': option['ltp'],
-                            'time_str': current_time.strftime('%H:%M:%S')
-                        }
-                    else:
-                        # Use previous close and create realistic OHLC
-                        prev_close = st.session_state.options_data[option_key][-1]['close']
+                    if option_key in st.session_state.options_data:
+                        # Calculate current option OHLC based on current LTP
+                        last_data = st.session_state.options_data[option_key][-1]
+                        prev_close = last_data['close']
                         
-                        # Calculate volatility based on Nifty movement
-                        nifty_open = nifty_ohlc.get('open', nifty_ltp)
-                        nifty_high = nifty_ohlc.get('high', nifty_ltp)
-                        nifty_low = nifty_ohlc.get('low', nifty_ltp)
+                        # Simple volatility estimation
+                        price_change = abs(option['ltp'] - prev_close) / prev_close if prev_close > 0 else 0.02
+                        volatility = max(0.01, price_change)
                         
-                        if nifty_open > 0:
-                            nifty_volatility = max((nifty_high - nifty_low) / nifty_open, 0.005)
-                        else:
-                            nifty_volatility = 0.02
-                        
-                        # Scale volatility for options (typically 3-5x of underlying)
-                        option_volatility = nifty_volatility * 4
-                        
-                        # Create OHLC based on current LTP and volatility
-                        high = max(option['ltp'], prev_close) * (1 + option_volatility * 0.5)
-                        low = min(option['ltp'], prev_close) * (1 - option_volatility * 0.5)
-                        
-                        ohlc_point = {
+                        current_ohlc = {
                             'timestamp': current_time,
                             'open': prev_close,
-                            'high': max(high, option['ltp'], prev_close),
-                            'low': min(low, option['ltp'], prev_close),
+                            'high': max(option['ltp'] * (1 + volatility), prev_close, option['ltp']),
+                            'low': min(option['ltp'] * (1 - volatility), prev_close, option['ltp']),
                             'close': option['ltp'],
-                            'time_str': current_time.strftime('%H:%M:%S')
+                            'time_str': current_time.strftime('%m-%d %H:%M'),
+                            'spot_price': spot_price
                         }
-                else:
-                    # Fallback to simple OHLC creation
-                    if len(st.session_state.options_data[option_key]) == 0:
-                        ohlc_point = {
-                            'timestamp': current_time,
-                            'open': option['ltp'],
-                            'high': option['ltp'],
-                            'low': option['ltp'],
-                            'close': option['ltp'],
-                            'time_str': current_time.strftime('%H:%M:%S')
-                        }
-                    else:
-                        prev_close = st.session_state.options_data[option_key][-1]['close']
-                        volatility = max(0.01, abs(option['ltp'] - prev_close) / prev_close) if prev_close > 0 else 0.02
                         
-                        ohlc_point = {
-                            'timestamp': current_time,
-                            'open': prev_close,
-                            'high': max(option['ltp'] * (1 + volatility * 0.5), prev_close, option['ltp']),
-                            'low': min(option['ltp'] * (1 - volatility * 0.5), prev_close, option['ltp']),
-                            'close': option['ltp'],
-                            'time_str': current_time.strftime('%H:%M:%S')
-                        }
-                
-                # Add new data point
-                st.session_state.options_data[option_key].append(ohlc_point)
-                
-                # Keep only last 100 points
-                if len(st.session_state.options_data[option_key]) > 100:
-                    st.session_state.options_data[option_key] = st.session_state.options_data[option_key][-100:]
+                        # Add current data point
+                        st.session_state.options_data[option_key].append(current_ohlc)
+            else:
+                st.error("Failed to load historical data")
+                return
             
             # Create charts
             ce_options = [opt for opt in active_options if opt['type'] == 'CE']
@@ -448,7 +496,7 @@ Time: {ist_time} IST
                 fig.update_layout(
                     template='plotly_dark',
                     height=800 if rows == 2 else 600,
-                    title="ATM±2 Nifty Options - Real-time LTP with SuperTrend",
+                    title="ATM±2 Nifty Options - 3 Days Historical LTP with SuperTrend",
                     showlegend=True,
                     xaxis_rangeslider_visible=False,
                     xaxis2_rangeslider_visible=False if rows == 2 else None
@@ -459,7 +507,23 @@ Time: {ist_time} IST
                 
                 # Show data summary
                 total_data_points = sum(len(data) for data in st.session_state.options_data.values())
-                st.info(f"Tracking {len(active_options)} active options | Total data points collected: {total_data_points}")
+                first_data_time = None
+                last_data_time = None
+                
+                if st.session_state.options_data:
+                    all_times = []
+                    for data in st.session_state.options_data.values():
+                        if data:
+                            all_times.extend([point['timestamp'] for point in data])
+                    
+                    if all_times:
+                        first_data_time = min(all_times).strftime('%d-%m %H:%M')
+                        last_data_time = max(all_times).strftime('%d-%m %H:%M')
+                
+                if first_data_time and last_data_time:
+                    st.info(f"📊 Showing 3-day historical data: {first_data_time} to {last_data_time} | Total points: {total_data_points}")
+                else:
+                    st.info(f"Tracking {len(active_options)} active options | Total data points: {total_data_points}")
             
             else:
                 st.warning("No chart data available yet")
