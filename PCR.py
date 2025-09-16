@@ -133,16 +133,53 @@ def calculate_supertrend(high, low, close, period=10, multiplier=3.0):
     
     return supertrend, trend_direction
 
-def generate_historical_data(current_price, points=78):
-    """Generate 1 day of historical OHLC data (5-min intervals)"""
-    np.random.seed(42)  # For consistent data
+def generate_historical_data(current_price, option_type, strike_price, spot_price, points=78):
+    """Generate 1 day of historical OHLC data with realistic option behavior"""
+    # Use different seeds for CE vs PE to get different patterns
+    seed = hash(f"{option_type}_{strike_price}") % 1000
+    np.random.seed(seed)
     
     prices = []
-    base_price = current_price * 0.8  # Start from 80% of current price
     
+    # Calculate initial price based on option type and moneyness
+    if option_type == 'CE':
+        # Call options: more valuable when spot > strike
+        moneyness = (spot_price - strike_price) / strike_price
+        if moneyness > 0:  # ITM
+            base_price = current_price * 0.7  # Start lower, trend up
+            drift = 0.001  # Slight upward drift
+        else:  # OTM
+            base_price = current_price * 0.9  # Start higher, decay
+            drift = -0.0005  # Slight downward drift (time decay)
+    else:  # PE
+        # Put options: more valuable when spot < strike
+        moneyness = (strike_price - spot_price) / strike_price
+        if moneyness > 0:  # ITM
+            base_price = current_price * 0.8  # Start lower, trend up
+            drift = 0.0008
+        else:  # OTM
+            base_price = current_price * 0.85  # Start higher, decay
+            drift = -0.0008  # More decay for OTM puts
+    
+    # Generate price movements with option-specific characteristics
     for i in range(points):
-        # Simulate price movement
-        change = np.random.normal(0, base_price * 0.02)
+        # Base volatility
+        volatility = 0.03 if option_type == 'CE' else 0.035  # Puts slightly more volatile
+        
+        # Time decay effect (stronger near end of day)
+        time_factor = 1 + (i / points) * 0.5
+        if moneyness <= 0:  # OTM options decay faster
+            time_factor *= 1.2
+        
+        # Random walk with drift
+        change = np.random.normal(drift * base_price, base_price * volatility / time_factor)
+        
+        # Add some mean reversion
+        if i > 10:
+            mean_price = sum(prices[-10:]) / 10
+            reversion = (mean_price - base_price) * 0.05
+            change += reversion
+        
         base_price = max(0.05, base_price + change)
         prices.append(base_price)
     
@@ -154,10 +191,14 @@ def generate_historical_data(current_price, points=78):
     for i, price in enumerate(prices):
         timestamp = start_time + timedelta(minutes=i * 5)
         
-        # Create OHLC with some randomness
-        volatility = 0.015
-        high = price * (1 + np.random.uniform(0, volatility))
-        low = price * (1 - np.random.uniform(0, volatility))
+        # Option-specific volatility patterns
+        if option_type == 'CE':
+            intraday_vol = 0.02 * (1 + 0.5 * np.sin(i * 0.1))  # Varying volatility
+        else:
+            intraday_vol = 0.025 * (1 + 0.3 * np.cos(i * 0.08))  # Different pattern for puts
+        
+        high = price * (1 + np.random.uniform(0, intraday_vol))
+        low = price * (1 - np.random.uniform(0, intraday_vol))
         
         if i == 0:
             open_price = price
@@ -304,7 +345,7 @@ def create_candlestick_chart(ohlc_data, strike_price, option_type, st_period, st
     
     # Update layout
     fig.update_layout(
-        title=f"{strike_price} {option_type} - 1 Day Chart with SuperTrend",
+        title=f"{strike_price} {option_type} - 1 Day Chart with SuperTrend<br><sub style='color:#888'>{'Call Option (Bullish when spot rises)' if option_type == 'CE' else 'Put Option (Bullish when spot falls)'}</sub>",
         template='plotly_dark',
         height=600,
         xaxis_title="Time Points",
@@ -395,10 +436,30 @@ def main():
             current_ltp = option_data.get('last_price', 0)
             
             if current_ltp > 0:
-                st.subheader(f"Current LTP: ₹{current_ltp:.2f}")
+                # Calculate moneyness and status
+                if option_type == 'CE':
+                    moneyness = spot_price - strike_price
+                    if moneyness > 0:
+                        status = f"ITM by ₹{moneyness:.2f}"
+                        status_color = "🟢"
+                    else:
+                        status = f"OTM by ₹{abs(moneyness):.2f}"
+                        status_color = "🔴"
+                else:  # PE
+                    moneyness = strike_price - spot_price
+                    if moneyness > 0:
+                        status = f"ITM by ₹{moneyness:.2f}"
+                        status_color = "🟢"
+                    else:
+                        status = f"OTM by ₹{abs(moneyness):.2f}"
+                        status_color = "🔴"
                 
-                # Generate historical data
-                historical_data = generate_historical_data(current_ltp)
+                st.subheader(f"Current LTP: ₹{current_ltp:.2f} {status_color} {status}")
+                
+                # Generate historical data with option-specific behavior
+                historical_data = generate_historical_data(
+                    current_ltp, option_type, strike_price, spot_price
+                )
                 
                 # Create chart
                 chart_key = f"{strike_price}_{option_type}_{st_period}_{st_multiplier}"
