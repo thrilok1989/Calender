@@ -275,6 +275,66 @@ def combine_index_futures_data(index_data, futures_data):
     
     return combined_df
 
+def calculate_volume_profile(df, bins=20):
+    """Calculate Volume Profile / Money Flow indicator for futures data"""
+    if df.empty or len(df) < 10 or 'volume' not in df.columns:
+        return []
+    
+    df_copy = df[df['volume'].notna() & (df['volume'] > 0)]
+    if df_copy.empty:
+        return []
+    
+    overall_high, overall_low = df_copy['high'].max(), df_copy['low'].min()
+    if overall_high == overall_low:
+        return []
+    
+    price_bins = np.linspace(overall_low, overall_high, bins + 1)
+    volume_hist = np.zeros(bins)
+    
+    for _, row in df_copy.iterrows():
+        if pd.isna(row['volume']) or row['volume'] <= 0:
+            continue
+        typical_price = (row['high'] + row['low'] + row['close']) / 3
+        volume = row['volume']
+        bin_idx = np.digitize(typical_price, price_bins) - 1
+        bin_idx = max(0, min(bins - 1, bin_idx))
+        volume_hist[bin_idx] += volume
+    
+    if volume_hist.sum() == 0:
+        return []
+    
+    poc_idx = np.argmax(volume_hist)
+    poc_price = (price_bins[poc_idx] + price_bins[poc_idx + 1]) / 2
+    
+    total_volume = volume_hist.sum()
+    sorted_indices = np.argsort(volume_hist)[::-1]
+    cumulative_volume = 0
+    value_area_indices = []
+    
+    for bin_idx in sorted_indices:
+        cumulative_volume += volume_hist[bin_idx]
+        value_area_indices.append(bin_idx)
+        if cumulative_volume >= 0.7 * total_volume:
+            break
+    
+    if value_area_indices:
+        va_high = max([price_bins[i + 1] for i in value_area_indices])
+        va_low = min([price_bins[i] for i in value_area_indices])
+    else:
+        va_high, va_low = overall_high, overall_low
+    
+    return [{
+        "time": df_copy['datetime'].iloc[0],
+        "high": overall_high,
+        "low": overall_low,
+        "poc": poc_price,
+        "va_high": va_high,
+        "va_low": va_low,
+        "volume_hist": volume_hist,
+        "price_bins": price_bins,
+        "total_volume": total_volume
+    }]
+
 def calculate_options_volume_profile(option_data, current_price, bins=20):
     """Create Volume Profile using options chain volume data"""
     if not option_data or 'oc' not in option_data:
