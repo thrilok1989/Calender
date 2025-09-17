@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import requests
 import time
-import telegram
 
 st.set_page_config(page_title="Nifty Option Screener", layout="wide")
 
@@ -17,27 +16,23 @@ def auto_refresh(interval_sec=60):
 auto_refresh(60)
 
 # Telegram Bot Setup
-def setup_telegram_bot():
+def send_telegram_message(message):
     try:
         bot_token = st.secrets["TELEGRAM"]["BOT_TOKEN"]
         chat_id = st.secrets["TELEGRAM"]["CHAT_ID"]
-        bot = telegram.Bot(token=bot_token)
-        return bot, chat_id
-    except Exception as e:
-        st.error(f"Telegram bot setup failed: {e}")
-        return None, None
-
-# Send Telegram message
-def send_telegram_message(bot, chat_id, message):
-    try:
-        bot.send_message(chat_id=chat_id, text=message)
-        return True
+        
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        
+        response = requests.post(url, json=payload)
+        return response.status_code == 200
     except Exception as e:
         st.error(f"Failed to send Telegram message: {e}")
         return False
-
-# Initialize Telegram bot
-bot, chat_id = setup_telegram_bot()
 
 st.title("📊 NIFTY Option Screener – Fijacapital")
 st.markdown("⏰ Auto-refresh every 1 minutes | 🔄 Live NSE Option Chain Analysis")
@@ -127,10 +122,12 @@ with col2:
         st.warning("🟡 Neutral Sentiment")
 with col3:
     # Add a button to send trading signals
-    if st.button("📨 Send Trading Signal via Telegram") and bot and chat_id:
+    if st.button("📨 Send Trading Signal via Telegram"):
         signal_message = f"📊 NIFTY Trading Signal\nPCR: {pcr}\nSpot: {underlying}\nATM: {atm_strike}\nTrend: {'Bullish' if pcr > 1.2 else 'Bearish' if pcr < 0.8 else 'Neutral'}"
-        if send_telegram_message(bot, chat_id, signal_message):
+        if send_telegram_message(signal_message):
             st.success("Signal sent successfully!")
+        else:
+            st.error("Failed to send signal. Check your Telegram credentials.")
 
 # Merge CE and PE
 merged_df = pd.merge(df_ce, df_pe, on="strikePrice", how="outer").sort_values("strikePrice")
@@ -156,10 +153,16 @@ merged_df["Price_Tag_CE"] = merged_df["IV_CE"].apply(price_tag)
 merged_df["Price_Tag_PE"] = merged_df["IV_PE"].apply(price_tag)
 
 # 🎨 Highlight Cheap/Expensive tags with color
-styled_df = merged_df.style.applymap(
-    lambda x: 'color: green' if x == '🟢 Cheap' else 'color: red' if x == '🔴 Expensive' else 'color: orange',
-    subset=["Price_Tag_CE", "Price_Tag_PE"]
-)
+def highlight_tags(val):
+    if val == '🟢 Cheap':
+        return 'color: green'
+    elif val == '🔴 Expensive':
+        return 'color: red'
+    elif val == '🟡 Fair':
+        return 'color: orange'
+    return ''
+
+styled_df = merged_df.style.applymap(highlight_tags, subset=["Price_Tag_CE", "Price_Tag_PE"])
 
 st.dataframe(styled_df, use_container_width=True)
 
@@ -260,10 +263,9 @@ st.info(f"**Suggested Action:** {action}")
 st.caption(f"📌 Reason: {reason}")
 
 # Auto-send signal when strong signal detected
-if bot and chat_id:
-    if (pcr > 1.3 or pcr < 0.7) and ("last_signal_sent" not in st.session_state or 
-                                     time.time() - st.session_state.last_signal_sent > 3600):  # 1 hour cooldown
-        signal_message = f"🚨 STRONG NIFTY SIGNAL\nPCR: {pcr} ({'Bullish' if pcr > 1.3 else 'Bearish'})\nSpot: {underlying}\nSuggested: {action}\nTime: {time.strftime('%Y-%m-%d %H:%M:%S')}"
-        if send_telegram_message(bot, chat_id, signal_message):
-            st.session_state.last_signal_sent = time.time()
-            st.success("Strong signal automatically sent to Telegram!")
+if (pcr > 1.3 or pcr < 0.7) and ("last_signal_sent" not in st.session_state or 
+                                 time.time() - st.session_state.last_signal_sent > 3600):  # 1 hour cooldown
+    signal_message = f"🚨 STRONG NIFTY SIGNAL\nPCR: {pcr} ({'Bullish' if pcr > 1.3 else 'Bearish'})\nSpot: {underlying}\nSuggested: {action}\nTime: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+    if send_telegram_message(signal_message):
+        st.session_state.last_signal_sent = time.time()
+        st.success("Strong signal automatically sent to Telegram!")
