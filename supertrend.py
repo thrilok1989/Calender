@@ -1,13 +1,3 @@
-remove this sending msg  THIRD SIGNAL - PIVOT PROXIMITY CALL 🔔
-
-📍 Spot: ₹25330.25 (ABOVE pivot by +4.35)
-📌 Pivot: 5M at ₹25325.90
-🎯 ATM: 25350.0
-
-Pivot Type: Support
-ChgOI: Bullish, Volume: Bearish, Ask: Bullish, Bid: Bullish
-
-🕐 15:42:47 IST...................
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import requests
@@ -191,7 +181,7 @@ def create_chart(df, title):
     
     if len(df) > 50:
         timeframes = ["5", "10", "15"]
-        colors = ["#ff9900", "#ff44ff", "#4444ff"]
+        colors = ["#ff9900", "#ff44ff", '#4444ff']
         
         for tf, color in zip(timeframes, colors):
             pivots = get_pivots(df, tf)
