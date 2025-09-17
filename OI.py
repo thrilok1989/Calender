@@ -815,6 +815,9 @@ def main():
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist)
     
+    # Initialize API early
+    api = DhanAPI()
+    
     if not is_market_hours():
         st.warning(f"⚠️ Market closed. Time: {current_time.strftime('%H:%M:%S IST')}")
     
@@ -832,6 +835,7 @@ def main():
     # Initialize current_futures_scrip with default value
     current_futures_scrip = NIFTY_FUTURES_SCRIP
     
+    # Move the button logic to after API is initialized
     if use_futures_volume:
         st.sidebar.write(f"Current Futures Scrip ID: **{NIFTY_FUTURES_SCRIP}**")
         
@@ -839,7 +843,7 @@ def main():
         if st.sidebar.button("Find Current Futures Scrip"):
             with st.sidebar:
                 with st.spinner("Searching for current NIFTY futures..."):
-                    futures_info = api.find_current_nifty_futures()
+                    futures_info = api.find_current_nifty_futures()  # Now api is defined
                     if futures_info:
                         st.success(f"Found: Scrip {futures_info['scrip_id']}")
                         st.write(f"Symbol: {futures_info['symbol']}")
@@ -847,7 +851,7 @@ def main():
                         st.warning("Update NIFTY_FUTURES_SCRIP in code to use this scrip ID")
                     else:
                         st.error("Could not find current NIFTY futures")
-        
+     
         # Manual scrip ID input
         manual_scrip = st.sidebar.number_input(
             "Manual Futures Scrip ID", 
