@@ -53,7 +53,7 @@ class DhanAPI:
     def get_intraday_data(self, interval="5", days_back=1):
         """
         Fetch intraday OHLC + volume via /charts/intraday
-        interval in ["1","5","15","25","60"]
+        interval in ["1","3","5","15","25","60"]
         """
         url = "https://api.dhan.co/v2/charts/intraday"
         ist = pytz.timezone('Asia/Kolkata')
@@ -218,7 +218,6 @@ def compute_volume_profile(df_full, period="1D", bins=20):
         if sub.empty:
             continue
         # assign volumes
-        # faster via numpy digitize
         closes = sub['close'].values
         volumes = sub['volume'].values
         inds = np.digitize(closes, bin_edges) - 1
@@ -237,6 +236,51 @@ def compute_volume_profile(df_full, period="1D", bins=20):
             "hist": hist
         })
     return profiles
+
+# ----------------------------
+# New: ATM ±1 Option Volume Profile (CE vs PE bars)
+# ----------------------------
+def option_volume_profile_ce_pe(expiry):
+    """
+    Returns DataFrame with columns: strike, ce_volume, pe_volume, total_volume
+    and poc_strike (the strike with max total_volume)
+    """
+    oc = get_option_chain(expiry)
+    if not oc or 'data' not in oc:
+        return None, None
+    data = oc['data']
+    oc_data = data.get('oc', {})
+    underlying = data.get('last_price', None)
+    if underlying is None:
+        return None, None
+
+    # NIFTY standard strike step 50
+    atm_strike = int(round(underlying / 50) * 50)
+    strikes = [atm_strike - 50, atm_strike, atm_strike + 50]
+
+    rows = []
+    for strike in strikes:
+        key = f"{float(strike):.6f}"
+        ce_vol = 0
+        pe_vol = 0
+        # some APIs return keys like "25000.000000" — we use formatted string
+        if key in oc_data:
+            sd = oc_data[key]
+            ce = sd.get("ce", {}) or {}
+            pe = sd.get("pe", {}) or {}
+            ce_vol = ce.get("volume", 0) or 0
+            pe_vol = pe.get("volume", 0) or 0
+        rows.append({"strike": strike, "ce_volume": int(ce_vol), "pe_volume": int(pe_vol)})
+    df_vol = pd.DataFrame(rows)
+    df_vol['total'] = df_vol['ce_volume'] + df_vol['pe_volume']
+
+    if df_vol['total'].sum() == 0:
+        # no volume info present
+        return df_vol, None
+
+    poc_row = df_vol.loc[df_vol['total'].idxmax()]
+    poc_strike = int(poc_row['strike'])
+    return df_vol, poc_strike
 
 def analyze_options(expiry):
     oc = get_option_chain(expiry)
@@ -468,6 +512,52 @@ def main():
             st.dataframe(opt_summary, use_container_width=True)
             if enable_signals:
                 check_signals(df, opt_summary, current_price, proximity, pivots=all_pivots)
+
+            # ---- New: ATM ±1 CE vs PE volume profile ----
+            df_optvol, poc_strike = option_volume_profile_ce_pe(selected_exp)
+            if df_optvol is not None:
+                st.subheader("ATM ±1 Option Volume (CE vs PE)")
+                st.write(df_optvol)
+
+                # Plot grouped horizontal bars: CE (green) and PE (red)
+                strikes = df_optvol['strike'].astype(str).tolist()
+                ce_vals = df_optvol['ce_volume'].tolist()
+                pe_vals = df_optvol['pe_volume'].tolist()
+
+                # Create figure
+                fig_v = go.Figure()
+                fig_v.add_trace(go.Bar(
+                    x=ce_vals, y=strikes, orientation='h', name='CE Volume',
+                    marker_color='green'
+                ))
+                fig_v.add_trace(go.Bar(
+                    x=pe_vals, y=strikes, orientation='h', name='PE Volume',
+                    marker_color='red'
+                ))
+                # Highlight POC strike (combined highest)
+                if poc_strike is not None:
+                    fig_v.add_shape(
+                        type="line",
+                        x0=0, x1=max(max(ce_vals), max(pe_vals), 1) * 1.05,
+                        y0=str(poc_strike), y1=str(poc_strike),
+                        line=dict(color="blue", width=2, dash="dash")
+                    )
+                    fig_v.add_annotation(
+                        x=max(max(ce_vals), max(pe_vals), 1) * 0.6,
+                        y=str(poc_strike),
+                        text=f"POC: {poc_strike}",
+                        showarrow=False,
+                        font=dict(color="white")
+                    )
+
+                fig_v.update_layout(
+                    title="ATM ±1 Option Volume Profile (CE green | PE red)",
+                    xaxis_title="Volume", yaxis_title="Strike",
+                    barmode='group', template='plotly_dark', height=360
+                )
+                st.plotly_chart(fig_v, use_container_width=True)
+            else:
+                st.warning("Option Volume Profile data unavailable")
         else:
             st.warning("Option data unavailable for this expiry")
     else:
