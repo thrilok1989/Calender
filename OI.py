@@ -275,7 +275,98 @@ def combine_index_futures_data(index_data, futures_data):
     
     return combined_df
 
-def calculate_volume_profile(df, bins=20):
+def calculate_options_volume_profile(option_data, current_price, bins=20):
+    """Create Volume Profile using options chain volume data"""
+    if not option_data or 'oc' not in option_data:
+        return []
+    
+    # Collect all option volumes with their strikes
+    volume_by_strike = {}
+    total_option_volume = 0
+    
+    for strike, strike_data in option_data['oc'].items():
+        try:
+            strike_price = float(strike)
+            ce_volume = 0
+            pe_volume = 0
+            
+            if 'ce' in strike_data and 'volume' in strike_data['ce']:
+                ce_volume = strike_data['ce'].get('volume', 0) or 0
+            if 'pe' in strike_data and 'volume' in strike_data['pe']:
+                pe_volume = strike_data['pe'].get('volume', 0) or 0
+            
+            total_volume = ce_volume + pe_volume
+            if total_volume > 0:
+                volume_by_strike[strike_price] = total_volume
+                total_option_volume += total_volume
+                
+        except (ValueError, TypeError):
+            continue
+    
+    if not volume_by_strike or total_option_volume == 0:
+        return []
+    
+    # Create price range around current price (±10% or available strikes)
+    strikes = sorted(volume_by_strike.keys())
+    price_low = min(strikes)
+    price_high = max(strikes)
+    
+    # Extend range slightly beyond strike boundaries
+    price_range = price_high - price_low
+    price_low = max(price_low - price_range * 0.05, min(strikes))
+    price_high = min(price_high + price_range * 0.05, max(strikes))
+    
+    # Create bins for volume distribution
+    price_bins = np.linspace(price_low, price_high, bins + 1)
+    volume_hist = np.zeros(bins)
+    
+    # Distribute option volumes into price bins
+    for strike, volume in volume_by_strike.items():
+        # Find appropriate bin for this strike
+        bin_idx = np.digitize(strike, price_bins) - 1
+        bin_idx = max(0, min(bins - 1, bin_idx))
+        volume_hist[bin_idx] += volume
+    
+    if volume_hist.sum() == 0:
+        return []
+    
+    # Calculate POC (Point of Control)
+    poc_idx = np.argmax(volume_hist)
+    poc_price = (price_bins[poc_idx] + price_bins[poc_idx + 1]) / 2
+    
+    # Calculate Value Area (70% of total volume)
+    total_volume = volume_hist.sum()
+    sorted_indices = np.argsort(volume_hist)[::-1]
+    cumulative_volume = 0
+    value_area_indices = []
+    
+    for bin_idx in sorted_indices:
+        cumulative_volume += volume_hist[bin_idx]
+        value_area_indices.append(bin_idx)
+        if cumulative_volume >= 0.7 * total_volume:
+            break
+    
+    # Calculate Value Area boundaries
+    if value_area_indices:
+        va_high = max([price_bins[i + 1] for i in value_area_indices])
+        va_low = min([price_bins[i] for i in value_area_indices])
+    else:
+        va_high = price_high
+        va_low = price_low
+    
+    return [{
+        "time": datetime.now(pytz.timezone('Asia/Kolkata')),
+        "high": price_high,
+        "low": price_low,
+        "poc": poc_price,
+        "va_high": va_high,
+        "va_low": va_low,
+        "volume_hist": volume_hist,
+        "price_bins": price_bins,
+        "total_volume": total_volume,
+        "source": "options",
+        "strike_count": len(volume_by_strike)
+    }]
     if df.empty or len(df) < 10 or 'volume' not in df.columns: return []
     
     df_copy = df[df['volume'].notna() & (df['volume'] > 0)]
@@ -815,9 +906,6 @@ def main():
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist)
     
-    # Initialize API early
-    api = DhanAPI()
-    
     if not is_market_hours():
         st.warning(f"⚠️ Market closed. Time: {current_time.strftime('%H:%M:%S IST')}")
     
@@ -829,13 +917,20 @@ def main():
     
     # Volume source option
     st.sidebar.subheader("Volume Data Source")
-    use_futures_volume = st.sidebar.checkbox("Use Futures Volume", value=False, 
-                                           help="Uses NIFTY Futures volume for Volume Profile calculation")
+    
+    volume_source = st.sidebar.radio(
+        "Select Volume Source:",
+        ["Index Only (No Volume)", "Futures Volume", "Options Volume Profile"],
+        index=2,  # Default to Options Volume Profile
+        help="Choose data source for Volume Profile calculation"
+    )
+    
+    use_futures_volume = volume_source == "Futures Volume"
+    use_options_volume = volume_source == "Options Volume Profile"
     
     # Initialize current_futures_scrip with default value
     current_futures_scrip = NIFTY_FUTURES_SCRIP
     
-    # Move the button logic to after API is initialized
     if use_futures_volume:
         st.sidebar.write(f"Current Futures Scrip ID: **{NIFTY_FUTURES_SCRIP}**")
         
@@ -843,7 +938,7 @@ def main():
         if st.sidebar.button("Find Current Futures Scrip"):
             with st.sidebar:
                 with st.spinner("Searching for current NIFTY futures..."):
-                    futures_info = api.find_current_nifty_futures()  # Now api is defined
+                    futures_info = api.find_current_nifty_futures()
                     if futures_info:
                         st.success(f"Found: Scrip {futures_info['scrip_id']}")
                         st.write(f"Symbol: {futures_info['symbol']}")
@@ -851,7 +946,7 @@ def main():
                         st.warning("Update NIFTY_FUTURES_SCRIP in code to use this scrip ID")
                     else:
                         st.error("Could not find current NIFTY futures")
-     
+        
         # Manual scrip ID input
         manual_scrip = st.sidebar.number_input(
             "Manual Futures Scrip ID", 
@@ -897,7 +992,7 @@ def main():
         
         # Only fetch data if refresh is triggered
         if refresh_data:
-            st.write(f"**Refresh triggered - Use Futures Volume: {use_futures_volume}**")
+            st.write(f"**Refresh triggered - Volume Source: {volume_source}**")
             
             if use_futures_volume:
                 # Get both index and futures data
@@ -936,8 +1031,8 @@ def main():
                     if not df.empty:
                         df.attrs['volume_source'] = 'futures_only'
             else:
-                # Use index data only
-                with st.spinner("Fetching NIFTY Index data only..."):
+                # Use index data only for price information
+                with st.spinner("Fetching NIFTY Index data..."):
                     data = api.get_intraday_data(interval)
                     df = process_candle_data(data) if data else pd.DataFrame()
                     if not df.empty:
