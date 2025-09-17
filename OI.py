@@ -1,4 +1,4 @@
-import streamlit as st
+review import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import requests
 import pandas as pd
@@ -10,6 +10,7 @@ import numpy as np
 import math
 from scipy.stats import norm
 from datetime import datetime, timedelta
+import time
 
 # Page config
 st.set_page_config(page_title="Nifty Analyzer", page_icon="📈", layout="wide")
@@ -40,6 +41,7 @@ DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
 DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", "")
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
+ALPHA_VANTAGE_KEY = st.secrets.get("ALPHA_VANTAGE_KEY", "")
 NIFTY_SCRIP = 13
 NIFTY_SEG = "IDX_I"
 
@@ -207,93 +209,160 @@ def detect_level_touches(df, pivot_value, tolerance_pct=0.09):
             
     return touches
 
-# ===== NEWS INTEGRATION =====
+# ===== ALPHA VANTAGE NEWS INTEGRATION =====
+
+def fetch_alpha_vantage_news():
+    """Fetch news using Alpha Vantage API with proper error handling"""
+    if not ALPHA_VANTAGE_KEY:
+        return [{
+            'title': 'Alpha Vantage API key not configured',
+            'summary': 'Please add ALPHA_VANTAGE_KEY to secrets',
+            'source': 'System',
+            'published_at': datetime.now().isoformat(),
+            'sentiment_score': 0
+        }]
+    
+    try:
+        # Check if we've made a request recently (rate limiting)
+        current_time = time.time()
+        if 'last_news_request' in st.session_state:
+            time_since_last = current_time - st.session_state.last_news_request
+            if time_since_last < 900:  # 15 minutes in seconds
+                # Return cached data if available
+                if 'alpha_vantage_news' in st.session_state:
+                    return st.session_state.alpha_vantage_news
+                # Otherwise wait until we can make a new request
+                time_to_wait = 900 - time_since_last
+                st.warning(f"Alpha Vantage rate limit: Waiting {int(time_to_wait/60)} minutes before next news fetch")
+                if 'alpha_vantage_news' in st.session_state:
+                    return st.session_state.alpha_vantage_news
+                return []
+        
+        # Make API request
+        url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=NIFTY&apikey={ALPHA_VANTAGE_KEY}"
+        response = requests.get(url, timeout=15)
+        
+        # Check for rate limiting
+        if response.status_code == 429:
+            st.error("Alpha Vantage rate limit exceeded. Using cached data if available.")
+            if 'alpha_vantage_news' in st.session_state:
+                return st.session_state.alpha_vantage_news
+            return []
+        
+        response.raise_for_status()
+        
+        data = response.json()
+        feed = data.get('feed', [])[:5]  # Get top 5 news items
+        
+        processed_news = []
+        for item in feed:
+            # Extract sentiment data if available
+            sentiment_info = item.get('overall_sentiment', {})
+            sentiment_score = sentiment_info.get('score', 0) if isinstance(sentiment_info, dict) else 0
+            
+            processed_news.append({
+                'title': item.get('title', ''),
+                'summary': item.get('summary', '')[:200],
+                'url': item.get('url', ''),
+                'source': item.get('source', 'Unknown'),
+                'published_at': item.get('time_published', ''),
+                'sentiment_score': sentiment_score
+            })
+        
+        # Store the request time and data
+        st.session_state.last_news_request = current_time
+        st.session_state.alpha_vantage_news = processed_news
+        
+        return processed_news
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f"Alpha Vantage request failed: {e}")
+        # Return cached data if available
+        if 'alpha_vantage_news' in st.session_state:
+            return st.session_state.alpha_vantage_news
+        return []
+    except Exception as e:
+        st.error(f"Error processing Alpha Vantage news: {e}")
+        if 'alpha_vantage_news' in st.session_state:
+            return st.session_state.alpha_vantage_news
+        return []
 
 def fetch_market_news():
-    """Fetch latest market news using web search"""
+    """Fetch latest market news using Alpha Vantage with 15-minute rate limiting"""
     try:
-        # Check if we have cached news (avoid too many API calls)
+        # Check if we have cached news that's still fresh (less than 15 minutes old)
         current_time = datetime.now()
         if 'news_cache' in st.session_state:
             cache_time = st.session_state.news_cache.get('timestamp')
-            if cache_time and (current_time - cache_time).total_seconds() < 1800:  # 30 minutes
+            if cache_time and (current_time - cache_time).total_seconds() < 900:  # 15 minutes
                 return st.session_state.news_cache.get('data', [])
         
-        # Search for recent Nifty/Indian market news
-        search_queries = [
-            "Nifty 50 news today stock market",
-            "Indian stock market news NSE BSE today"
-        ]
+        # Fetch news from Alpha Vantage
+        news_data = fetch_alpha_vantage_news()
         
-        news_data = []
+        # If we got valid news data, cache it
+        if news_data and len(news_data) > 0 and not any('error' in item.get('title', '').lower() for item in news_data):
+            st.session_state.news_cache = {
+                'data': news_data,
+                'timestamp': current_time
+            }
+            return news_data
         
-        for query in search_queries[:1]:  # Limit to 1 query to avoid rate limits
-            try:
-                # Use web_search function if available
-                if 'web_search' in globals():
-                    search_results = web_search(query)
+        # Fallback if no news available
+        return [{
+            'title': 'Market News - Alpha Vantage Unavailable',
+            'summary': 'Check API configuration or try again later',
+            'sentiment_score': 0,
+            'timestamp': current_time.isoformat(),
+            'source': 'System Notice'
+        }]
                     
-                    # Process search results
-                    if search_results and hasattr(search_results, 'results'):
-                        for result in search_results.results[:3]:  # Top 3 results
-                            news_item = {
-                                'title': result.title,
-                                'summary': result.description[:200] if hasattr(result, 'description') else '',
-                                'url': result.url if hasattr(result, 'url') else '',
-                                'timestamp': current_time.isoformat(),
-                                'source': result.url.split('/')[2] if hasattr(result, 'url') else 'Unknown'
-                            }
-                            news_data.append(news_item)
-                
-                # If web_search not available or no results, return placeholder
-                if not news_data:
-                    news_data = [
-                        {
-                            'title': 'Market News - Web Search Unavailable',
-                            'summary': 'Enable web search tools for live market news updates',
-                            'sentiment': 'neutral',
-                            'timestamp': current_time.isoformat(),
-                            'source': 'System Notice'
-                        }
-                    ]
-                    
-            except Exception as e:
-                # Fallback news item
-                news_data.append({
-                    'title': f'News Fetch Error - {str(e)[:50]}',
-                    'summary': 'Unable to fetch live market news. Check web search functionality.',
-                    'sentiment': 'neutral',
-                    'timestamp': current_time.isoformat(),
-                    'source': 'Error Handler'
-                })
-                continue
-        
-        # Cache the results
-        if 'news_cache' not in st.session_state:
-            st.session_state.news_cache = {}
-        st.session_state.news_cache = {
-            'data': news_data[:5],
-            'timestamp': current_time
-        }
-                
-        return news_data[:5]  # Return top 5 news items
-        
     except Exception as e:
         # Ultimate fallback
         return [{
             'title': 'News Service Unavailable',
             'summary': f'News fetching disabled: {str(e)}',
-            'sentiment': 'neutral',
+            'sentiment_score': 0,
             'timestamp': datetime.now().isoformat(),
             'source': 'Fallback'
         }]
 
 def analyze_news_sentiment(news_items):
-    """Enhanced sentiment analysis with scoring weights"""
-    if not news_items:
+    """Enhanced sentiment analysis using Alpha Vantage sentiment scores"""
+    if not news_items or any('error' in item.get('title', '').lower() for item in news_items):
         return {"overall": "neutral", "score": 0, "bullish_count": 0, "bearish_count": 0}
     
-    # Enhanced keyword lists with weights
+    # Use Alpha Vantage sentiment scores if available
+    sentiment_scores = []
+    for item in news_items:
+        sentiment_score = item.get('sentiment_score', 0)
+        # Convert to -1 to 1 scale if needed (Alpha Vantage uses 0 to 1)
+        if 0 <= sentiment_score <= 1:
+            sentiment_scores.append(sentiment_score * 2 - 1)  # Convert to -1 to 1 scale
+        else:
+            sentiment_scores.append(sentiment_score)
+    
+    if sentiment_scores:
+        avg_score = sum(sentiment_scores) / len(sentiment_scores)
+        
+        # Determine sentiment based on average score
+        if avg_score > 0.2:
+            overall = "bullish"
+        elif avg_score < -0.2:
+            overall = "bearish"
+        else:
+            overall = "neutral"
+            
+        return {
+            "overall": overall,
+            "score": round(avg_score, 3),
+            "bullish_count": sum(1 for score in sentiment_scores if score > 0.2),
+            "bearish_count": sum(1 for score in sentiment_scores if score < -0.2),
+            "neutral_count": sum(1 for score in sentiment_scores if -0.2 <= score <= 0.2),
+            "confidence": min(abs(avg_score) * 2, 1.0)  # Confidence score 0-1
+        }
+    
+    # Fallback to keyword analysis if no sentiment scores available
     bullish_keywords = {
         'rally': 3, 'surge': 3, 'soar': 3, 'breakout': 2, 'gain': 2, 'rise': 2, 
         'up': 1, 'positive': 2, 'strong': 2, 'growth': 2, 'bull': 3, 'optimistic': 2,
@@ -1617,7 +1686,6 @@ All Premium Conditions Met (Including News Alignment)
         # Position sizing recommendation
         if signal_strength >= 8:
             position_size = "Large"
-        elif signal_strength >= 6:
             position_size = "Medium"
         else:
             position_size = "Small"
@@ -1688,29 +1756,6 @@ def check_enhanced_signals_only(df, option_data, current_price, proximity, min_s
     
     st.info(f"Enhanced Mode: Only showing signals with strength >= {min_strength}/10 and news alignment")
 
-# Cache news data to avoid excessive API calls
-def get_cached_news():
-    """Get cached news data or fetch new if expired"""
-    current_time = datetime.now()
-    
-    if 'news_cache' in st.session_state:
-        cache_time = st.session_state.news_cache.get('timestamp')
-        if cache_time and (current_time - cache_time).total_seconds() < 1800:  # 30 minutes
-            return st.session_state.news_cache['data'], st.session_state.news_cache['sentiment']
-    
-    # Fetch fresh news
-    news_items = fetch_market_news()
-    news_sentiment = analyze_news_sentiment(news_items)
-    
-    # Cache the results
-    st.session_state.news_cache = {
-        'data': news_items,
-        'sentiment': news_sentiment,
-        'timestamp': current_time
-    }
-    
-    return news_items, news_sentiment
-
 def main():
     st.title("📈 Nifty Trading Analyzer")
     
@@ -1745,9 +1790,13 @@ def main():
     if st.sidebar.button("Refresh News"):
         if 'news_cache' in st.session_state:
             del st.session_state.news_cache
+        if 'last_news_request' in st.session_state:
+            del st.session_state.last_news_request
+        if 'alpha_vantage_news' in st.session_state:
+            del st.session_state.alpha_vantage_news
         st.sidebar.success("News cache cleared!")
         
-    st.sidebar.caption("News updates automatically every 30 minutes during market hours")
+    st.sidebar.caption("News updates automatically every 15 minutes during market hours")
     
     api = DhanAPI()
     
@@ -1837,7 +1886,16 @@ def main():
                             st.write(f"**{i}. {item['title']}**")
                             if 'summary' in item and item['summary']:
                                 st.caption(item['summary'][:200] + "..." if len(item.get('summary', '')) > 200 else item.get('summary', ''))
-                            st.caption(f"Source: {item.get('source', 'Unknown')} | Sentiment: {item.get('sentiment', 'neutral')}")
+                            st.caption(f"Source: {item.get('source', 'Unknown')} | Sentiment: {item.get('sentiment_score', 0):.2f}")
+                            
+                    # Show next news update time
+                    if 'last_news_request' in st.session_state:
+                        next_update = st.session_state.last_news_request + 900  # 15 minutes
+                        time_remaining = next_update - time.time()
+                        if time_remaining > 0:
+                            minutes = int(time_remaining // 60)
+                            seconds = int(time_remaining % 60)
+                            st.caption(f"Next news update in: {minutes}m {seconds}s")
                 else:
                     st.info("News data unavailable")
                 
@@ -1967,15 +2025,21 @@ Enhanced Features Active:
 ✅ Signal Strength Scoring
 ✅ Position Size Recommendations
 ✅ Market Analysis Dashboard
-✅ News Integration
+✅ Alpha Vantage News Integration
 ✅ Comprehensive Bias Analysis
 """
         send_telegram(test_message)
         st.sidebar.success("📤 Enhanced test message sent!")
 
 if __name__ == "__main__":
-    # Initialize session state for signal tracking
+    # Initialize session state for signal tracking and news caching
     if 'signal_log' not in st.session_state:
         st.session_state.signal_log = []
+    
+    if 'news_cache' not in st.session_state:
+        st.session_state.news_cache = {}
+        
+    if 'alpha_vantage_news' not in st.session_state:
+        st.session_state.alpha_vantage_news = []
     
     main()
