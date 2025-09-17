@@ -86,6 +86,29 @@ class DhanAPI:
             instrument="FUTIDX"
         )
     
+    def test_api_connection(self):
+        """Test API connectivity and credentials"""
+        try:
+            # Test with a simple LTP call
+            url = "https://api.dhan.co/v2/marketfeed/ltp"
+            payload = {NIFTY_SEG: [NIFTY_SCRIP]}
+            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+            
+            if response.status_code == 200:
+                return True, "API connection successful"
+            elif response.status_code == 401:
+                return False, "Authentication failed - Check credentials"
+            elif response.status_code == 429:
+                return False, "Rate limit exceeded - Wait and retry"
+            else:
+                return False, f"API error: {response.status_code}"
+        except requests.exceptions.Timeout:
+            return False, "Request timeout - Check network connection"
+        except requests.exceptions.ConnectionError:
+            return False, "Connection error - Check internet connectivity"
+        except Exception as e:
+            return False, f"Unexpected error: {str(e)}"
+    
     def get_ltp_data(self):
         url = "https://api.dhan.co/v2/marketfeed/ltp"
         payload = {NIFTY_SEG: [NIFTY_SCRIP]}
@@ -133,34 +156,64 @@ def process_candle_data(data):
 
 def combine_index_futures_data(index_data, futures_data):
     """Combine NIFTY Index price data with Futures volume data"""
-    if not index_data or not futures_data:
-        return pd.DataFrame()
     
-    # Process both datasets
-    index_df = process_candle_data(index_data)
-    futures_df = process_candle_data(futures_data)
+    # Debug: Check what data we received
+    st.write("**Debug - Data Check:**")
+    st.write(f"Index data received: {index_data is not None}")
+    st.write(f"Futures data received: {futures_data is not None}")
     
+    if index_data:
+        st.write(f"Index data keys: {list(index_data.keys()) if isinstance(index_data, dict) else 'Not a dict'}")
+    if futures_data:
+        st.write(f"Futures data keys: {list(futures_data.keys()) if isinstance(futures_data, dict) else 'Not a dict'}")
+    
+    # Try to process index data first (primary source)
+    index_df = pd.DataFrame()
+    if index_data:
+        try:
+            index_df = process_candle_data(index_data)
+            st.success(f"Index data processed: {len(index_df)} records")
+        except Exception as e:
+            st.error(f"Index data processing failed: {e}")
+    
+    # If index data failed, return empty DataFrame
     if index_df.empty:
+        st.error("Primary NIFTY Index data is empty or failed to process")
         return pd.DataFrame()
+    
+    # Try to get futures volume
+    futures_df = pd.DataFrame()
+    if futures_data:
+        try:
+            futures_df = process_candle_data(futures_data)
+            st.success(f"Futures data processed: {len(futures_df)} records")
+        except Exception as e:
+            st.error(f"Futures data processing failed: {e}")
     
     # Create combined DataFrame with Index prices
     combined_df = index_df.copy()
     
-    # Replace volume with futures volume if available
-    if not futures_df.empty and 'volume' in futures_df.columns:
-        # Align timestamps and use futures volume
-        futures_volume = futures_df.set_index('datetime')['volume']
-        combined_df = combined_df.set_index('datetime')
-        
-        # Match volumes by timestamp (forward fill for missing timestamps)
-        combined_df['volume'] = futures_volume.reindex(combined_df.index, method='ffill').fillna(0)
-        combined_df = combined_df.reset_index()
-        
-        # Add metadata
-        combined_df.attrs['volume_source'] = 'futures'
-        combined_df.attrs['futures_scrip'] = NIFTY_FUTURES_SCRIP
+    # Replace volume with futures volume if available and valid
+    if not futures_df.empty and 'volume' in futures_df.columns and futures_df['volume'].sum() > 0:
+        try:
+            # Align timestamps and use futures volume
+            futures_volume = futures_df.set_index('datetime')['volume']
+            combined_df = combined_df.set_index('datetime')
+            
+            # Match volumes by timestamp (forward fill for missing timestamps)
+            combined_df['volume'] = futures_volume.reindex(combined_df.index, method='ffill').fillna(0)
+            combined_df = combined_df.reset_index()
+            
+            # Add metadata
+            combined_df.attrs['volume_source'] = 'futures'
+            combined_df.attrs['futures_scrip'] = NIFTY_FUTURES_SCRIP
+            st.info(f"Using futures volume: {combined_df['volume'].sum():,.0f} total")
+        except Exception as e:
+            st.warning(f"Failed to combine futures volume: {e}")
+            combined_df.attrs['volume_source'] = 'index'
     else:
         combined_df.attrs['volume_source'] = 'index'
+        st.warning("Using index volume (may be limited)")
     
     return combined_df
 
@@ -722,6 +775,16 @@ def main():
     show_debug = st.sidebar.checkbox("🔍 Show Debug Info", value=False)
     
     api = DhanAPI()
+    
+    # Test API connection first
+    if show_debug:
+        st.subheader("🔌 API Connection Test")
+        api_status, api_message = api.test_api_connection()
+        if api_status:
+            st.success(f"✅ {api_message}")
+        else:
+            st.error(f"❌ {api_message}")
+    
     col1, col2 = st.columns([2, 1])
     
     with col1:
@@ -729,16 +792,48 @@ def main():
         
         if use_futures_volume:
             # Get both index and futures data
+            st.info("Fetching NIFTY Index data...")
             index_data = api.get_intraday_data(interval)
+            
+            st.info("Fetching NIFTY Futures volume data...")
             futures_data = api.get_futures_volume_data(interval)
+            
+            # Combine data with debug output
             df = combine_index_futures_data(index_data, futures_data)
             
-            if df.empty:
-                st.error("Failed to fetch combined data")
+            # If combined data failed, fallback to index only
+            if df.empty and index_data:
+                st.warning("Combined data failed, falling back to Index data only")
+                df = process_candle_data(index_data)
+                if not df.empty:
+                    df.attrs['volume_source'] = 'index_fallback'
+            
+            # If still empty, try futures only as last resort
+            if df.empty and futures_data:
+                st.warning("Index data failed, trying Futures data only")
+                df = process_candle_data(futures_data)
+                if not df.empty:
+                    df.attrs['volume_source'] = 'futures_only'
         else:
             # Use index data only
+            st.info("Fetching NIFTY Index data only...")
             data = api.get_intraday_data(interval)
             df = process_candle_data(data) if data else pd.DataFrame()
+            if not df.empty:
+                df.attrs['volume_source'] = 'index_only'
+        
+        # Final check and error message
+        if df.empty:
+            st.error("❌ **All data sources failed!**")
+            st.error("Possible issues:")
+            st.error("1. Market is closed")
+            st.error("2. Invalid credentials (check DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN)")
+            st.error("3. API rate limits exceeded")
+            st.error("4. Network connectivity issues")
+            st.error("5. Invalid futures scrip ID (needs monthly update)")
+            st.info(f"Current futures scrip ID: {NIFTY_FUTURES_SCRIP}")
+            st.info("Check https://images.dhan.co/api-data/api-scrip-master.csv for current scrip IDs")
+            return  # Exit early if no data
         
         # Show debug info if enabled
         if show_debug:
