@@ -36,8 +36,11 @@ def is_market_hours():
     market_end = now.replace(hour=15, minute=45, second=0, microsecond=0)
     return market_start <= now <= market_end
 
+# Only run autorefresh during market hours with longer interval to avoid rate limits
 if is_market_hours():
-    st_autorefresh(interval=80000, key="refresh")
+    st_autorefresh(interval=120000, key="refresh")  # Increased to 2 minutes
+
+import time
 
 class DhanAPI:
     def __init__(self):
@@ -47,9 +50,20 @@ class DhanAPI:
             'access-token': DHAN_ACCESS_TOKEN,
             'client-id': DHAN_CLIENT_ID
         }
+        self.last_call_time = 0
+    
+    def _rate_limit_delay(self):
+        """Ensure minimum 1 second between API calls"""
+        current_time = time.time()
+        time_diff = current_time - self.last_call_time
+        if time_diff < 1.0:
+            time.sleep(1.0 - time_diff)
+        self.last_call_time = time.time()
     
     def get_intraday_data(self, interval="5", days_back=1, scrip_id=None, segment=None, instrument="INDEX"):
         """Get intraday data for any instrument"""
+        self._rate_limit_delay()  # Add delay
+        
         url = "https://api.dhan.co/v2/charts/intraday"
         ist = pytz.timezone('Asia/Kolkata')
         end_date = datetime.now(ist)
@@ -88,6 +102,7 @@ class DhanAPI:
     
     def test_api_connection(self):
         """Test API connectivity and credentials"""
+        self._rate_limit_delay()  # Add delay
         try:
             # Test with a simple LTP call
             url = "https://api.dhan.co/v2/marketfeed/ltp"
@@ -110,6 +125,7 @@ class DhanAPI:
             return False, f"Unexpected error: {str(e)}"
     
     def get_ltp_data(self):
+        self._rate_limit_delay()  # Add delay
         url = "https://api.dhan.co/v2/marketfeed/ltp"
         payload = {NIFTY_SEG: [NIFTY_SCRIP]}
         try:
@@ -768,8 +784,17 @@ def main():
     
     # Volume source option
     st.sidebar.subheader("Volume Data Source")
-    use_futures_volume = st.sidebar.checkbox("Use Futures Volume", value=True, 
+    use_futures_volume = st.sidebar.checkbox("Use Futures Volume", value=False, 
                                            help="Uses NIFTY Futures volume for Volume Profile calculation")
+    
+    # Rate limiting option
+    st.sidebar.subheader("API Settings")
+    manual_refresh = st.sidebar.checkbox("Manual Refresh Only", value=True,
+                                       help="Disable auto-refresh to avoid rate limits")
+    if manual_refresh:
+        refresh_data = st.sidebar.button("🔄 Refresh Data")
+    else:
+        refresh_data = True
     
     # Add debug option
     show_debug = st.sidebar.checkbox("🔍 Show Debug Info", value=False)
@@ -790,37 +815,51 @@ def main():
     with col1:
         st.header("Chart with Volume Profile")
         
-        if use_futures_volume:
-            # Get both index and futures data
-            st.info("Fetching NIFTY Index data...")
-            index_data = api.get_intraday_data(interval)
-            
-            st.info("Fetching NIFTY Futures volume data...")
-            futures_data = api.get_futures_volume_data(interval)
-            
-            # Combine data with debug output
-            df = combine_index_futures_data(index_data, futures_data)
-            
-            # If combined data failed, fallback to index only
-            if df.empty and index_data:
-                st.warning("Combined data failed, falling back to Index data only")
-                df = process_candle_data(index_data)
+        # Only fetch data if refresh is triggered
+        if refresh_data:
+            if use_futures_volume:
+                # Get both index and futures data
+                st.info("Fetching NIFTY Index data...")
+                index_data = api.get_intraday_data(interval)
+                
+                st.info("Waiting 2 seconds to avoid rate limits...")
+                time.sleep(2)  # Additional delay between calls
+                
+                st.info("Fetching NIFTY Futures volume data...")
+                futures_data = api.get_futures_volume_data(interval)
+                
+                # Combine data with debug output
+                df = combine_index_futures_data(index_data, futures_data)
+                
+                # If combined data failed, fallback to index only
+                if df.empty and index_data:
+                    st.warning("Combined data failed, falling back to Index data only")
+                    df = process_candle_data(index_data)
+                    if not df.empty:
+                        df.attrs['volume_source'] = 'index_fallback'
+                
+                # If still empty, try futures only as last resort
+                if df.empty and futures_data:
+                    st.warning("Index data failed, trying Futures data only")
+                    df = process_candle_data(futures_data)
+                    if not df.empty:
+                        df.attrs['volume_source'] = 'futures_only'
+            else:
+                # Use index data only
+                st.info("Fetching NIFTY Index data only...")
+                data = api.get_intraday_data(interval)
+                df = process_candle_data(data) if data else pd.DataFrame()
                 if not df.empty:
-                    df.attrs['volume_source'] = 'index_fallback'
+                    df.attrs['volume_source'] = 'index_only'
             
-            # If still empty, try futures only as last resort
-            if df.empty and futures_data:
-                st.warning("Index data failed, trying Futures data only")
-                df = process_candle_data(futures_data)
-                if not df.empty:
-                    df.attrs['volume_source'] = 'futures_only'
+            # Store data in session state to avoid repeated API calls
+            st.session_state.chart_data = df
         else:
-            # Use index data only
-            st.info("Fetching NIFTY Index data only...")
-            data = api.get_intraday_data(interval)
-            df = process_candle_data(data) if data else pd.DataFrame()
-            if not df.empty:
-                df.attrs['volume_source'] = 'index_only'
+            # Use cached data if available
+            df = st.session_state.get('chart_data', pd.DataFrame())
+            if df.empty:
+                st.info("Click 'Refresh Data' button to load data")
+                return
         
         # Final check and error message
         if df.empty:
