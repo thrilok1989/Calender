@@ -966,14 +966,66 @@ def get_nearby_pivot_levels(df, current_price, proximity=5.0):
     nearby_levels.sort(key=lambda x: x['distance'])
     return nearby_levels
 
+def calculate_rsi(df, periods=14):
+    """Calculate proper RSI values for chart display"""
+    if len(df) < periods + 1:
+        return pd.Series(index=df.index, dtype=float)
+    
+    # Calculate price changes
+    price_changes = df['close'].diff()
+    
+    # Separate gains and losses
+    gains = price_changes.where(price_changes > 0, 0)
+    losses = -price_changes.where(price_changes < 0, 0)
+    
+    # Initialize RSI series
+    rsi_values = pd.Series(index=df.index, dtype=float)
+    
+    # Calculate initial average gain and loss using SMA
+    initial_avg_gain = gains.rolling(window=periods).mean().iloc[periods-1]
+    initial_avg_loss = losses.rolling(window=periods).mean().iloc[periods-1]
+    
+    # Calculate first RSI value
+    if initial_avg_loss == 0:
+        rsi_values.iloc[periods] = 100
+    else:
+        rs = initial_avg_gain / initial_avg_loss
+        rsi_values.iloc[periods] = 100 - (100 / (1 + rs))
+    
+    # Use Wilder's smoothing for subsequent values
+    alpha = 1.0 / periods
+    avg_gain = initial_avg_gain
+    avg_loss = initial_avg_loss
+    
+    for i in range(periods + 1, len(df)):
+        # Update exponential moving averages
+        avg_gain = alpha * gains.iloc[i] + (1 - alpha) * avg_gain
+        avg_loss = alpha * losses.iloc[i] + (1 - alpha) * avg_loss
+        
+        # Calculate RSI
+        if avg_loss == 0:
+            rsi_values.iloc[i] = 100
+        else:
+            rs = avg_gain / avg_loss
+            rsi_values.iloc[i] = 100 - (100 / (1 + rs))
+    
+    return rsi_values
+
 def create_chart(df, title):
     """
-    Enhanced chart with proper pivot levels, shadows, and labels
+    Enhanced chart with proper pivot levels, shadows, labels, and RSI indicator
     """
     if df.empty:
         return go.Figure()
     
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+    # Create subplots: Price, Volume, RSI
+    fig = make_subplots(
+        rows=3, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.02,
+        row_heights=[0.6, 0.2, 0.2],
+        subplot_titles=("Price Chart", "Volume", "RSI (14)")
+    )
     
     # Add candlestick chart
     fig.add_trace(go.Candlestick(
@@ -989,6 +1041,33 @@ def create_chart(df, title):
         x=df['datetime'], y=df['volume'], name='Volume',
         marker_color=volume_colors, opacity=0.7
     ), row=2, col=1)
+    
+    # Add RSI indicator
+    if len(df) > 14:  # Need at least 15 data points for RSI
+        rsi_values = calculate_rsi(df)
+        
+        # Add RSI line
+        fig.add_trace(go.Scatter(
+            x=df['datetime'], y=rsi_values, name='RSI',
+            line=dict(color='#ffaa00', width=2),
+            mode='lines'
+        ), row=3, col=1)
+        
+        # Add RSI reference lines
+        # Overbought level (70)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", 
+                     annotation_text="Overbought (70)", row=3, col=1)
+        
+        # Oversold level (30) 
+        fig.add_hline(y=30, line_dash="dash", line_color="green",
+                     annotation_text="Oversold (30)", row=3, col=1)
+        
+        # Midline (50)
+        fig.add_hline(y=50, line_dash="dot", line_color="gray",
+                     annotation_text="Midline (50)", row=3, col=1)
+        
+        # Set RSI y-axis range
+        fig.update_yaxes(range=[0, 100], row=3, col=1)
     
     # Add enhanced pivot levels
     if len(df) > 50:
@@ -1068,8 +1147,20 @@ def create_chart(df, title):
                     row=1, col=1
                 )
     
-    fig.update_layout(title=title, template='plotly_dark', height=600,
-                     xaxis_rangeslider_visible=False, showlegend=False)
+    # Update layout
+    fig.update_layout(
+        title=title, 
+        template='plotly_dark', 
+        height=700,  # Increased height for RSI subplot
+        xaxis_rangeslider_visible=False, 
+        showlegend=False
+    )
+    
+    # Update x-axis labels (only show on bottom subplot)
+    fig.update_xaxes(showticklabels=False, row=1, col=1)
+    fig.update_xaxes(showticklabels=False, row=2, col=1)
+    fig.update_xaxes(showticklabels=True, row=3, col=1)
+    
     return fig
 
 def analyze_options(expiry):
