@@ -130,14 +130,91 @@ def process_candle_data(data):
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
     return df
 
-def get_pivots(df, timeframe="5", length=6, current_price=None, false_breakout_threshold=15, true_breakout_threshold=30):
+def find_pivot_highs_proper(highs, length):
     """
-    Calculate pivot points with reasonable filtering and breakout status
+    Proper pivot high detection - checks if bar is highest among 'length' bars on BOTH sides
+    """
+    if len(highs) < length * 2 + 1:
+        return pd.Series(index=highs.index, dtype=float)
+    
+    pivot_highs = pd.Series(index=highs.index, dtype=float)
+    
+    for i in range(length, len(highs) - length):
+        current_high = highs.iloc[i]
+        
+        # Check 'length' bars to the left and right
+        left_side = highs.iloc[i-length:i]
+        right_side = highs.iloc[i+1:i+length+1]
+        
+        # Current bar must be strictly higher than all bars on both sides
+        if (current_high > left_side.max()) and (current_high > right_side.max()):
+            pivot_highs.iloc[i] = current_high
+            
+    return pivot_highs
+
+def find_pivot_lows_proper(lows, length):
+    """
+    Proper pivot low detection - checks if bar is lowest among 'length' bars on BOTH sides
+    """
+    if len(lows) < length * 2 + 1:
+        return pd.Series(index=lows.index, dtype=float)
+        
+    pivot_lows = pd.Series(index=lows.index, dtype=float)
+    
+    for i in range(length, len(lows) - length):
+        current_low = lows.iloc[i]
+        
+        # Check 'length' bars to the left and right
+        left_side = lows.iloc[i-length:i]
+        right_side = lows.iloc[i+1:i+length+1]
+        
+        # Current bar must be strictly lower than all bars on both sides
+        if (current_low < left_side.min()) and (current_low < right_side.min()):
+            pivot_lows.iloc[i] = current_low
+            
+    return pivot_lows
+
+def detect_level_touches(df, pivot_value, tolerance_pct=0.09):
+    """
+    Detect when price touches a pivot level with tolerance
+    """
+    if df.empty:
+        return []
+        
+    touches = []
+    tolerance = pivot_value * (tolerance_pct / 100)
+    
+    for i, row in df.iterrows():
+        # Check if high touched the level
+        if abs(row['high'] - pivot_value) <= tolerance:
+            touches.append({
+                'datetime': row['datetime'],
+                'price': pivot_value,
+                'touch_type': 'high_touch',
+                'actual_price': row['high'],
+                'bar_index': i
+            })
+        
+        # Check if low touched the level  
+        elif abs(row['low'] - pivot_value) <= tolerance:
+            touches.append({
+                'datetime': row['datetime'],
+                'price': pivot_value,
+                'touch_type': 'low_touch', 
+                'actual_price': row['low'],
+                'bar_index': i
+            })
+            
+    return touches
+
+def get_pivots(df, timeframe="5", length=4):
+    """
+    Enhanced pivot detection with proper algorithm and non-repainting protection
     """
     if df.empty:
         return []
     
-    rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min", "30": "30min"}
+    rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min"}
     rule = rule_map.get(timeframe, "5min")
     
     df_temp = df.set_index('datetime')
@@ -149,89 +226,120 @@ def get_pivots(df, timeframe="5", length=6, current_price=None, false_breakout_t
         if len(resampled) < length * 2 + 1:
             return []
         
-        max_vals = resampled['high'].rolling(window=length*2+1, center=True).max()
-        min_vals = resampled['low'].rolling(window=length*2+1, center=True).min()
+        # Find all pivot highs and lows using proper algorithm
+        pivot_highs = find_pivot_highs_proper(resampled['high'], length)
+        pivot_lows = find_pivot_lows_proper(resampled['low'], length)
         
         pivots = []
         
-        # Get pivot highs
-        for timestamp, value in resampled['high'][resampled['high'] == max_vals].items():
-            pivots.append({
-                'type': 'high', 
-                'timeframe': timeframe, 
-                'timestamp': timestamp, 
-                'value': value,
-                'age_hours': (datetime.now(pytz.timezone('Asia/Kolkata')) - timestamp).total_seconds() / 3600,
-                'status': 'active'  # Will be updated based on breakout analysis
-            })
+        # Collect pivot highs (exclude last few to avoid repainting)
+        valid_pivot_highs = pivot_highs.dropna()
+        if len(valid_pivot_highs) > 1:
+            # Keep all but the most recent to avoid repainting
+            for timestamp, value in valid_pivot_highs[:-1].items():
+                pivots.append({
+                    'type': 'high', 
+                    'timeframe': timeframe, 
+                    'timestamp': timestamp, 
+                    'value': float(value),
+                    'confirmed': True
+                })
+            
+            # Add the most recent but mark as unconfirmed
+            if len(valid_pivot_highs) >= 1:
+                last_high = valid_pivot_highs.iloc[-1]
+                last_high_time = valid_pivot_highs.index[-1]
+                pivots.append({
+                    'type': 'high',
+                    'timeframe': timeframe,
+                    'timestamp': last_high_time,
+                    'value': float(last_high),
+                    'confirmed': False
+                })
         
-        # Get pivot lows  
-        for timestamp, value in resampled['low'][resampled['low'] == min_vals].items():
-            pivots.append({
-                'type': 'low', 
-                'timeframe': timeframe, 
-                'timestamp': timestamp, 
-                'value': value,
-                'age_hours': (datetime.now(pytz.timezone('Asia/Kolkata')) - timestamp).total_seconds() / 3600,
-                'status': 'active'  # Will be updated based on breakout analysis
-            })
+        # Collect pivot lows (exclude last few to avoid repainting)
+        valid_pivot_lows = pivot_lows.dropna()
+        if len(valid_pivot_lows) > 1:
+            # Keep all but the most recent to avoid repainting
+            for timestamp, value in valid_pivot_lows[:-1].items():
+                pivots.append({
+                    'type': 'low',
+                    'timeframe': timeframe, 
+                    'timestamp': timestamp,
+                    'value': float(value),
+                    'confirmed': True
+                })
+            
+            # Add the most recent but mark as unconfirmed
+            if len(valid_pivot_lows) >= 1:
+                last_low = valid_pivot_lows.iloc[-1] 
+                last_low_time = valid_pivot_lows.index[-1]
+                pivots.append({
+                    'type': 'low',
+                    'timeframe': timeframe,
+                    'timestamp': last_low_time, 
+                    'value': float(last_low),
+                    'confirmed': False
+                })
         
-        # Filter recent pivots (within last 12 hours - more lenient)
-        recent_pivots = [p for p in pivots if p['age_hours'] <= 12]
+        return pivots
         
-        # Less restrictive filtering
-        if current_price and recent_pivots:
-            filtered_pivots = []
-            for pivot in recent_pivots:
-                # Keep pivots within 5% of current price (more lenient)
-                price_diff_pct = abs(pivot['value'] - current_price) / current_price * 100
-                if price_diff_pct <= 5.0:  # Within 5% of current price
-                    # Check if this pivot is too close to existing ones (reduced to 5 points)
-                    is_duplicate = False
-                    for existing in filtered_pivots:
-                        if abs(pivot['value'] - existing['value']) <= 5:  # Within 5 points
-                            is_duplicate = True
-                            break
-                    if not is_duplicate:
-                        filtered_pivots.append(pivot)
-            recent_pivots = filtered_pivots
-        
-        # Analyze breakout status if we have current price and recent data
-        if current_price and not df.empty:
-            recent_pivots = analyze_pivot_breakouts(recent_pivots, df, current_price, false_breakout_threshold, true_breakout_threshold)
-        
-        # Sort by relevance (closer to current price first) then by time
-        if current_price:
-            recent_pivots.sort(key=lambda x: abs(x['value'] - current_price))
-        else:
-            recent_pivots.sort(key=lambda x: x['timestamp'], reverse=True)
-        
-        return recent_pivots
     except Exception as e:
-        print(f"Pivot calculation error: {e}")
+        print(f"Error in pivot calculation: {e}")
         return []
 
-def get_pivots_with_thresholds(df, timeframe="5", length=6, current_price=None, false_threshold=15, true_threshold=30):
+def get_nearby_pivot_levels(df, current_price, proximity=5.0):
     """
-    Wrapper function to get pivots with custom thresholds
+    Get confirmed pivot levels near current price for signal generation
     """
-    return get_pivots(df, timeframe, length, current_price, false_threshold, true_threshold)
+    if df.empty:
+        return []
+        
+    nearby_levels = []
+    timeframes = ["5", "10", "15"]
+    
+    for timeframe in timeframes:
+        pivots = get_pivots(df, timeframe, length=4)
+        
+        for pivot in pivots:
+            # Only use confirmed pivots for signals to avoid repainting
+            if not pivot.get('confirmed', True):
+                continue
+                
+            distance = abs(current_price - pivot['value'])
+            if distance <= proximity:
+                level_type = 'resistance' if pivot['type'] == 'high' else 'support'
+                nearby_levels.append({
+                    'type': level_type,
+                    'pivot_type': pivot['type'], 
+                    'value': pivot['value'],
+                    'timeframe': timeframe,
+                    'distance': distance,
+                    'timestamp': pivot['timestamp'],
+                    'confirmed': pivot['confirmed']
+                })
+    
+    # Sort by distance (closest first)
+    nearby_levels.sort(key=lambda x: x['distance'])
+    return nearby_levels
 
-def create_chart_with_thresholds(df, title, current_price, max_pivots_per_timeframe=3, pivot_length=6, false_threshold=15, true_threshold=30):
+def create_chart(df, title):
     """
-    Create chart with custom breakout thresholds
+    Enhanced chart with proper pivot levels, shadows, and labels
     """
     if df.empty:
         return go.Figure()
     
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
+    # Add candlestick chart
     fig.add_trace(go.Candlestick(
         x=df['datetime'], open=df['open'], high=df['high'], 
         low=df['low'], close=df['close'], name='Nifty',
         increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
     ), row=1, col=1)
     
+    # Add volume
     volume_colors = ['#00ff88' if close >= open else '#ff4444' 
                     for close, open in zip(df['close'], df['open'])]
     fig.add_trace(go.Bar(
@@ -239,346 +347,81 @@ def create_chart_with_thresholds(df, title, current_price, max_pivots_per_timefr
         marker_color=volume_colors, opacity=0.7
     ), row=2, col=1)
     
+    # Add enhanced pivot levels
     if len(df) > 50:
-        # Use 5min and 15min timeframes for better coverage
-        timeframes = ["5", "15"]
-        base_colors = {"5": "#ff9900", "15": "#00ccff"}
-        
-        # Status colors for different breakout states
-        status_colors = {
-            'active': '',  # Use base color
-            'testing': '#ffff00',  # Yellow for testing
-            'false_breakout': '#ff6600',  # Orange for false breakout  
-            'broken': '#ff0000'  # Red for broken pivots
-        }
+        timeframes = ["5", "10", "15"]
+        colors = ["#ff9900", "#ff44ff", '#4444ff']
         
         x_start, x_end = df['datetime'].min(), df['datetime'].max()
         
-        for tf in timeframes:
-            pivots = get_pivots(df, tf, length=pivot_length, current_price=current_price, 
-                              false_breakout_threshold=false_threshold, true_breakout_threshold=true_threshold)
+        for tf, color in zip(timeframes, colors):
+            pivots = get_pivots(df, tf)
             
-            # Limit number of pivots per timeframe
-            pivots_to_show = pivots[:max_pivots_per_timeframe]
+            # Get recent pivots only (last 5 of each type)
+            recent_highs = [p for p in pivots if p['type'] == 'high'][-5:]
+            recent_lows = [p for p in pivots if p['type'] == 'low'][-5:]
             
-            for pivot in pivots_to_show:
-                # Determine color based on status
-                status = pivot.get('status', 'active')
-                if status == 'active':
-                    color = base_colors[tf]
-                    dash = "dash"
-                    width = 2
-                elif status == 'testing':
-                    color = status_colors['testing']
-                    dash = "dot"
-                    width = 2
-                elif status == 'false_breakout':
-                    color = status_colors['false_breakout']
-                    dash = "dashdot"
-                    width = 3
-                elif status == 'broken':
-                    color = status_colors['broken']
-                    dash = "solid"
-                    width = 1
-                else:
-                    color = base_colors[tf]
-                    dash = "dash"
-                    width = 2
+            # Add pivot high lines
+            for pivot in recent_highs:
+                line_style = "solid" if pivot.get('confirmed', True) else "dash"
+                line_width = 2 if pivot.get('confirmed', True) else 1
                 
-                # Add pivot line
+                # Main pivot line
                 fig.add_shape(
-                    type="line", 
-                    x0=x_start, x1=x_end,
+                    type="line", x0=x_start, x1=x_end,
                     y0=pivot['value'], y1=pivot['value'],
-                    line=dict(color=color, width=width, dash=dash), 
+                    line=dict(color=color, width=line_width, dash=line_style),
                     row=1, col=1
                 )
                 
-                # Create label with status info
-                status_symbol = {
-                    'active': '✓',
-                    'testing': '⚠️', 
-                    'false_breakout': '↩️',
-                    'broken': '❌'
-                }.get(status, '✓')
-                
-                label_text = f"{pivot['value']:.0f} ({tf}m) {status_symbol}"
-                
-                # Add pivot label with timeframe and status
-                fig.add_annotation(
-                    x=x_end,
-                    y=pivot['value'],
-                    text=label_text,
-                    showarrow=False,
-                    font=dict(color=color, size=9),
-                    bgcolor="rgba(0,0,0,0.7)",
-                    row=1, col=1
-                )
-    
-    fig.update_layout(title=title, template='plotly_dark', height=600,
-                     xaxis_rangeslider_visible=False, showlegend=False)
-    return fig
-
-def check_signals_with_breakouts(df, option_data, current_price, proximity=5, pivots=None, enable_breakout_alerts=True):
-    """
-    Enhanced signal checking that includes breakout analysis
-    """
-    # Run original signals first
-    check_signals(df, option_data, current_price, proximity)
-    
-    # Add breakout-specific alerts
-    if enable_breakout_alerts and pivots and is_market_hours():
-        check_pivot_breakout_signals(pivots, current_price)
-
-def check_pivot_breakout_signals(pivots, current_price):
-    """
-    Send Telegram alerts for pivot breakouts
-    """
-    if not pivots:
-        return
-    
-    ist = pytz.timezone('Asia/Kolkata')
-    current_time = datetime.now(ist).strftime('%H:%M:%S IST')
-    
-    for pivot in pivots:
-        status = pivot.get('status', 'active')
-        pivot_value = pivot['value']
-        timeframe = pivot['timeframe']
-        pivot_type = pivot['type']
-        
-        # Send alerts for significant events
-        if status == 'broken':
-            breakout_points = pivot.get('breakout_points', 0)
-            direction = "UPWARD" if pivot_type == 'high' else "DOWNWARD"
-            level_type = "Resistance" if pivot_type == 'high' else "Support"
-            
-            message = f"""
-🚨 PIVOT BREAKOUT ALERT! 🚨
-
-{level_type} BROKEN: ₹{pivot_value:.0f} ({timeframe}M)
-📍 Current Price: ₹{current_price:.2f}
-🔥 Breakout: {breakout_points:.1f} points beyond pivot
-📈 Direction: {direction} MOMENTUM
-
-⚡ Action: Watch for continuation or retest
-🕐 Time: {current_time}
-"""
-            send_telegram(message)
-            st.success(f"🚨 {level_type} breakout alert sent!")
-            
-        elif status == 'false_breakout':
-            max_breach = pivot.get('max_breach', 0)
-            level_type = "Resistance" if pivot_type == 'high' else "Support"
-            
-            message = f"""
-🔄 FALSE BREAKOUT ALERT! 🔄
-
-{level_type}: ₹{pivot_value:.0f} ({timeframe}M)
-📍 Current Price: ₹{current_price:.2f}
-↩️ False Break: Breached by {max_breach:.1f} points but PULLED BACK
-
-✅ Level Still Valid - Watch for Bounce/Rejection
-🕐 Time: {current_time}
-"""
-            send_telegram(message)
-            st.info(f"🔄 False breakout alert sent!")
-            
-        elif status == 'testing':
-            breakout_points = pivot.get('breakout_points', 0)
-            level_type = "Resistance" if pivot_type == 'high' else "Support"
-            direction = "above" if pivot_type == 'high' else "below"
-            
-            message = f"""
-⚠️ PIVOT TESTING ALERT! ⚠️
-
-{level_type}: ₹{pivot_value:.0f} ({timeframe}M)
-📍 Current Price: ₹{current_price:.2f}
-🎯 Testing: {breakout_points:.1f} points {direction} pivot
-
-⚡ CRITICAL LEVEL - Watch for breakout or rejection!
-🕐 Time: {current_time}
-"""
-            send_telegram(message)
-            st.warning(f"⚠️ Pivot testing alert sent!")
-    """
-    Check for breakout alerts and display them
-    """
-    if not pivots:
-        return
-        
-    # Check for recent breakouts
-    for pivot in pivots:
-        status = pivot.get('status', 'active')
-        pivot_value = pivot['value']
-        timeframe = pivot['timeframe']
-        pivot_type = pivot['type']
-        
-        if status == 'false_breakout':
-            st.warning(f"🔄 **False Breakout Detected!** {pivot_type.title()} pivot at {pivot_value:.0f} ({timeframe}m) - Price pulled back after breach")
-            
-        elif status == 'broken':
-            breakout_points = pivot.get('breakout_points', 0)
-            if pivot_type == 'high':
-                st.error(f"📈 **Resistance BROKEN!** {pivot_value:.0f} ({timeframe}m) breached by {breakout_points:.1f} points - Potential upward momentum")
-            else:
-                st.error(f"📉 **Support BROKEN!** {pivot_value:.0f} ({timeframe}m) breached by {breakout_points:.1f} points - Potential downward pressure")
-                
-        elif status == 'testing':
-            breakout_points = pivot.get('breakout_points', 0)
-            if pivot_type == 'high':
-                st.info(f"⚡ **Resistance Testing** {pivot_value:.0f} ({timeframe}m) - Price {breakout_points:.1f} points above, watch for breakout or rejection")
-            else:
-                st.info(f"⚡ **Support Testing** {pivot_value:.0f} ({timeframe}m) - Price {breakout_points:.1f} points below, watch for breakdown or bounce")
-    """
-    Analyze pivot breakout status:
-    - active: Pivot is holding, price hasn't broken it significantly
-    - false_breakout: Price broke but came back (pullback happened)
-    - broken: True breakout, price moved significantly beyond pivot
-    """
-    if df.empty or not pivots:
-        return pivots
-    
-    # Get recent price action (last 10 candles for analysis)
-    recent_df = df.tail(20)
-    
-    for pivot in pivots:
-        pivot_value = pivot['value']
-        pivot_type = pivot['type']
-        
-        # Check current distance from pivot
-        current_distance = current_price - pivot_value
-        
-        if pivot_type == 'high':
-            # For resistance levels (pivot highs)
-            if current_distance > true_breakout_threshold:
-                pivot['status'] = 'broken'
-                pivot['breakout_points'] = current_distance
-            elif current_distance > false_breakout_threshold:
-                # Check if it's a false breakout (price came back)
-                max_breach = (recent_df['high'] - pivot_value).max()
-                if max_breach > false_breakout_threshold and current_distance < false_breakout_threshold:
-                    pivot['status'] = 'false_breakout'
-                    pivot['max_breach'] = max_breach
-                else:
-                    pivot['status'] = 'testing'
-                    pivot['breakout_points'] = current_distance
-            else:
-                pivot['status'] = 'active'
-                
-        else:  # pivot_type == 'low'
-            # For support levels (pivot lows)
-            current_distance = pivot_value - current_price  # Flip for support
-            if current_distance > true_breakout_threshold:
-                pivot['status'] = 'broken'
-                pivot['breakout_points'] = current_distance
-            elif current_distance > false_breakout_threshold:
-                # Check if it's a false breakout (price came back)
-                max_breach = (pivot_value - recent_df['low']).max()
-                if max_breach > false_breakout_threshold and current_distance < false_breakout_threshold:
-                    pivot['status'] = 'false_breakout'
-                    pivot['max_breach'] = max_breach
-                else:
-                    pivot['status'] = 'testing'
-                    pivot['breakout_points'] = current_distance
-            else:
-                pivot['status'] = 'active'
-    
-    return pivots
-
-def create_chart(df, title, current_price, max_pivots_per_timeframe=3):
-    """
-    Chart with controlled number of pivot levels and breakout status colors
-    """
-    if df.empty:
-        return go.Figure()
-    
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-    
-    fig.add_trace(go.Candlestick(
-        x=df['datetime'], open=df['open'], high=df['high'], 
-        low=df['low'], close=df['close'], name='Nifty',
-        increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
-    ), row=1, col=1)
-    
-    volume_colors = ['#00ff88' if close >= open else '#ff4444' 
-                    for close, open in zip(df['close'], df['open'])]
-    fig.add_trace(go.Bar(
-        x=df['datetime'], y=df['volume'], name='Volume',
-        marker_color=volume_colors, opacity=0.7
-    ), row=2, col=1)
-    
-    if len(df) > 50:
-        # Use 5min and 15min timeframes for better coverage
-        timeframes = ["5", "15"]
-        base_colors = {"5": "#ff9900", "15": "#00ccff"}
-        
-        # Status colors for different breakout states
-        status_colors = {
-            'active': '',  # Use base color
-            'testing': '#ffff00',  # Yellow for testing
-            'false_breakout': '#ff6600',  # Orange for false breakout  
-            'broken': '#ff0000'  # Red for broken pivots
-        }
-        
-        x_start, x_end = df['datetime'].min(), df['datetime'].max()
-        
-        for tf in timeframes:
-            pivots = get_pivots(df, tf, length=6, current_price=current_price)
-            
-            # Limit number of pivots per timeframe
-            pivots_to_show = pivots[:max_pivots_per_timeframe]
-            
-            for pivot in pivots_to_show:
-                # Determine color based on status
-                status = pivot.get('status', 'active')
-                if status == 'active':
-                    color = base_colors[tf]
-                    dash = "dash"
-                    width = 2
-                elif status == 'testing':
-                    color = status_colors['testing']
-                    dash = "dot"
-                    width = 2
-                elif status == 'false_breakout':
-                    color = status_colors['false_breakout']
-                    dash = "dashdot"
-                    width = 3
-                elif status == 'broken':
-                    color = status_colors['broken']
-                    dash = "solid"
-                    width = 1
-                else:
-                    color = base_colors[tf]
-                    dash = "dash"
-                    width = 2
-                
-                # Add pivot line
+                # Shadow line (wider, more transparent)
                 fig.add_shape(
-                    type="line", 
-                    x0=x_start, x1=x_end,
+                    type="line", x0=x_start, x1=x_end,
                     y0=pivot['value'], y1=pivot['value'],
-                    line=dict(color=color, width=width, dash=dash), 
+                    line=dict(color=color, width=5),
+                    opacity=0.15 if pivot.get('confirmed', True) else 0.08,
                     row=1, col=1
                 )
                 
-                # Create label with status info
-                status_symbol = {
-                    'active': '✓',
-                    'testing': '⚠️', 
-                    'false_breakout': '↩️',
-                    'broken': '❌'
-                }.get(status, '✓')
-                
-                label_text = f"{pivot['value']:.0f} ({tf}m) {status_symbol}"
-                
-                # Add pivot label with timeframe and status
+                # Add label
+                status = "✓" if pivot.get('confirmed', True) else "?"
                 fig.add_annotation(
-                    x=x_end,
-                    y=pivot['value'],
-                    text=label_text,
-                    showarrow=False,
-                    font=dict(color=color, size=9),
-                    bgcolor="rgba(0,0,0,0.7)",
+                    x=x_end, y=pivot['value'],
+                    text=f"{tf}M H {status}: {pivot['value']:.1f}",
+                    showarrow=False, xshift=20,
+                    font=dict(size=9, color=color),
+                    row=1, col=1
+                )
+            
+            # Add pivot low lines
+            for pivot in recent_lows:
+                line_style = "solid" if pivot.get('confirmed', True) else "dash"
+                line_width = 2 if pivot.get('confirmed', True) else 1
+                
+                # Main pivot line
+                fig.add_shape(
+                    type="line", x0=x_start, x1=x_end,
+                    y0=pivot['value'], y1=pivot['value'],
+                    line=dict(color=color, width=line_width, dash=line_style),
+                    row=1, col=1
+                )
+                
+                # Shadow line
+                fig.add_shape(
+                    type="line", x0=x_start, x1=x_end,
+                    y0=pivot['value'], y1=pivot['value'],
+                    line=dict(color=color, width=5),
+                    opacity=0.15 if pivot.get('confirmed', True) else 0.08,
+                    row=1, col=1
+                )
+                
+                # Add label
+                status = "✓" if pivot.get('confirmed', True) else "?"
+                fig.add_annotation(
+                    x=x_end, y=pivot['value'],
+                    text=f"{tf}M L {status}: {pivot['value']:.1f}",
+                    showarrow=False, xshift=20,
+                    font=dict(size=9, color=color),
                     row=1, col=1
                 )
     
@@ -686,38 +529,31 @@ def check_signals(df, option_data, current_price, proximity=5):
         row['Bid_Bias'] == 'Bearish'
     )
     
-    # PRIMARY SIGNAL - Check both 5min and 15min pivots with user thresholds
-    pivots_5m = get_pivots(df, "5", length=6, current_price=current_price, 
-                          false_breakout_threshold=15, true_breakout_threshold=30)
-    pivots_15m = get_pivots(df, "15", length=6, current_price=current_price,
-                           false_breakout_threshold=15, true_breakout_threshold=30)
-    all_pivots = pivots_5m + pivots_15m
+    # PRIMARY SIGNAL - Using enhanced pivot detection
+    nearby_levels = get_nearby_pivot_levels(df, current_price, proximity)
+    near_pivot = len(nearby_levels) > 0
+    pivot_level = nearby_levels[0] if nearby_levels else None
     
-    near_pivot = False
-    pivot_level = None
-    
-    for pivot in all_pivots:
-        if abs(current_price - pivot['value']) <= proximity:
-            near_pivot = True
-            pivot_level = pivot
-            break
-    
-    if near_pivot:
-        primary_bullish_signal = (row['Level'] == 'Support' and bias_aligned_bullish)
-        primary_bearish_signal = (row['Level'] == 'Resistance' and bias_aligned_bearish)
+    if near_pivot and pivot_level:
+        primary_bullish_signal = (row['Level'] == 'Support' and bias_aligned_bullish and pivot_level['type'] == 'support')
+        primary_bearish_signal = (row['Level'] == 'Resistance' and bias_aligned_bearish and pivot_level['type'] == 'resistance')
         
         if primary_bullish_signal or primary_bearish_signal:
             signal_type = "CALL" if primary_bullish_signal else "PUT"
             price_diff = current_price - pivot_level['value']
             
+            # Check for recent touches to add confidence
+            touches = detect_level_touches(df, pivot_level['value'])
+            touch_info = f" (Touches: {len(touches)})" if touches else ""
+            
             message = f"""
 🚨 PRIMARY NIFTY {signal_type} SIGNAL 🚨
 
 📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
-📌 Pivot: {pivot_level['timeframe']}M at ₹{pivot_level['value']:.2f}
+📌 Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f}{touch_info}
 🎯 ATM: {row['Strike']}
 
-Conditions: {row['Level']}, All Bias Aligned
+Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot
 ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
 
 🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
@@ -789,21 +625,6 @@ def main():
     proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
     enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
     
-    # New pivot controls
-    st.sidebar.subheader("Pivot Controls")
-    max_pivots = st.sidebar.slider("Max Pivots to Show", 1, 5, 2)
-    pivot_sensitivity = st.sidebar.selectbox("Pivot Sensitivity", ["Low", "Medium", "High"], index=1)
-    
-    # Breakout detection controls
-    st.sidebar.subheader("Breakout Detection")
-    false_breakout_threshold = st.sidebar.slider("False Breakout Threshold (points)", 10, 30, 15)
-    true_breakout_threshold = st.sidebar.slider("True Breakout Threshold (points)", 20, 50, 30)
-    enable_breakout_alerts = st.sidebar.checkbox("Enable Breakout Alerts", value=True)
-    
-    # Map sensitivity to length parameter
-    sensitivity_map = {"High": 4, "Medium": 6, "Low": 8}
-    pivot_length = sensitivity_map[pivot_sensitivity]
-    
     api = DhanAPI()
     
     col1, col2 = st.columns([2, 1])
@@ -839,77 +660,17 @@ def main():
                 st.metric("Low", f"₹{df['low'].min():,.2f}")
         
         if not df.empty:
-            # Use improved chart function with current price and thresholds
-            # Update pivot calculations with user-defined thresholds
-            fig = create_chart_with_thresholds(df, f"Nifty {interval}min", current_price, max_pivots, pivot_length, false_breakout_threshold, true_breakout_threshold)
+            fig = create_chart(df, f"Nifty {interval}min")
             st.plotly_chart(fig, use_container_width=True)
             
-            # Show pivot info with breakout status
+            # Show nearby pivot levels info
             if current_price:
-                pivots_5m = get_pivots_with_thresholds(df, "5", length=pivot_length, current_price=current_price, 
-                                                     false_threshold=false_breakout_threshold, true_threshold=true_breakout_threshold)
-                pivots_15m = get_pivots_with_thresholds(df, "15", length=pivot_length, current_price=current_price,
-                                                      false_threshold=false_breakout_threshold, true_threshold=true_breakout_threshold)
-                all_pivots = (pivots_5m + pivots_15m)[:5]  # Combine and limit to 5
-                
-                if all_pivots:
-                    st.subheader("Active Pivot Levels")
-                    
-                    # Create enhanced pivot table with breakout status
-                    pivot_data = []
-                    for p in all_pivots:
-                        status_emoji = {
-                            'active': '✅',
-                            'testing': '⚠️', 
-                            'false_breakout': '↩️',
-                            'broken': '❌'
-                        }.get(p.get('status', 'active'), '✅')
-                        
-                        distance = current_price - p['value']
-                        
-                        row_data = {
-                            'Level': f"{p['value']:.0f}",
-                            'TF': f"{p['timeframe']}m",
-                            'Type': p['type'].title(),
-                            'Status': f"{status_emoji} {p.get('status', 'active').title()}",
-                            'Distance': f"{distance:+.1f}",
-                            'Age': f"{p['age_hours']:.1f}h"
-                        }
-                        
-                        # Add breakout info if available
-                        if 'breakout_points' in p:
-                            row_data['Breakout'] = f"{p['breakout_points']:.1f}"
-                        elif 'max_breach' in p:
-                            row_data['Max Breach'] = f"{p['max_breach']:.1f}"
-                            
-                        pivot_data.append(row_data)
-                    
-                    pivot_df = pd.DataFrame(pivot_data)
-                    st.dataframe(pivot_df, use_container_width=True)
-                    
-                    # Show breakout statistics
-                    status_counts = {}
-                    for p in all_pivots:
-                        status = p.get('status', 'active')
-                        status_counts[status] = status_counts.get(status, 0) + 1
-                    
-                    # Create metrics row for breakout summary
-                    if status_counts:
-                        cols = st.columns(len(status_counts))
-                        for i, (status, count) in enumerate(status_counts.items()):
-                            emoji_map = {'active': '✅', 'testing': '⚠️', 'false_breakout': '↩️', 'broken': '❌'}
-                            with cols[i]:
-                                st.metric(f"{emoji_map.get(status, '•')} {status.title()}", count)
-                    
-                    # Show breakout legend
-                    st.caption("""
-                    **Status Legend:** ✅ Active | ⚠️ Testing | ↩️ False Breakout | ❌ Broken  
-                    **Thresholds:** False BO: {false_breakout_threshold} pts | True BO: {true_breakout_threshold} pts
-                    """.format(false_breakout_threshold=false_breakout_threshold, true_breakout_threshold=true_breakout_threshold))
-                    
-                    # Check for breakout alerts
-                    if enable_breakout_alerts:
-                        check_breakout_alerts(all_pivots, current_price)
+                nearby_levels = get_nearby_pivot_levels(df, current_price, proximity)
+                if nearby_levels:
+                    st.info(f"📍 Nearby Levels: {len(nearby_levels)} confirmed pivot levels within {proximity} points")
+                    for i, level in enumerate(nearby_levels[:3]):  # Show top 3
+                        status = "✓" if level.get('confirmed', True) else "?"
+                        st.caption(f"{i+1}. {level['timeframe']}M {level['type'].title()} {status}: ₹{level['value']:.1f} (Distance: {level['distance']:.1f})")
         else:
             st.error("No chart data available")
     
@@ -928,16 +689,7 @@ def main():
                 st.dataframe(option_summary, use_container_width=True)
                 
                 if enable_signals and not df.empty and is_market_hours():
-                    # Get pivots with current breakout thresholds for signals
-                    all_pivots_for_signals = []
-                    if current_price:
-                        pivots_5m_signals = get_pivots_with_thresholds(df, "5", length=pivot_length, current_price=current_price,
-                                                                     false_threshold=false_breakout_threshold, true_threshold=true_breakout_threshold)
-                        pivots_15m_signals = get_pivots_with_thresholds(df, "15", length=pivot_length, current_price=current_price,
-                                                                      false_threshold=false_breakout_threshold, true_threshold=true_breakout_threshold)
-                        all_pivots_for_signals = pivots_5m_signals + pivots_15m_signals
-                    
-                    check_signals_with_breakouts(df, option_summary, underlying_price, proximity, all_pivots_for_signals, enable_breakout_alerts)
+                    check_signals(df, option_summary, underlying_price, proximity)
             else:
                 st.error("Options data unavailable")
         else:
