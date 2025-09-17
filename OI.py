@@ -90,12 +90,13 @@ class DhanAPI:
             return response.json() if response.status_code == 200 else None
         except: return None
     
-    def get_futures_volume_data(self, interval="5", days_back=1):
+    def get_futures_volume_data(self, interval="5", days_back=1, scrip_override=None):
         """Get volume data from NIFTY Futures"""
+        futures_scrip = scrip_override if scrip_override else NIFTY_FUTURES_SCRIP
         return self.get_intraday_data(
             interval=interval, 
             days_back=days_back,
-            scrip_id=NIFTY_FUTURES_SCRIP,
+            scrip_id=futures_scrip,
             segment=NIFTY_FUTURES_SEG,
             instrument="FUTIDX"
         )
@@ -853,11 +854,11 @@ def main():
             help="Enter correct current month NIFTY futures scrip ID"
         )
         
+        # Update the scrip ID if changed (without using global)
+        current_futures_scrip = manual_scrip if manual_scrip != NIFTY_FUTURES_SCRIP else NIFTY_FUTURES_SCRIP
+        
         if manual_scrip != NIFTY_FUTURES_SCRIP:
             st.sidebar.warning(f"Using manual scrip ID: {manual_scrip}")
-            # Temporarily override the global variable
-            global NIFTY_FUTURES_SCRIP
-            NIFTY_FUTURES_SCRIP = manual_scrip
     
     # Rate limiting option
     st.sidebar.subheader("API Settings")
@@ -901,8 +902,8 @@ def main():
                     time.sleep(2)
                 
                 with st.spinner("Fetching NIFTY Futures volume data..."):
-                    st.write(f"Using Futures Scrip ID: {NIFTY_FUTURES_SCRIP}")
-                    futures_data = api.get_futures_volume_data(interval)
+                    st.write(f"Using Futures Scrip ID: {current_futures_scrip}")
+                    futures_data = api.get_futures_volume_data(interval, scrip_override=current_futures_scrip)
                     st.success(f"Futures API call completed: {futures_data is not None}")
                     
                     if futures_data:
