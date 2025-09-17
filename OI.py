@@ -829,6 +829,9 @@ def main():
     use_futures_volume = st.sidebar.checkbox("Use Futures Volume", value=False, 
                                            help="Uses NIFTY Futures volume for Volume Profile calculation")
     
+    # Initialize current_futures_scrip with default value
+    current_futures_scrip = NIFTY_FUTURES_SCRIP
+    
     if use_futures_volume:
         st.sidebar.write(f"Current Futures Scrip ID: **{NIFTY_FUTURES_SCRIP}**")
         
@@ -854,7 +857,7 @@ def main():
             help="Enter correct current month NIFTY futures scrip ID"
         )
         
-        # Update the scrip ID if changed (without using global)
+        # Update the scrip ID if changed
         current_futures_scrip = manual_scrip if manual_scrip != NIFTY_FUTURES_SCRIP else NIFTY_FUTURES_SCRIP
         
         if manual_scrip != NIFTY_FUTURES_SCRIP:
