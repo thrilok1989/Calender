@@ -130,12 +130,18 @@ def process_candle_data(data):
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
     return df
 
-def get_pivots(df, timeframe="5", length=4):
+def get_pivots(df, timeframe="15", length=8, current_price=None):
+    """
+    Improved pivot calculation with better filtering
+    - Increased length for less sensitivity
+    - Filter by recent time and price relevance
+    - Remove duplicate/close pivots
+    """
     if df.empty:
         return []
     
-    rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min"}
-    rule = rule_map.get(timeframe, "5min")
+    rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min", "30": "30min"}
+    rule = rule_map.get(timeframe, "15min")
     
     df_temp = df.set_index('datetime')
     try:
@@ -146,36 +152,62 @@ def get_pivots(df, timeframe="5", length=4):
         if len(resampled) < length * 2 + 1:
             return []
         
-        # Find local maxima (pivot highs)
-        highs = resampled['high']
-        pivot_highs = []
-        for i in range(length, len(highs) - length):
-            if highs.iloc[i] == highs.iloc[i-length:i+length+1].max():
-                pivot_highs.append({
-                    'type': 'high', 
-                    'timeframe': timeframe, 
-                    'timestamp': highs.index[i], 
-                    'value': highs.iloc[i]
-                })
+        max_vals = resampled['high'].rolling(window=length*2+1, center=True).max()
+        min_vals = resampled['low'].rolling(window=length*2+1, center=True).min()
         
-        # Find local minima (pivot lows)
-        lows = resampled['low']
-        pivot_lows = []
-        for i in range(length, len(lows) - length):
-            if lows.iloc[i] == lows.iloc[i-length:i+length+1].min():
-                pivot_lows.append({
-                    'type': 'low', 
-                    'timeframe': timeframe, 
-                    'timestamp': lows.index[i], 
-                    'value': lows.iloc[i]
-                })
+        pivots = []
         
-        return pivot_highs + pivot_lows
-    except Exception as e:
-        st.error(f"Error in pivot detection: {e}")
+        # Get pivot highs
+        for timestamp, value in resampled['high'][resampled['high'] == max_vals].items():
+            pivots.append({
+                'type': 'high', 
+                'timeframe': timeframe, 
+                'timestamp': timestamp, 
+                'value': value,
+                'age_hours': (datetime.now(pytz.timezone('Asia/Kolkata')) - timestamp).total_seconds() / 3600
+            })
+        
+        # Get pivot lows
+        for timestamp, value in resampled['low'][resampled['low'] == min_vals].items():
+            pivots.append({
+                'type': 'low', 
+                'timeframe': timeframe, 
+                'timestamp': timestamp, 
+                'value': value,
+                'age_hours': (datetime.now(pytz.timezone('Asia/Kolkata')) - timestamp).total_seconds() / 3600
+            })
+        
+        # Filter recent pivots (within last 6 hours for intraday)
+        recent_pivots = [p for p in pivots if p['age_hours'] <= 6]
+        
+        # Remove duplicate/close pivots (within 10 points of each other)
+        if current_price:
+            filtered_pivots = []
+            for pivot in recent_pivots:
+                # Only keep pivots that are relevant to current price (within 2% range)
+                price_diff_pct = abs(pivot['value'] - current_price) / current_price * 100
+                if price_diff_pct <= 2.0:  # Within 2% of current price
+                    # Check if this pivot is too close to existing ones
+                    is_duplicate = False
+                    for existing in filtered_pivots:
+                        if abs(pivot['value'] - existing['value']) <= 10:  # Within 10 points
+                            is_duplicate = True
+                            break
+                    if not is_duplicate:
+                        filtered_pivots.append(pivot)
+            recent_pivots = filtered_pivots
+        
+        # Sort by timestamp and return most recent ones
+        recent_pivots.sort(key=lambda x: x['timestamp'], reverse=True)
+        
+        return recent_pivots
+    except:
         return []
 
-def create_chart(df, title):
+def create_chart(df, title, current_price, max_pivots_per_timeframe=2):
+    """
+    Improved chart with fewer pivot levels
+    """
     if df.empty:
         return go.Figure()
     
@@ -194,56 +226,42 @@ def create_chart(df, title):
         marker_color=volume_colors, opacity=0.7
     ), row=2, col=1)
     
-    # Only show significant pivots
     if len(df) > 50:
-        timeframes = ["15", "30"]  # Reduced timeframes for cleaner chart
-        colors = ["#ff9900", "#ff44ff"]
+        # Reduced to only 15min timeframe for cleaner chart
+        timeframes = ["15"]  # Only use 15min for fewer lines
+        colors = ["#ff9900"]
+        
+        x_start, x_end = df['datetime'].min(), df['datetime'].max()
         
         for tf, color in zip(timeframes, colors):
-            pivots = get_pivots(df, tf, length=3)  # Increased length for more significant pivots
+            pivots = get_pivots(df, tf, length=10, current_price=current_price)  # Increased length for less sensitivity
             
-            # Filter pivots to only show the most recent and significant ones
-            recent_pivots = []
-            pivot_values = set()
+            # Show only the most relevant pivots
+            pivots_to_show = pivots[:max_pivots_per_timeframe]  # Limit number of pivots
             
-            for pivot in pivots:
-                # Only add pivot if it's not too close to an existing one
-                if not any(abs(pivot['value'] - pv) < (df['high'].max() - df['low'].min()) * 0.01 for pv in pivot_values):
-                    recent_pivots.append(pivot)
-                    pivot_values.add(pivot['value'])
-            
-            # Only show the 3-5 most recent pivots
-            for pivot in recent_pivots[-5:]:
-                fig.add_shape(type="line", x0=df['datetime'].iloc[0], x1=df['datetime'].iloc[-1],
-                            y0=pivot['value'], y1=pivot['value'],
-                            line=dict(color=color, width=1, dash="dash"), 
-                            name=f"{tf}min {pivot['type']}",
-                            row=1, col=1)
+            for pivot in pivots_to_show:
+                # Add pivot line
+                fig.add_shape(
+                    type="line", 
+                    x0=x_start, x1=x_end,
+                    y0=pivot['value'], y1=pivot['value'],
+                    line=dict(color=color, width=2, dash="dash"), 
+                    row=1, col=1
+                )
                 
-                # Add annotation
+                # Add pivot label
                 fig.add_annotation(
-                    x=df['datetime'].iloc[-1],
+                    x=x_end,
                     y=pivot['value'],
                     text=f"{pivot['value']:.0f}",
                     showarrow=False,
-                    yshift=10,
-                    bgcolor=color,
-                    opacity=0.7,
+                    font=dict(color=color, size=10),
+                    bgcolor="rgba(0,0,0,0.5)",
                     row=1, col=1
                 )
     
-    fig.update_layout(
-        title=title, 
-        template='plotly_dark', 
-        height=600,
-        xaxis_rangeslider_visible=False, 
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    
-    fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
-    fig.update_xaxes(rangeslider_visible=False, row=2, col=1)
-    
+    fig.update_layout(title=title, template='plotly_dark', height=600,
+                     xaxis_rangeslider_visible=False, showlegend=False)
     return fig
 
 def analyze_options(expiry):
@@ -346,8 +364,8 @@ def check_signals(df, option_data, current_price, proximity=5):
         row['Bid_Bias'] == 'Bearish'
     )
     
-    # PRIMARY SIGNAL
-    pivots = get_pivots(df, "15", length=3)  # Use fewer, more significant pivots
+    # PRIMARY SIGNAL - Using improved pivot calculation
+    pivots = get_pivots(df, "15", length=10, current_price=current_price)  # Only 15min pivots
     near_pivot = False
     pivot_level = None
     
@@ -444,6 +462,15 @@ def main():
     proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
     enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
     
+    # New pivot controls
+    st.sidebar.subheader("Pivot Controls")
+    max_pivots = st.sidebar.slider("Max Pivots to Show", 1, 5, 2)
+    pivot_sensitivity = st.sidebar.selectbox("Pivot Sensitivity", ["Low", "Medium", "High"], index=1)
+    
+    # Map sensitivity to length parameter
+    sensitivity_map = {"High": 6, "Medium": 10, "Low": 15}
+    pivot_length = sensitivity_map[pivot_sensitivity]
+    
     api = DhanAPI()
     
     col1, col2 = st.columns([2, 1])
@@ -479,8 +506,22 @@ def main():
                 st.metric("Low", f"₹{df['low'].min():,.2f}")
         
         if not df.empty:
-            fig = create_chart(df, f"Nifty {interval}min")
+            # Use improved chart function with current price
+            fig = create_chart(df, f"Nifty {interval}min", current_price, max_pivots)
             st.plotly_chart(fig, use_container_width=True)
+            
+            # Show pivot info
+            if current_price:
+                pivots = get_pivots(df, "15", length=pivot_length, current_price=current_price)
+                if pivots:
+                    st.subheader("Active Pivot Levels")
+                    pivot_df = pd.DataFrame([{
+                        'Level': f"{p['value']:.0f}",
+                        'Type': p['type'].title(),
+                        'Distance': f"{current_price - p['value']:+.1f}",
+                        'Age': f"{p['age_hours']:.1f}h"
+                    } for p in pivots[:3]])  # Show top 3
+                    st.dataframe(pivot_df, use_container_width=True)
         else:
             st.error("No chart data available")
     
