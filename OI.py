@@ -17,8 +17,14 @@ DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
 DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", "")
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
+
+# Primary instrument (for price analysis and options)
 NIFTY_SCRIP = 13
 NIFTY_SEG = "IDX_I"
+
+# Secondary instrument (for volume data) - NIFTY Current Month Futures
+NIFTY_FUTURES_SCRIP = 26000  # Update this monthly with current contract
+NIFTY_FUTURES_SEG = "NSE_FNO"
 
 VP_CONFIG = {"BINS": 20, "TIMEFRAME": "30T", "POC_COLOR": "#FFD700", "VOLUME_COLOR": "#1f77b4"}
 
@@ -42,16 +48,23 @@ class DhanAPI:
             'client-id': DHAN_CLIENT_ID
         }
     
-    def get_intraday_data(self, interval="5", days_back=1):
+    def get_intraday_data(self, interval="5", days_back=1, scrip_id=None, segment=None, instrument="INDEX"):
+        """Get intraday data for any instrument"""
         url = "https://api.dhan.co/v2/charts/intraday"
         ist = pytz.timezone('Asia/Kolkata')
         end_date = datetime.now(ist)
         start_date = end_date - timedelta(days=days_back)
         
+        # Use provided scrip/segment or default to NIFTY Index
+        if scrip_id is None:
+            scrip_id = NIFTY_SCRIP
+        if segment is None:
+            segment = NIFTY_SEG
+        
         payload = {
-            "securityId": str(NIFTY_SCRIP),
-            "exchangeSegment": NIFTY_SEG,
-            "instrument": "INDEX",
+            "securityId": str(scrip_id),
+            "exchangeSegment": segment,
+            "instrument": instrument,
             "interval": interval,
             "oi": False,
             "fromDate": start_date.strftime("%Y-%m-%d %H:%M:%S"),
@@ -62,6 +75,16 @@ class DhanAPI:
             response = requests.post(url, headers=self.headers, json=payload)
             return response.json() if response.status_code == 200 else None
         except: return None
+    
+    def get_futures_volume_data(self, interval="5", days_back=1):
+        """Get volume data from NIFTY Futures"""
+        return self.get_intraday_data(
+            interval=interval, 
+            days_back=days_back,
+            scrip_id=NIFTY_FUTURES_SCRIP,
+            segment=NIFTY_FUTURES_SEG,
+            instrument="FUTIDX"
+        )
     
     def get_ltp_data(self):
         url = "https://api.dhan.co/v2/marketfeed/ltp"
@@ -107,6 +130,39 @@ def process_candle_data(data):
     ist = pytz.timezone('Asia/Kolkata')
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
     return df
+
+def combine_index_futures_data(index_data, futures_data):
+    """Combine NIFTY Index price data with Futures volume data"""
+    if not index_data or not futures_data:
+        return pd.DataFrame()
+    
+    # Process both datasets
+    index_df = process_candle_data(index_data)
+    futures_df = process_candle_data(futures_data)
+    
+    if index_df.empty:
+        return pd.DataFrame()
+    
+    # Create combined DataFrame with Index prices
+    combined_df = index_df.copy()
+    
+    # Replace volume with futures volume if available
+    if not futures_df.empty and 'volume' in futures_df.columns:
+        # Align timestamps and use futures volume
+        futures_volume = futures_df.set_index('datetime')['volume']
+        combined_df = combined_df.set_index('datetime')
+        
+        # Match volumes by timestamp (forward fill for missing timestamps)
+        combined_df['volume'] = futures_volume.reindex(combined_df.index, method='ffill').fillna(0)
+        combined_df = combined_df.reset_index()
+        
+        # Add metadata
+        combined_df.attrs['volume_source'] = 'futures'
+        combined_df.attrs['futures_scrip'] = NIFTY_FUTURES_SCRIP
+    else:
+        combined_df.attrs['volume_source'] = 'index'
+    
+    return combined_df
 
 def calculate_volume_profile(df, bins=20):
     if df.empty or len(df) < 10 or 'volume' not in df.columns: return []
@@ -574,6 +630,14 @@ def debug_data_info(df):
         return
     
     st.subheader("🔍 Data Debug Info")
+    
+    # Show data source information
+    volume_source = df.attrs.get('volume_source', 'unknown')
+    if volume_source == 'futures':
+        st.info(f"📊 **Data Source**: NIFTY Index prices + Futures volume (Scrip: {df.attrs.get('futures_scrip', 'N/A')})")
+    else:
+        st.info("📊 **Data Source**: NIFTY Index only")
+    
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -612,6 +676,13 @@ def debug_data_info(df):
         zero_vol_count = (df['volume'] == 0).sum()
         if zero_vol_count > 0:
             st.warning(f"⚠️ Found {zero_vol_count} records with zero volume")
+        
+        # Volume source breakdown
+        st.subheader("📊 Volume Data Quality")
+        if volume_source == 'futures':
+            st.success("✅ Using Futures volume data - should be meaningful for Volume Profile")
+        else:
+            st.warning("⚠️ Using Index volume data - may be limited")
     else:
         st.error("❌ No valid volume data available for Volume Profile calculation!")
 
@@ -621,6 +692,7 @@ def debug_data_info(df):
         profiles = calculate_volume_profile(df, VP_CONFIG["BINS"])
         if profiles:
             st.success(f"✅ Volume Profile calculated successfully! POC: ₹{profiles[0]['poc']:.1f}")
+            st.info(f"📊 VP Insights: Total Volume: {profiles[0]['total_volume']:,.0f}")
         else:
             st.error("❌ Volume Profile calculation failed")
     except Exception as e:
@@ -641,6 +713,11 @@ def main():
     enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
     VP_CONFIG["BINS"] = st.sidebar.slider("VP Bins", 10, 30, 20)
     
+    # Volume source option
+    st.sidebar.subheader("Volume Data Source")
+    use_futures_volume = st.sidebar.checkbox("Use Futures Volume", value=True, 
+                                           help="Uses NIFTY Futures volume for Volume Profile calculation")
+    
     # Add debug option
     show_debug = st.sidebar.checkbox("🔍 Show Debug Info", value=False)
     
@@ -650,8 +727,18 @@ def main():
     with col1:
         st.header("Chart with Volume Profile")
         
-        data = api.get_intraday_data(interval)
-        df = process_candle_data(data) if data else pd.DataFrame()
+        if use_futures_volume:
+            # Get both index and futures data
+            index_data = api.get_intraday_data(interval)
+            futures_data = api.get_futures_volume_data(interval)
+            df = combine_index_futures_data(index_data, futures_data)
+            
+            if df.empty:
+                st.error("Failed to fetch combined data")
+        else:
+            # Use index data only
+            data = api.get_intraday_data(interval)
+            df = process_candle_data(data) if data else pd.DataFrame()
         
         # Show debug info if enabled
         if show_debug:
