@@ -130,14 +130,11 @@ def process_candle_data(data):
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
     return df
 
-def get_pivots(df, timeframe="5", length=6, current_price=None):
-    """
-    Calculate pivot points with reasonable filtering
-    """
+def get_pivots(df, timeframe="5", length=4):
     if df.empty:
         return []
     
-    rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min", "30": "30min"}
+    rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min"}
     rule = rule_map.get(timeframe, "5min")
     
     df_temp = df.set_index('datetime')
@@ -153,62 +150,17 @@ def get_pivots(df, timeframe="5", length=6, current_price=None):
         min_vals = resampled['low'].rolling(window=length*2+1, center=True).min()
         
         pivots = []
-        
-        # Get pivot highs
         for timestamp, value in resampled['high'][resampled['high'] == max_vals].items():
-            pivots.append({
-                'type': 'high', 
-                'timeframe': timeframe, 
-                'timestamp': timestamp, 
-                'value': value,
-                'age_hours': (datetime.now(pytz.timezone('Asia/Kolkata')) - timestamp).total_seconds() / 3600
-            })
+            pivots.append({'type': 'high', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
         
-        # Get pivot lows  
         for timestamp, value in resampled['low'][resampled['low'] == min_vals].items():
-            pivots.append({
-                'type': 'low', 
-                'timeframe': timeframe, 
-                'timestamp': timestamp, 
-                'value': value,
-                'age_hours': (datetime.now(pytz.timezone('Asia/Kolkata')) - timestamp).total_seconds() / 3600
-            })
+            pivots.append({'type': 'low', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
         
-        # Filter recent pivots (within last 12 hours - more lenient)
-        recent_pivots = [p for p in pivots if p['age_hours'] <= 12]
-        
-        # Less restrictive filtering
-        if current_price and recent_pivots:
-            filtered_pivots = []
-            for pivot in recent_pivots:
-                # Keep pivots within 5% of current price (more lenient)
-                price_diff_pct = abs(pivot['value'] - current_price) / current_price * 100
-                if price_diff_pct <= 5.0:  # Within 5% of current price
-                    # Check if this pivot is too close to existing ones (reduced to 5 points)
-                    is_duplicate = False
-                    for existing in filtered_pivots:
-                        if abs(pivot['value'] - existing['value']) <= 5:  # Within 5 points
-                            is_duplicate = True
-                            break
-                    if not is_duplicate:
-                        filtered_pivots.append(pivot)
-            recent_pivots = filtered_pivots
-        
-        # Sort by relevance (closer to current price first) then by time
-        if current_price:
-            recent_pivots.sort(key=lambda x: abs(x['value'] - current_price))
-        else:
-            recent_pivots.sort(key=lambda x: x['timestamp'], reverse=True)
-        
-        return recent_pivots
-    except Exception as e:
-        print(f"Pivot calculation error: {e}")
+        return pivots
+    except:
         return []
 
-def create_chart(df, title, current_price, max_pivots_per_timeframe=3):
-    """
-    Chart with controlled number of pivot levels
-    """
+def create_chart(df, title):
     if df.empty:
         return go.Figure()
     
@@ -228,38 +180,17 @@ def create_chart(df, title, current_price, max_pivots_per_timeframe=3):
     ), row=2, col=1)
     
     if len(df) > 50:
-        # Use 5min and 15min timeframes for better coverage
-        timeframes = ["5", "15"]
-        colors = ["#ff9900", "#00ccff"]
-        
-        x_start, x_end = df['datetime'].min(), df['datetime'].max()
+        timeframes = ["5", "10", "15"]
+        colors = ["#ff9900", "#ff44ff", '#4444ff']
         
         for tf, color in zip(timeframes, colors):
-            pivots = get_pivots(df, tf, length=6, current_price=current_price)
+            pivots = get_pivots(df, tf)
+            x_start, x_end = df['datetime'].min(), df['datetime'].max()
             
-            # Limit number of pivots per timeframe
-            pivots_to_show = pivots[:max_pivots_per_timeframe]
-            
-            for pivot in pivots_to_show:
-                # Add pivot line
-                fig.add_shape(
-                    type="line", 
-                    x0=x_start, x1=x_end,
-                    y0=pivot['value'], y1=pivot['value'],
-                    line=dict(color=color, width=2, dash="dash"), 
-                    row=1, col=1
-                )
-                
-                # Add pivot label with timeframe
-                fig.add_annotation(
-                    x=x_end,
-                    y=pivot['value'],
-                    text=f"{pivot['value']:.0f} ({tf}m)",
-                    showarrow=False,
-                    font=dict(color=color, size=9),
-                    bgcolor="rgba(0,0,0,0.7)",
-                    row=1, col=1
-                )
+            for pivot in pivots[-5:]:
+                fig.add_shape(type="line", x0=x_start, x1=x_end,
+                            y0=pivot['value'], y1=pivot['value'],
+                            line=dict(color=color, width=1, dash="dash"), row=1, col=1)
     
     fig.update_layout(title=title, template='plotly_dark', height=600,
                      xaxis_rangeslider_visible=False, showlegend=False)
@@ -365,15 +296,12 @@ def check_signals(df, option_data, current_price, proximity=5):
         row['Bid_Bias'] == 'Bearish'
     )
     
-    # PRIMARY SIGNAL - Check both 5min and 15min pivots
-    pivots_5m = get_pivots(df, "5", length=6, current_price=current_price)
-    pivots_15m = get_pivots(df, "15", length=6, current_price=current_price)
-    all_pivots = pivots_5m + pivots_15m
-    
+    # PRIMARY SIGNAL
+    pivots = get_pivots(df, "5") + get_pivots(df, "10") + get_pivots(df, "15")
     near_pivot = False
     pivot_level = None
     
-    for pivot in all_pivots:
+    for pivot in pivots:
         if abs(current_price - pivot['value']) <= proximity:
             near_pivot = True
             pivot_level = pivot
@@ -466,15 +394,6 @@ def main():
     proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
     enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
     
-    # New pivot controls
-    st.sidebar.subheader("Pivot Controls")
-    max_pivots = st.sidebar.slider("Max Pivots to Show", 1, 5, 2)
-    pivot_sensitivity = st.sidebar.selectbox("Pivot Sensitivity", ["Low", "Medium", "High"], index=1)
-    
-    # Map sensitivity to length parameter
-    sensitivity_map = {"High": 4, "Medium": 6, "Low": 8}
-    pivot_length = sensitivity_map[pivot_sensitivity]
-    
     api = DhanAPI()
     
     col1, col2 = st.columns([2, 1])
@@ -510,26 +429,8 @@ def main():
                 st.metric("Low", f"₹{df['low'].min():,.2f}")
         
         if not df.empty:
-            # Use improved chart function with current price
-            fig = create_chart(df, f"Nifty {interval}min", current_price, max_pivots)
+            fig = create_chart(df, f"Nifty {interval}min")
             st.plotly_chart(fig, use_container_width=True)
-            
-            # Show pivot info
-            if current_price:
-                pivots_5m = get_pivots(df, "5", length=pivot_length, current_price=current_price)
-                pivots_15m = get_pivots(df, "15", length=pivot_length, current_price=current_price)
-                all_pivots = (pivots_5m + pivots_15m)[:5]  # Combine and limit to 5
-                
-                if all_pivots:
-                    st.subheader("Active Pivot Levels")
-                    pivot_df = pd.DataFrame([{
-                        'Level': f"{p['value']:.0f}",
-                        'TF': f"{p['timeframe']}m",
-                        'Type': p['type'].title(),
-                        'Distance': f"{current_price - p['value']:+.1f}",
-                        'Age': f"{p['age_hours']:.1f}h"
-                    } for p in all_pivots])
-                    st.dataframe(pivot_df, use_container_width=True)
         else:
             st.error("No chart data available")
     
