@@ -207,6 +207,114 @@ def detect_level_touches(df, pivot_value, tolerance_pct=0.09):
             
     return touches
 
+# ===== ENHANCED SIGNAL FILTERS =====
+
+def get_market_trend(df, period=20):
+    """Market trend filter"""
+    if len(df) < period:
+        return "neutral"
+    
+    sma_short = df['close'].rolling(10).mean().iloc[-1]
+    sma_long = df['close'].rolling(20).mean().iloc[-1]
+    
+    if sma_short > sma_long * 1.002:  # 0.2% threshold
+        return "bullish"
+    elif sma_short < sma_long * 0.998:
+        return "bearish"
+    else:
+        return "neutral"
+
+def check_volume_confirmation(df, lookback=10):
+    """Volume confirmation filter"""
+    if len(df) < lookback:
+        return False
+    
+    recent_volume = df['volume'].iloc[-3:].mean()
+    avg_volume = df['volume'].rolling(lookback).mean().iloc[-1]
+    
+    return recent_volume > avg_volume * 1.2  # 20% above average
+
+def check_pivot_confluence(df, current_price, proximity=5):
+    """Multiple timeframe confluence filter"""
+    timeframes = ["5", "10", "15"]
+    support_count = 0
+    resistance_count = 0
+    
+    for tf in timeframes:
+        nearby = get_nearby_pivot_levels(df, current_price, proximity)
+        for level in nearby:
+            if level['timeframe'] == tf:
+                if level['type'] == 'support':
+                    support_count += 1
+                elif level['type'] == 'resistance':
+                    resistance_count += 1
+    
+    return support_count >= 2 or resistance_count >= 2
+
+def check_options_strength(option_data):
+    """Strong options flow filter"""
+    if option_data is None or option_data.empty:
+        return False
+    
+    atm_data = option_data[option_data['Zone'] == 'ATM']
+    if atm_data.empty:
+        return False
+    
+    atm = atm_data.iloc[0]
+    
+    ce_chg = abs(atm.get('changeinOpenInterest_CE', 0))
+    pe_chg = abs(atm.get('changeinOpenInterest_PE', 0))
+    
+    # Require stronger OI changes
+    min_oi_change = 500  # Minimum 500 contracts change
+    strong_dominance = max(ce_chg, pe_chg) > min_oi_change
+    
+    return strong_dominance
+
+def get_market_volatility(df, period=14):
+    """Market volatility filter"""
+    if len(df) < period:
+        return "normal"
+    
+    returns = df['close'].pct_change().dropna()
+    volatility = returns.rolling(period).std().iloc[-1] * 100
+    
+    if volatility > 2.0:  # > 2% daily volatility
+        return "high"
+    elif volatility < 0.5:  # < 0.5% daily volatility  
+        return "low"
+    else:
+        return "normal"
+
+def is_good_signal_time():
+    """Time-based filter"""
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    
+    # Avoid first 15 minutes and last 30 minutes
+    market_start = now.replace(hour=9, minute=15, second=0)
+    market_end = now.replace(hour=15, minute=15, second=0)
+    
+    return market_start <= now <= market_end
+
+def calculate_signal_strength(volume_ok, confluence_ok, options_strong, volatility_normal, time_ok, trend_aligned):
+    """Calculate signal strength score 1-10"""
+    filters_passed = sum([volume_ok, confluence_ok, options_strong, volatility_normal, time_ok, trend_aligned])
+    
+    # Base score from filters (max 6)
+    base_score = filters_passed
+    
+    # Bonus points for strong confluence and options
+    bonus = 0
+    if confluence_ok and options_strong:
+        bonus += 2
+    if volume_ok and trend_aligned:
+        bonus += 1
+    
+    return min(base_score + bonus, 10)
+
+# ===== END ENHANCED FILTERS =====
+
 def get_pivots(df, timeframe="5", length=4):
     """
     Enhanced pivot detection with proper algorithm and non-repainting protection
@@ -529,6 +637,8 @@ def check_signals(df, option_data, current_price, proximity=5):
         row['Bid_Bias'] == 'Bearish'
     )
     
+    # ===== EXISTING SIGNALS (UNCHANGED) =====
+    
     # PRIMARY SIGNAL - Using enhanced pivot detection
     nearby_levels = get_nearby_pivot_levels(df, current_price, proximity)
     near_pivot = len(nearby_levels) > 0
@@ -608,6 +718,134 @@ PCR: {row['PCR']}
 """
         send_telegram(message)
         st.success(f"🎯 FOURTH {signal_type} signal sent!")
+    
+    # ===== NEW ENHANCED SIGNALS =====
+    
+    # Calculate all filters
+    market_trend = get_market_trend(df)
+    volume_ok = check_volume_confirmation(df)
+    confluence_ok = check_pivot_confluence(df, current_price, proximity)
+    options_strong = check_options_strength(option_data)
+    volatility = get_market_volatility(df)
+    volatility_normal = volatility == "normal"
+    time_ok = is_good_signal_time()
+    
+    # Trend alignment for different signal directions
+    trend_aligned_bullish = market_trend in ["bullish", "neutral"]
+    trend_aligned_bearish = market_trend in ["bearish", "neutral"]
+    
+    # FIFTH SIGNAL - ENHANCED PRIMARY WITH ALL FILTERS
+    if near_pivot and pivot_level:
+        enhanced_bullish = (
+            primary_bullish_signal and
+            trend_aligned_bullish and
+            volume_ok and
+            confluence_ok and
+            options_strong and
+            volatility_normal and
+            time_ok
+        )
+        
+        enhanced_bearish = (
+            primary_bearish_signal and
+            trend_aligned_bearish and
+            volume_ok and
+            confluence_ok and
+            options_strong and
+            volatility_normal and
+            time_ok
+        )
+        
+        if enhanced_bullish or enhanced_bearish:
+            signal_type = "CALL" if enhanced_bullish else "PUT"
+            price_diff = current_price - pivot_level['value']
+            
+            # Calculate signal strength
+            signal_strength = calculate_signal_strength(
+                volume_ok, confluence_ok, options_strong, 
+                volatility_normal, time_ok, 
+                trend_aligned_bullish if enhanced_bullish else trend_aligned_bearish
+            )
+            
+            touches = detect_level_touches(df, pivot_level['value'])
+            touch_info = f" (Touches: {len(touches)})" if touches else ""
+            
+            message = f"""
+🌟 FIFTH SIGNAL - ENHANCED PRIMARY {signal_type} 🌟
+
+📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
+📌 Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f}{touch_info}
+🎯 ATM: {row['Strike']}
+
+⭐ Signal Strength: {signal_strength}/10
+📈 Market Trend: {market_trend.title()}
+🔊 Volume: {'Strong' if volume_ok else 'Weak'}
+🎯 Confluence: {'Yes' if confluence_ok else 'No'}
+💪 Options Flow: {'Strong' if options_strong else 'Weak'}
+📊 Volatility: {volatility.title()}
+
+All Conditions Met: Pivot + Bias + Filters
+ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+"""
+            send_telegram(message)
+            st.success(f"🌟 ENHANCED FIFTH {signal_type} signal sent! Strength: {signal_strength}/10")
+    
+    # SIXTH SIGNAL - CONFLUENCE + STRONG OPTIONS FLOW (NO PIVOT REQUIRED)
+    strong_confluence_bullish = (
+        bias_aligned_bullish and
+        trend_aligned_bullish and
+        volume_ok and
+        options_strong and
+        volatility_normal and
+        time_ok and
+        put_dominance  # Strong PUT dominance suggesting bullish move
+    )
+    
+    strong_confluence_bearish = (
+        bias_aligned_bearish and
+        trend_aligned_bearish and
+        volume_ok and
+        options_strong and
+        volatility_normal and
+        time_ok and
+        call_dominance  # Strong CALL dominance suggesting bearish move
+    )
+    
+    if strong_confluence_bullish or strong_confluence_bearish:
+        signal_type = "CALL" if strong_confluence_bullish else "PUT"
+        dominance_ratio = pe_chg_oi / ce_chg_oi if strong_confluence_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
+        
+        # Calculate signal strength
+        signal_strength = calculate_signal_strength(
+            volume_ok, confluence_ok, options_strong, 
+            volatility_normal, time_ok, 
+            trend_aligned_bullish if strong_confluence_bullish else trend_aligned_bearish
+        )
+        
+        message = f"""
+🚀 SIXTH SIGNAL - CONFLUENCE + FLOW {signal_type} 🚀
+
+📍 Spot: ₹{current_price:.2f}
+🎯 ATM: {row['Strike']}
+
+⭐ Signal Strength: {signal_strength}/10
+📈 Market Trend: {market_trend.title()}
+🔥 OI Dominance: {'PUT' if strong_confluence_bullish else 'CALL'} ChgOI {dominance_ratio:.1f}x higher
+🔊 Volume: Strong
+💪 Options Flow: Strong
+📊 Volatility: Normal
+
+All Premium Filters Passed
+ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
+ChgOI: CE {ce_chg_oi:,} | PE {pe_chg_oi:,}
+PCR: {row['PCR']}
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+"""
+        send_telegram(message)
+        st.success(f"🚀 CONFLUENCE SIXTH {signal_type} signal sent! Strength: {signal_strength}/10")
 
 def main():
     st.title("📈 Nifty Trading Analyzer")
@@ -671,6 +909,24 @@ def main():
                     for i, level in enumerate(nearby_levels[:3]):  # Show top 3
                         status = "✓" if level.get('confirmed', True) else "?"
                         st.caption(f"{i+1}. {level['timeframe']}M {level['type'].title()} {status}: ₹{level['value']:.1f} (Distance: {level['distance']:.1f})")
+                
+                # Show enhanced signal status
+                if len(df) > 20:
+                    market_trend = get_market_trend(df)
+                    volume_ok = check_volume_confirmation(df)
+                    volatility = get_market_volatility(df)
+                    time_ok = is_good_signal_time()
+                    
+                    st.subheader("Signal Environment")
+                    col_a, col_b, col_c, col_d = st.columns(4)
+                    with col_a:
+                        st.metric("Trend", market_trend.title())
+                    with col_b:
+                        st.metric("Volume", "Strong" if volume_ok else "Weak")
+                    with col_c:
+                        st.metric("Volatility", volatility.title())
+                    with col_d:
+                        st.metric("Time", "Good" if time_ok else "Poor")
         else:
             st.error("No chart data available")
     
