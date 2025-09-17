@@ -124,6 +124,47 @@ class DhanAPI:
         except Exception as e:
             return False, f"Unexpected error: {str(e)}"
     
+    def find_current_nifty_futures(self):
+        """Find current month NIFTY futures scrip ID"""
+        try:
+            # Get instrument list from Dhan API
+            url = "https://api.dhan.co/v2/instrument/NSE_FNO"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                # Parse CSV data
+                lines = response.text.strip().split('\n')
+                if len(lines) > 1:
+                    headers = lines[0].split(',')
+                    
+                    # Find NIFTY futures with nearest expiry
+                    nifty_futures = []
+                    for line in lines[1:]:
+                        fields = line.split(',')
+                        if len(fields) > 10:
+                            # Look for NIFTY futures (FUTIDX instrument)
+                            if 'NIFTY' in fields and 'FUTIDX' in fields:
+                                try:
+                                    scrip_id = int(fields[0])  # Assuming first column is scrip ID
+                                    symbol = fields[2] if len(fields) > 2 else ""
+                                    expiry = fields[8] if len(fields) > 8 else ""
+                                    nifty_futures.append({
+                                        'scrip_id': scrip_id,
+                                        'symbol': symbol,
+                                        'expiry': expiry
+                                    })
+                                except (ValueError, IndexError):
+                                    continue
+                    
+                    # Return the first NIFTY futures found (usually current month)
+                    if nifty_futures:
+                        return nifty_futures[0]
+                        
+        except Exception as e:
+            st.error(f"Error finding futures scrip: {e}")
+        
+        return None
+    
     def get_ltp_data(self):
         self._rate_limit_delay()  # Add delay
         url = "https://api.dhan.co/v2/marketfeed/ltp"
@@ -786,6 +827,37 @@ def main():
     st.sidebar.subheader("Volume Data Source")
     use_futures_volume = st.sidebar.checkbox("Use Futures Volume", value=False, 
                                            help="Uses NIFTY Futures volume for Volume Profile calculation")
+    
+    if use_futures_volume:
+        st.sidebar.write(f"Current Futures Scrip ID: **{NIFTY_FUTURES_SCRIP}**")
+        
+        # Add button to find correct scrip ID
+        if st.sidebar.button("Find Current Futures Scrip"):
+            with st.sidebar:
+                with st.spinner("Searching for current NIFTY futures..."):
+                    futures_info = api.find_current_nifty_futures()
+                    if futures_info:
+                        st.success(f"Found: Scrip {futures_info['scrip_id']}")
+                        st.write(f"Symbol: {futures_info['symbol']}")
+                        st.write(f"Expiry: {futures_info['expiry']}")
+                        st.warning("Update NIFTY_FUTURES_SCRIP in code to use this scrip ID")
+                    else:
+                        st.error("Could not find current NIFTY futures")
+        
+        # Manual scrip ID input
+        manual_scrip = st.sidebar.number_input(
+            "Manual Futures Scrip ID", 
+            min_value=1, 
+            max_value=99999, 
+            value=NIFTY_FUTURES_SCRIP,
+            help="Enter correct current month NIFTY futures scrip ID"
+        )
+        
+        if manual_scrip != NIFTY_FUTURES_SCRIP:
+            st.sidebar.warning(f"Using manual scrip ID: {manual_scrip}")
+            # Temporarily override the global variable
+            global NIFTY_FUTURES_SCRIP
+            NIFTY_FUTURES_SCRIP = manual_scrip
     
     # Rate limiting option
     st.sidebar.subheader("API Settings")
