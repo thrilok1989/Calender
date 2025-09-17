@@ -817,16 +817,27 @@ def main():
         
         # Only fetch data if refresh is triggered
         if refresh_data:
+            st.write(f"**Refresh triggered - Use Futures Volume: {use_futures_volume}**")
+            
             if use_futures_volume:
                 # Get both index and futures data
-                st.info("Fetching NIFTY Index data...")
-                index_data = api.get_intraday_data(interval)
+                with st.spinner("Fetching NIFTY Index data..."):
+                    index_data = api.get_intraday_data(interval)
+                    st.success(f"Index API call completed: {index_data is not None}")
                 
-                st.info("Waiting 2 seconds to avoid rate limits...")
-                time.sleep(2)  # Additional delay between calls
+                with st.spinner("Waiting 2 seconds to avoid rate limits..."):
+                    time.sleep(2)
                 
-                st.info("Fetching NIFTY Futures volume data...")
-                futures_data = api.get_futures_volume_data(interval)
+                with st.spinner("Fetching NIFTY Futures volume data..."):
+                    st.write(f"Using Futures Scrip ID: {NIFTY_FUTURES_SCRIP}")
+                    futures_data = api.get_futures_volume_data(interval)
+                    st.success(f"Futures API call completed: {futures_data is not None}")
+                    
+                    if futures_data:
+                        st.write(f"Futures response keys: {list(futures_data.keys())}")
+                        if 'volume' in futures_data:
+                            vol_sum = sum(futures_data['volume']) if futures_data['volume'] else 0
+                            st.write(f"Futures total volume: {vol_sum:,}")
                 
                 # Combine data with debug output
                 df = combine_index_futures_data(index_data, futures_data)
@@ -846,11 +857,11 @@ def main():
                         df.attrs['volume_source'] = 'futures_only'
             else:
                 # Use index data only
-                st.info("Fetching NIFTY Index data only...")
-                data = api.get_intraday_data(interval)
-                df = process_candle_data(data) if data else pd.DataFrame()
-                if not df.empty:
-                    df.attrs['volume_source'] = 'index_only'
+                with st.spinner("Fetching NIFTY Index data only..."):
+                    data = api.get_intraday_data(interval)
+                    df = process_candle_data(data) if data else pd.DataFrame()
+                    if not df.empty:
+                        df.attrs['volume_source'] = 'index_only'
             
             # Store data in session state to avoid repeated API calls
             st.session_state.chart_data = df
