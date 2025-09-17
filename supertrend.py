@@ -146,18 +146,33 @@ def get_pivots(df, timeframe="5", length=4):
         if len(resampled) < length * 2 + 1:
             return []
         
-        max_vals = resampled['high'].rolling(window=length*2+1, center=True).max()
-        min_vals = resampled['low'].rolling(window=length*2+1, center=True).min()
+        # Find local maxima (pivot highs)
+        highs = resampled['high']
+        pivot_highs = []
+        for i in range(length, len(highs) - length):
+            if highs.iloc[i] == highs.iloc[i-length:i+length+1].max():
+                pivot_highs.append({
+                    'type': 'high', 
+                    'timeframe': timeframe, 
+                    'timestamp': highs.index[i], 
+                    'value': highs.iloc[i]
+                })
         
-        pivots = []
-        for timestamp, value in resampled['high'][resampled['high'] == max_vals].items():
-            pivots.append({'type': 'high', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
+        # Find local minima (pivot lows)
+        lows = resampled['low']
+        pivot_lows = []
+        for i in range(length, len(lows) - length):
+            if lows.iloc[i] == lows.iloc[i-length:i+length+1].min():
+                pivot_lows.append({
+                    'type': 'low', 
+                    'timeframe': timeframe, 
+                    'timestamp': lows.index[i], 
+                    'value': lows.iloc[i]
+                })
         
-        for timestamp, value in resampled['low'][resampled['low'] == min_vals].items():
-            pivots.append({'type': 'low', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
-        
-        return pivots
-    except:
+        return pivot_highs + pivot_lows
+    except Exception as e:
+        st.error(f"Error in pivot detection: {e}")
         return []
 
 def create_chart(df, title):
@@ -179,21 +194,56 @@ def create_chart(df, title):
         marker_color=volume_colors, opacity=0.7
     ), row=2, col=1)
     
+    # Only show significant pivots
     if len(df) > 50:
-        timeframes = ["5", "10", "15"]
-        colors = ["#ff9900", "#ff44ff", '#4444ff']
+        timeframes = ["15", "30"]  # Reduced timeframes for cleaner chart
+        colors = ["#ff9900", "#ff44ff"]
         
         for tf, color in zip(timeframes, colors):
-            pivots = get_pivots(df, tf)
-            x_start, x_end = df['datetime'].min(), df['datetime'].max()
+            pivots = get_pivots(df, tf, length=3)  # Increased length for more significant pivots
             
-            for pivot in pivots[-5:]:
-                fig.add_shape(type="line", x0=x_start, x1=x_end,
+            # Filter pivots to only show the most recent and significant ones
+            recent_pivots = []
+            pivot_values = set()
+            
+            for pivot in pivots:
+                # Only add pivot if it's not too close to an existing one
+                if not any(abs(pivot['value'] - pv) < (df['high'].max() - df['low'].min()) * 0.01 for pv in pivot_values):
+                    recent_pivots.append(pivot)
+                    pivot_values.add(pivot['value'])
+            
+            # Only show the 3-5 most recent pivots
+            for pivot in recent_pivots[-5:]:
+                fig.add_shape(type="line", x0=df['datetime'].iloc[0], x1=df['datetime'].iloc[-1],
                             y0=pivot['value'], y1=pivot['value'],
-                            line=dict(color=color, width=1, dash="dash"), row=1, col=1)
+                            line=dict(color=color, width=1, dash="dash"), 
+                            name=f"{tf}min {pivot['type']}",
+                            row=1, col=1)
+                
+                # Add annotation
+                fig.add_annotation(
+                    x=df['datetime'].iloc[-1],
+                    y=pivot['value'],
+                    text=f"{pivot['value']:.0f}",
+                    showarrow=False,
+                    yshift=10,
+                    bgcolor=color,
+                    opacity=0.7,
+                    row=1, col=1
+                )
     
-    fig.update_layout(title=title, template='plotly_dark', height=600,
-                     xaxis_rangeslider_visible=False, showlegend=False)
+    fig.update_layout(
+        title=title, 
+        template='plotly_dark', 
+        height=600,
+        xaxis_rangeslider_visible=False, 
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
+    fig.update_xaxes(rangeslider_visible=False, row=2, col=1)
+    
     return fig
 
 def analyze_options(expiry):
@@ -297,7 +347,7 @@ def check_signals(df, option_data, current_price, proximity=5):
     )
     
     # PRIMARY SIGNAL
-    pivots = get_pivots(df, "5") + get_pivots(df, "10") + get_pivots(df, "15")
+    pivots = get_pivots(df, "15", length=3)  # Use fewer, more significant pivots
     near_pivot = False
     pivot_level = None
     
