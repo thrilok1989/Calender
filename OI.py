@@ -7,16 +7,16 @@ from plotly.subplots import make_subplots
 import datetime
 import pytz
 import numpy as np
-from scipy.stats import norm
 from datetime import datetime, timedelta
 import time
 
 # Page config
-st.set_page_config(page_title="Nifty Analyzer", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Nifty Analyzer Enhanced", page_icon="📈", layout="wide")
 
 # Constants
 NIFTY_SCRIP = 13
 NIFTY_SEG = "IDX_I"
+VIX_SCRIP = 25  # India VIX security ID (need to verify from instrument list)
 
 # Credentials
 DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
@@ -26,22 +26,16 @@ TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
 ALPHA_VANTAGE_KEY = st.secrets.get("ALPHA_VANTAGE_KEY", "")
 
 def is_market_hours():
-    """Check if it's market hours"""
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
-    
-    if now.weekday() >= 5:  # Weekend
+    if now.weekday() >= 5:
         return False
-    
     market_start = now.replace(hour=9, minute=0, second=0, microsecond=0)
     market_end = now.replace(hour=15, minute=45, second=0, microsecond=0)
     return market_start <= now <= market_end
 
-# Auto-refresh only during market hours
 if is_market_hours():
     st_autorefresh(interval=35000, key="refresh")
-else:
-    st.info("Market is closed. Auto-refresh disabled.")
 
 class DhanAPI:
     def __init__(self):
@@ -52,16 +46,15 @@ class DhanAPI:
             'client-id': DHAN_CLIENT_ID
         }
     
-    def get_intraday_data(self, interval="5", days_back=1):
-        """Fetch intraday data"""
+    def get_intraday_data(self, security_id=NIFTY_SCRIP, interval="5", days_back=1, include_volume=True):
         url = "https://api.dhan.co/v2/charts/intraday"
         ist = pytz.timezone('Asia/Kolkata')
         end_date = datetime.now(ist)
         start_date = end_date - timedelta(days=days_back)
         
         payload = {
-            "securityId": str(NIFTY_SCRIP),
-            "exchangeSegment": NIFTY_SEG,
+            "securityId": str(security_id),
+            "exchangeSegment": NIFTY_SEG if security_id == NIFTY_SCRIP else "IDX_I",
             "instrument": "INDEX",
             "interval": interval,
             "oi": False,
@@ -75,18 +68,15 @@ class DhanAPI:
         except:
             return None
     
-    def get_ltp_data(self):
-        """Get last traded price"""
-        url = "https://api.dhan.co/v2/marketfeed/ltp"
-        payload = {NIFTY_SEG: [NIFTY_SCRIP]}
+    def get_market_quote(self, instruments):
+        url = "https://api.dhan.co/v2/marketfeed/quote"
         try:
-            response = requests.post(url, headers=self.headers, json=payload)
+            response = requests.post(url, headers=self.headers, json=instruments)
             return response.json() if response.status_code == 200 else None
         except:
             return None
 
 def get_option_chain(expiry):
-    """Fetch option chain data"""
     url = "https://api.dhan.co/v2/optionchain"
     headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
     payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG, "Expiry": expiry}
@@ -97,7 +87,6 @@ def get_option_chain(expiry):
         return None
 
 def get_expiry_list():
-    """Get available expiry dates"""
     url = "https://api.dhan.co/v2/optionchain/expirylist"
     headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
     payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG}
@@ -108,62 +97,26 @@ def get_expiry_list():
         return None
 
 def send_telegram(message):
-    """Send message to Telegram with proper error handling"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        st.error("❌ Telegram credentials not configured in secrets")
         return False
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    
-    # Clean message to avoid HTML parsing issues
-    # Replace problematic characters that cause HTML parsing errors
     clean_message = message.replace("<", "less than ").replace(">", "greater than ")
-    clean_message = clean_message.replace("&", "and")
     
-    # Try both string and integer chat ID formats
-    chat_ids_to_try = [TELEGRAM_CHAT_ID]
-    if TELEGRAM_CHAT_ID.isdigit() or (TELEGRAM_CHAT_ID.startswith('-') and TELEGRAM_CHAT_ID[1:].isdigit()):
-        chat_ids_to_try.append(int(TELEGRAM_CHAT_ID))
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": clean_message, "disable_web_page_preview": True}
     
-    for chat_id in chat_ids_to_try:
-        payload = {
-            "chat_id": chat_id, 
-            "text": clean_message, 
-            "disable_web_page_preview": True
-        }
-        
-        try:
-            response = requests.post(url, json=payload, timeout=15)
-            
-            if response.status_code == 200:
-                st.success(f"✅ Telegram message sent successfully!")
-                return True
-            else:
-                error_data = response.json()
-                error_msg = error_data.get('description', 'Unknown error')
-                st.error(f"❌ Telegram API Error: {error_msg}")
-                
-                # Common error solutions
-                if "chat not found" in error_msg.lower():
-                    st.info("💡 Solution: Make sure the bot has been started by sending /start to your bot first")
-                elif "bot was blocked" in error_msg.lower():
-                    st.info("💡 Solution: Unblock the bot in your Telegram and send /start")
-                elif "unauthorized" in error_msg.lower():
-                    st.info("💡 Solution: Check your bot token in secrets")
-                
-                return False
-                
-        except requests.exceptions.RequestException as e:
-            st.error(f"❌ Network error: {str(e)}")
-            return False
-        except Exception as e:
-            st.error(f"❌ Unexpected error: {str(e)}")
-            return False
-    
+    try:
+        response = requests.post(url, json=payload, timeout=15)
+        if response.status_code == 200:
+            st.success("✅ Telegram message sent!")
+            return True
+        else:
+            st.error(f"❌ Telegram error: {response.json().get('description', 'Unknown')}")
+    except Exception as e:
+        st.error(f"❌ Network error: {str(e)}")
     return False
 
 def process_candle_data(data):
-    """Process raw candle data into DataFrame"""
     if not data or 'open' not in data:
         return pd.DataFrame()
     
@@ -173,124 +126,117 @@ def process_candle_data(data):
         'high': data['high'],
         'low': data['low'],
         'close': data['close'],
-        'volume': data['volume']
+        'volume': data.get('volume', [0] * len(data['open']))
     })
     
     ist = pytz.timezone('Asia/Kolkata')
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
     return df
 
-def find_pivots(prices, length, pivot_type='high'):
-    """Find pivot highs or lows"""
-    if len(prices) < length * 2 + 1:
-        return pd.Series(index=prices.index, dtype=float)
+# Alpha Vantage Functions
+def fetch_usd_inr_data():
+    if not ALPHA_VANTAGE_KEY:
+        return None
     
-    pivots = pd.Series(index=prices.index, dtype=float)
-    
-    for i in range(length, len(prices) - length):
-        current = prices.iloc[i]
-        left_side = prices.iloc[i-length:i]
-        right_side = prices.iloc[i+1:i+length+1]
-        
-        if pivot_type == 'high':
-            if current > left_side.max() and current > right_side.max():
-                pivots.iloc[i] = current
-        else:  # low
-            if current < left_side.min() and current < right_side.min():
-                pivots.iloc[i] = current
-                
-    return pivots
-
-def get_pivots(df, timeframe="5", length=4):
-    """Enhanced pivot detection"""
-    if df.empty:
-        return []
-    
-    rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min"}
-    rule = rule_map.get(timeframe, "5min")
-    
-    df_temp = df.set_index('datetime')
     try:
-        resampled = df_temp.resample(rule).agg({
-            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-        }).dropna()
+        current_time = time.time()
+        if 'last_usd_inr_request' in st.session_state:
+            if current_time - st.session_state.last_usd_inr_request < 1800:  # 30 minutes
+                return st.session_state.get('usd_inr_data')
         
-        if len(resampled) < length * 2 + 1:
-            return []
+        url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=INR&interval=5min&apikey={ALPHA_VANTAGE_KEY}"
+        response = requests.get(url, timeout=15)
         
-        pivot_highs = find_pivots(resampled['high'], length, 'high')
-        pivot_lows = find_pivots(resampled['low'], length, 'low')
-        
-        pivots = []
-        
-        # Process highs
-        valid_highs = pivot_highs.dropna()
-        if len(valid_highs) > 1:
-            for timestamp, value in valid_highs[:-1].items():
-                pivots.append({
-                    'type': 'high', 'timeframe': timeframe, 'timestamp': timestamp, 
-                    'value': float(value), 'confirmed': True
-                })
-            
-            if len(valid_highs) >= 1:
-                last_high = valid_highs.iloc[-1]
-                last_high_time = valid_highs.index[-1]
-                pivots.append({
-                    'type': 'high', 'timeframe': timeframe, 'timestamp': last_high_time,
-                    'value': float(last_high), 'confirmed': False
-                })
-        
-        # Process lows
-        valid_lows = pivot_lows.dropna()
-        if len(valid_lows) > 1:
-            for timestamp, value in valid_lows[:-1].items():
-                pivots.append({
-                    'type': 'low', 'timeframe': timeframe, 'timestamp': timestamp,
-                    'value': float(value), 'confirmed': True
-                })
-            
-            if len(valid_lows) >= 1:
-                last_low = valid_lows.iloc[-1] 
-                last_low_time = valid_lows.index[-1]
-                pivots.append({
-                    'type': 'low', 'timeframe': timeframe, 'timestamp': last_low_time, 
-                    'value': float(last_low), 'confirmed': False
-                })
-        
-        return pivots
+        if response.status_code == 200:
+            data = response.json()
+            if 'Time Series FX (5min)' in data:
+                fx_data = data['Time Series FX (5min)']
+                processed_data = []
+                
+                for timestamp, values in list(fx_data.items())[:50]:  # Last 50 data points
+                    processed_data.append({
+                        'datetime': pd.to_datetime(timestamp),
+                        'open': float(values['1. open']),
+                        'high': float(values['2. high']),
+                        'low': float(values['3. low']),
+                        'close': float(values['4. close'])
+                    })
+                
+                df = pd.DataFrame(processed_data)
+                df = df.sort_values('datetime').reset_index(drop=True)
+                
+                st.session_state.last_usd_inr_request = current_time
+                st.session_state.usd_inr_data = df
+                return df
         
     except Exception as e:
-        return []
-
-def get_nearby_pivot_levels(df, current_price, proximity=5.0):
-    """Get confirmed pivot levels near current price"""
-    if df.empty:
-        return []
-        
-    nearby_levels = []
-    timeframes = ["5", "10", "15"]
+        st.error(f"USD/INR fetch error: {e}")
     
-    for timeframe in timeframes:
-        pivots = get_pivots(df, timeframe, length=4)
+    return st.session_state.get('usd_inr_data')
+
+def fetch_alpha_vantage_news():
+    if not ALPHA_VANTAGE_KEY:
+        return []
+    
+    try:
+        current_time = time.time()
+        if 'last_news_request' in st.session_state:
+            if current_time - st.session_state.last_news_request < 900:  # 15 minutes
+                return st.session_state.get('alpha_vantage_news', [])
         
-        for pivot in pivots:
-            if not pivot.get('confirmed', True):
-                continue
-                
-            distance = abs(current_price - pivot['value'])
-            if distance <= proximity:
-                level_type = 'resistance' if pivot['type'] == 'high' else 'support'
-                nearby_levels.append({
-                    'type': level_type, 'pivot_type': pivot['type'], 'value': pivot['value'],
-                    'timeframe': timeframe, 'distance': distance, 'timestamp': pivot['timestamp'],
-                    'confirmed': pivot['confirmed']
+        url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=NIFTY&apikey={ALPHA_VANTAGE_KEY}"
+        response = requests.get(url, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            feed = data.get('feed', [])[:5]
+            
+            processed_news = []
+            for item in feed:
+                sentiment_score = item.get('overall_sentiment', {}).get('score', 0) if isinstance(item.get('overall_sentiment'), dict) else 0
+                processed_news.append({
+                    'title': item.get('title', ''),
+                    'summary': item.get('summary', '')[:200],
+                    'sentiment_score': sentiment_score
                 })
+            
+            st.session_state.last_news_request = current_time
+            st.session_state.alpha_vantage_news = processed_news
+            return processed_news
+            
+    except:
+        pass
     
-    nearby_levels.sort(key=lambda x: x['distance'])
-    return nearby_levels
+    return st.session_state.get('alpha_vantage_news', [])
 
+def analyze_news_sentiment(news_items):
+    if not news_items:
+        return {"overall": "neutral", "score": 0, "bullish_count": 0, "bearish_count": 0}
+    
+    scores = []
+    for item in news_items:
+        score = item.get('sentiment_score', 0)
+        if 0 <= score <= 1:
+            scores.append(score * 2 - 1)
+        else:
+            scores.append(score)
+    
+    if scores:
+        avg_score = sum(scores) / len(scores)
+        overall = "bullish" if avg_score > 0.2 else "bearish" if avg_score < -0.2 else "neutral"
+        
+        return {
+            "overall": overall,
+            "score": round(avg_score, 3),
+            "bullish_count": sum(1 for s in scores if s > 0.2),
+            "bearish_count": sum(1 for s in scores if s < -0.2),
+            "confidence": min(abs(avg_score) * 2, 1.0)
+        }
+    
+    return {"overall": "neutral", "score": 0, "bullish_count": 0, "bearish_count": 0}
+
+# Technical Analysis Functions
 def calculate_rsi(df, periods=14):
-    """Calculate RSI"""
     if len(df) < periods + 1:
         return pd.Series(index=df.index, dtype=float)
     
@@ -299,7 +245,6 @@ def calculate_rsi(df, periods=14):
     losses = -price_changes.where(price_changes < 0, 0)
     
     rsi_values = pd.Series(index=df.index, dtype=float)
-    
     initial_avg_gain = gains.rolling(window=periods).mean().iloc[periods-1]
     initial_avg_loss = losses.rolling(window=periods).mean().iloc[periods-1]
     
@@ -325,197 +270,47 @@ def calculate_rsi(df, periods=14):
     
     return rsi_values
 
-def create_chart(df, title):
-    """Create enhanced chart with pivots and RSI - market hours only"""
-    if df.empty:
-        return go.Figure()
+def calculate_fibonacci_levels(df, lookback=50):
+    if len(df) < lookback:
+        return {}
     
-    # Filter data to market hours only (9:15 AM to 3:30 PM IST on weekdays)
-    df_filtered = df.copy()
-    df_filtered = df_filtered[
-        (df_filtered['datetime'].dt.weekday < 5) &  # Monday to Friday
-        (df_filtered['datetime'].dt.time >= pd.Timestamp('09:15').time()) &  # After 9:15 AM
-        (df_filtered['datetime'].dt.time <= pd.Timestamp('15:30').time())    # Before 3:30 PM
-    ]
+    recent_data = df.tail(lookback)
+    high = recent_data['high'].max()
+    low = recent_data['low'].min()
+    diff = high - low
     
-    if df_filtered.empty:
-        return go.Figure()
-    
-    fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.02,
-        row_heights=[0.6, 0.2, 0.2], subplot_titles=("Price Chart", "Volume", "RSI (14)")
-    )
-    
-    # Candlestick chart
-    fig.add_trace(go.Candlestick(
-        x=df_filtered['datetime'], open=df_filtered['open'], high=df_filtered['high'], 
-        low=df_filtered['low'], close=df_filtered['close'], name='Nifty',
-        increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
-    ), row=1, col=1)
-    
-    # Volume
-    volume_colors = ['#00ff88' if close >= open else '#ff4444' 
-                    for close, open in zip(df_filtered['close'], df_filtered['open'])]
-    fig.add_trace(go.Bar(
-        x=df_filtered['datetime'], y=df_filtered['volume'], name='Volume',
-        marker_color=volume_colors, opacity=0.7
-    ), row=2, col=1)
-    
-    # RSI
-    if len(df_filtered) > 14:
-        rsi_values = calculate_rsi(df_filtered)
-        fig.add_trace(go.Scatter(
-            x=df_filtered['datetime'], y=rsi_values, name='RSI',
-            line=dict(color='#ffaa00', width=2), mode='lines'
-        ), row=3, col=1)
-        
-        # RSI levels
-        for level, color, label in [(70, "red", "Overbought"), (30, "green", "Oversold"), (50, "gray", "Midline")]:
-            fig.add_hline(y=level, line_dash="dash" if level != 50 else "dot", 
-                         line_color=color, annotation_text=f"{label} ({level})", row=3, col=1)
-        
-        fig.update_yaxes(range=[0, 100], row=3, col=1)
-    
-    # Add pivot levels using original df for calculation
-    if len(df) > 50:
-        timeframes = ["5", "10", "15"]
-        colors = ["#ff9900", "#ff44ff", '#4444ff']
-        
-        # Use filtered data range for line display
-        x_start, x_end = df_filtered['datetime'].min(), df_filtered['datetime'].max()
-        
-        for tf, color in zip(timeframes, colors):
-            pivots = get_pivots(df, tf)  # Use full dataset for pivot calculation
-            recent_highs = [p for p in pivots if p['type'] == 'high'][-5:]
-            recent_lows = [p for p in pivots if p['type'] == 'low'][-5:]
-            
-            for pivot_list, label_prefix in [(recent_highs, "H"), (recent_lows, "L")]:
-                for pivot in pivot_list:
-                    # Only show pivots that fall within the filtered time range
-                    pivot_time = pivot['timestamp']
-                    if x_start <= pivot_time <= x_end:
-                        line_style = "solid" if pivot.get('confirmed', True) else "dash"
-                        line_width = 2 if pivot.get('confirmed', True) else 1
-                        
-                        # Main line
-                        fig.add_shape(
-                            type="line", x0=x_start, x1=x_end, y0=pivot['value'], y1=pivot['value'],
-                            line=dict(color=color, width=line_width, dash=line_style), row=1, col=1
-                        )
-                        
-                        # Shadow
-                        fig.add_shape(
-                            type="line", x0=x_start, x1=x_end, y0=pivot['value'], y1=pivot['value'],
-                            line=dict(color=color, width=5),
-                            opacity=0.15 if pivot.get('confirmed', True) else 0.08, row=1, col=1
-                        )
-                        
-                        # Label
-                        status = "✓" if pivot.get('confirmed', True) else "?"
-                        fig.add_annotation(
-                            x=x_end, y=pivot['value'], text=f"{tf}M {label_prefix} {status}: {pivot['value']:.1f}",
-                            showarrow=False, xshift=20, font=dict(size=9, color=color), row=1, col=1
-                        )
-    
-    # Update layout
-    fig.update_layout(
-        title=title, 
-        template='plotly_dark', 
-        height=700,
-        xaxis_rangeslider_visible=False, 
-        showlegend=False
-    )
-    
-    # Custom x-axis formatting
-    fig.update_xaxes(tickformat="%H:%M", showticklabels=False, row=1, col=1)
-    fig.update_xaxes(tickformat="%H:%M", showticklabels=False, row=2, col=1)
-    fig.update_xaxes(tickformat="%H:%M %d-%b", showticklabels=True, row=3, col=1)
-    
-    return fig
+    return {
+        'high': high,
+        'low': low,
+        '23.6%': high - (diff * 0.236),
+        '38.2%': high - (diff * 0.382),
+        '50%': high - (diff * 0.5),
+        '61.8%': high - (diff * 0.618),
+        '78.6%': high - (diff * 0.786)
+    }
 
-# News Analysis Functions
-def fetch_alpha_vantage_news():
-    """Fetch news with rate limiting"""
-    if not ALPHA_VANTAGE_KEY:
-        return [{'title': 'Alpha Vantage API key not configured', 'summary': 'Please add ALPHA_VANTAGE_KEY to secrets',
-                'source': 'System', 'published_at': datetime.now().isoformat(), 'sentiment_score': 0}]
+def find_pivots(prices, length, pivot_type='high'):
+    if len(prices) < length * 2 + 1:
+        return pd.Series(index=prices.index, dtype=float)
     
-    try:
-        current_time = time.time()
-        if 'last_news_request' in st.session_state:
-            time_since_last = current_time - st.session_state.last_news_request
-            if time_since_last < 900:  # 15 minutes
-                if 'alpha_vantage_news' in st.session_state:
-                    return st.session_state.alpha_vantage_news
-                return []
-        
-        url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=NIFTY&apikey={ALPHA_VANTAGE_KEY}"
-        response = requests.get(url, timeout=15)
-        
-        if response.status_code == 429:
-            if 'alpha_vantage_news' in st.session_state:
-                return st.session_state.alpha_vantage_news
-            return []
-        
-        response.raise_for_status()
-        data = response.json()
-        feed = data.get('feed', [])[:5]
-        
-        processed_news = []
-        for item in feed:
-            sentiment_info = item.get('overall_sentiment', {})
-            sentiment_score = sentiment_info.get('score', 0) if isinstance(sentiment_info, dict) else 0
-            
-            processed_news.append({
-                'title': item.get('title', ''), 'summary': item.get('summary', '')[:200],
-                'url': item.get('url', ''), 'source': item.get('source', 'Unknown'),
-                'published_at': item.get('time_published', ''), 'sentiment_score': sentiment_score
-            })
-        
-        st.session_state.last_news_request = current_time
-        st.session_state.alpha_vantage_news = processed_news
-        return processed_news
-        
-    except:
-        return st.session_state.get('alpha_vantage_news', [])
-
-def analyze_news_sentiment(news_items):
-    """Analyze sentiment from news"""
-    if not news_items or any('error' in item.get('title', '').lower() for item in news_items):
-        return {"overall": "neutral", "score": 0, "bullish_count": 0, "bearish_count": 0}
+    pivots = pd.Series(index=prices.index, dtype=float)
     
-    sentiment_scores = []
-    for item in news_items:
-        sentiment_score = item.get('sentiment_score', 0)
-        if 0 <= sentiment_score <= 1:
-            sentiment_scores.append(sentiment_score * 2 - 1)
+    for i in range(length, len(prices) - length):
+        current = prices.iloc[i]
+        left_side = prices.iloc[i-length:i]
+        right_side = prices.iloc[i+1:i+length+1]
+        
+        if pivot_type == 'high':
+            if current > left_side.max() and current > right_side.max():
+                pivots.iloc[i] = current
         else:
-            sentiment_scores.append(sentiment_score)
-    
-    if sentiment_scores:
-        avg_score = sum(sentiment_scores) / len(sentiment_scores)
-        
-        if avg_score > 0.2:
-            overall = "bullish"
-        elif avg_score < -0.2:
-            overall = "bearish"
-        else:
-            overall = "neutral"
-            
-        return {
-            "overall": overall, "score": round(avg_score, 3),
-            "bullish_count": sum(1 for score in sentiment_scores if score > 0.2),
-            "bearish_count": sum(1 for score in sentiment_scores if score < -0.2),
-            "neutral_count": sum(1 for score in sentiment_scores if -0.2 <= score <= 0.2),
-            "confidence": min(abs(avg_score) * 2, 1.0)
-        }
-    
-    return {"overall": "neutral", "score": 0, "bullish_count": 0, "bearish_count": 0}
+            if current < left_side.min() and current < right_side.min():
+                pivots.iloc[i] = current
+                
+    return pivots
 
-# Technical Analysis Functions
-def get_market_trend(df, period=20):
-    """Market trend analysis"""
-    if len(df) < period:
+def get_market_trend(df):
+    if len(df) < 20:
         return "neutral"
     
     sma_short = df['close'].rolling(10).mean().iloc[-1]
@@ -528,166 +323,209 @@ def get_market_trend(df, period=20):
     else:
         return "neutral"
 
-def check_pcr_condition(pcr, signal_type):
-    """Check PCR condition for signals"""
-    if signal_type == "bullish":
-        return pcr > 1.3  # More puts than calls = bullish
-    elif signal_type == "bearish":
-        return pcr < 0.7  # More calls than puts = bearish
-    return False
-
-def get_pcr_condition_text(pcr, signal_type):
-    """Get PCR condition text without problematic symbols"""
-    if signal_type == "bullish":
-        threshold = 1.3
-        condition = "above" if pcr > threshold else "below"
-        return f"PCR {pcr:.2f} ({condition} {threshold} for bull)"
-    elif signal_type == "bearish":
-        threshold = 0.7
-        condition = "below" if pcr < threshold else "above"
-        return f"PCR {pcr:.2f} ({condition} {threshold} for bear)"
-    return f"PCR {pcr:.2f}"
-
-def get_momentum_score(df, periods=14):
-    """Calculate momentum score from RSI"""
-    if len(df) < periods + 1:
+def get_momentum_score(df):
+    if len(df) < 15:
         return 5
     
-    rsi_values = calculate_rsi(df, periods)
+    rsi_values = calculate_rsi(df)
     latest_rsi = rsi_values.iloc[-1]
     return max(1, min(10, int(latest_rsi / 10))) if not pd.isna(latest_rsi) else 5
 
-def get_market_volatility(df, period=14):
-    """Market volatility classification"""
-    if len(df) < period:
-        return "normal"
-    
-    returns = df['close'].pct_change().dropna()
-    volatility = returns.rolling(period).std().iloc[-1] * 100
-    
-    if volatility > 2.0:
-        return "high"
-    elif volatility < 0.5:
-        return "low"
-    else:
-        return "normal"
+def check_pcr_condition(pcr, signal_type):
+    if signal_type == "bullish":
+        return pcr > 1.3
+    elif signal_type == "bearish":
+        return pcr < 0.7
+    return False
 
-def is_good_signal_time():
-    """Time-based filter"""
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist)
-    
-    market_start = now.replace(hour=9, minute=15, second=0)
-    market_end = now.replace(hour=15, minute=15, second=0)
-    return market_start <= now <= market_end
+def get_pcr_condition_text(pcr, signal_type):
+    if signal_type == "bullish":
+        condition = "above" if pcr > 1.3 else "below"
+        return f"PCR {pcr:.2f} ({condition} 1.3 for bull)"
+    elif signal_type == "bearish":
+        condition = "below" if pcr < 0.7 else "above"
+        return f"PCR {pcr:.2f} ({condition} 0.7 for bear)"
+    return f"PCR {pcr:.2f}"
 
-def get_price_momentum_profile(df, periods=20):
-    """Price momentum analysis (replaces volume profile)"""
-    if len(df) < periods:
-        return {"profile": "insufficient_data", "strength": 1}
+# Options Analysis Functions
+def calculate_max_pain(option_data):
+    if option_data is None or 'data' not in option_data:
+        return None
     
-    # Use price momentum instead of volume
-    returns = df['close'].pct_change().tail(periods)
-    recent_momentum = abs(returns.tail(5).mean())
-    avg_momentum = abs(returns.mean())
-    momentum_ratio = recent_momentum / avg_momentum if avg_momentum > 0 else 1
+    oc_data = option_data['data']['oc']
+    max_pain_data = {}
     
-    if momentum_ratio > 2.0:
-        profile, strength = "explosive", 2.5
-    elif momentum_ratio > 1.5:
-        profile, strength = "strong", 2.0
-    elif momentum_ratio > 1.2:
-        profile, strength = "above_average", 1.5
-    elif momentum_ratio > 0.8:
-        profile, strength = "normal", 1.0
-    else:
-        profile, strength = "weak", 0.7
+    for strike, data in oc_data.items():
+        strike_price = float(strike)
+        ce_oi = data.get('ce', {}).get('oi', 0) if 'ce' in data else 0
+        pe_oi = data.get('pe', {}).get('oi', 0) if 'pe' in data else 0
+        total_oi = ce_oi + pe_oi
+        max_pain_data[strike_price] = total_oi
     
-    return {"profile": profile, "strength": round(strength, 2), "momentum_ratio": momentum_ratio}
+    if max_pain_data:
+        return max(max_pain_data, key=max_pain_data.get)
+    return None
 
-def detect_market_regime(df, short_period=10, long_period=30):
-    """Market regime detection"""
-    if len(df) < long_period:
-        return "unknown"
+def get_gamma_levels(option_data):
+    if option_data is None or 'data' not in option_data:
+        return []
     
-    short_ma = df['close'].rolling(short_period).mean().iloc[-1]
-    long_ma = df['close'].rolling(long_period).mean().iloc[-1]
+    oc_data = option_data['data']['oc']
+    gamma_levels = []
     
-    trend_direction = "bullish" if short_ma > long_ma else "bearish"
-    
-    # Simple trend strength using price correlation
-    try:
-        x_values = range(len(df.tail(long_period)))
-        y_values = df['close'].tail(long_period).values
-        correlation = np.corrcoef(x_values, y_values)[0, 1]
-        r_squared = correlation ** 2
+    for strike, data in oc_data.items():
+        strike_price = float(strike)
+        ce_gamma = data.get('ce', {}).get('greeks', {}).get('gamma', 0) if 'ce' in data else 0
+        pe_gamma = data.get('pe', {}).get('greeks', {}).get('gamma', 0) if 'pe' in data else 0
+        total_gamma = abs(ce_gamma) + abs(pe_gamma)
         
-        if r_squared > 0.3:
-            return f"{trend_direction}_trending"
-        elif r_squared > 0.1:
-            return f"weak_{trend_direction}_trend"
+        if total_gamma > 0.001:  # Significant gamma threshold
+            gamma_levels.append({'strike': strike_price, 'gamma': total_gamma})
+    
+    return sorted(gamma_levels, key=lambda x: x['gamma'], reverse=True)[:5]
+
+def analyze_iv_rank(option_data):
+    if option_data is None or 'data' not in option_data:
+        return {"current_iv": 0, "rank": "unknown"}
+    
+    oc_data = option_data['data']['oc']
+    iv_values = []
+    
+    for strike, data in oc_data.items():
+        if 'ce' in data and data['ce'].get('implied_volatility'):
+            iv_values.append(data['ce']['implied_volatility'])
+        if 'pe' in data and data['pe'].get('implied_volatility'):
+            iv_values.append(data['pe']['implied_volatility'])
+    
+    if iv_values:
+        avg_iv = sum(iv_values) / len(iv_values)
+        # Simple classification without historical data
+        if avg_iv > 20:
+            rank = "high"
+        elif avg_iv < 10:
+            rank = "low"
         else:
-            return "ranging"
-    except:
-        return "ranging"
+            rank = "medium"
+        
+        return {"current_iv": avg_iv, "rank": rank}
+    
+    return {"current_iv": 0, "rank": "unknown"}
 
-def check_breakout_pattern(df, current_price, lookback=20):
-    """Breakout detection (without volume dependency)"""
-    if len(df) < lookback:
-        return False, "insufficient_data"
+def create_enhanced_chart(df, usd_inr_df=None, title="Nifty Analysis"):
+    if df.empty:
+        return go.Figure()
     
-    recent_data = df.tail(lookback)
-    recent_high = recent_data['high'].max()
-    recent_low = recent_data['low'].min()
+    # Filter to market hours
+    df_filtered = df[
+        (df['datetime'].dt.weekday < 5) &
+        (df['datetime'].dt.time >= pd.Timestamp('09:15').time()) &
+        (df['datetime'].dt.time <= pd.Timestamp('15:30').time())
+    ]
     
-    # ATR calculation
-    high_low = df['high'] - df['low']
-    high_close = abs(df['high'] - df['close'].shift(1))
-    low_close = abs(df['low'] - df['close'].shift(1))
-    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    atr = true_range.rolling(14).mean().iloc[-1]
+    if df_filtered.empty:
+        return go.Figure()
     
-    breakout_threshold = atr * 0.5
+    # Create subplots
+    rows = 4 if usd_inr_df is not None and not usd_inr_df.empty else 3
+    fig = make_subplots(
+        rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.02,
+        row_heights=[0.5, 0.15, 0.15, 0.2] if rows == 4 else [0.6, 0.2, 0.2],
+        subplot_titles=("Price + Fibonacci", "Volume", "RSI (14)", "USD/INR") if rows == 4 else ("Price + Fibonacci", "Volume", "RSI (14)")
+    )
     
-    # Price momentum confirmation instead of volume
-    recent_returns = df['close'].pct_change().tail(5)
-    momentum_strength = abs(recent_returns.mean()) > abs(df['close'].pct_change().tail(20).mean()) * 1.5
+    # Candlestick chart
+    fig.add_trace(go.Candlestick(
+        x=df_filtered['datetime'], 
+        open=df_filtered['open'], 
+        high=df_filtered['high'], 
+        low=df_filtered['low'], 
+        close=df_filtered['close'], 
+        name='Nifty',
+        increasing_line_color='#00ff88', 
+        decreasing_line_color='#ff4444'
+    ), row=1, col=1)
     
-    if current_price > recent_high + breakout_threshold and momentum_strength:
-        return True, "upside_breakout"
-    elif current_price < recent_low - breakout_threshold and momentum_strength:
-        return True, "downside_breakout"
-    elif current_price > recent_high + (breakout_threshold * 0.5):
-        return True, "weak_upside_breakout"
-    elif current_price < recent_low - (breakout_threshold * 0.5):
-        return True, "weak_downside_breakout"
+    # Add Fibonacci levels
+    fib_levels = calculate_fibonacci_levels(df_filtered)
+    if fib_levels:
+        x_start, x_end = df_filtered['datetime'].min(), df_filtered['datetime'].max()
+        
+        fib_colors = {'23.6%': '#FF6B6B', '38.2%': '#4ECDC4', '50%': '#45B7D1', '61.8%': '#96CEB4', '78.6%': '#FFEAA7'}
+        
+        for level, price in fib_levels.items():
+            if level in fib_colors:
+                fig.add_shape(
+                    type="line", x0=x_start, x1=x_end, y0=price, y1=price,
+                    line=dict(color=fib_colors[level], width=1, dash="dot"),
+                    row=1, col=1
+                )
+                fig.add_annotation(
+                    x=x_end, y=price, text=f"Fib {level}: {price:.1f}",
+                    showarrow=False, xshift=10, font=dict(size=8, color=fib_colors[level]),
+                    row=1, col=1
+                )
     
-    return False, "range_bound"
-
-def get_session_performance():
-    """Get current session"""
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist)
+    # Volume
+    if 'volume' in df_filtered.columns and df_filtered['volume'].sum() > 0:
+        volume_colors = ['#00ff88' if close >= open else '#ff4444' 
+                        for close, open in zip(df_filtered['close'], df_filtered['open'])]
+        fig.add_trace(go.Bar(
+            x=df_filtered['datetime'], y=df_filtered['volume'], name='Volume',
+            marker_color=volume_colors, opacity=0.7
+        ), row=2, col=1)
     
-    if 9 <= now.hour < 11:
-        return "opening_session"
-    elif 11 <= now.hour < 13:
-        return "mid_session" 
-    elif 13 <= now.hour < 15:
-        return "afternoon_session"
-    else:
-        return "closing_session"
+    # RSI
+    if len(df_filtered) > 14:
+        rsi_values = calculate_rsi(df_filtered)
+        fig.add_trace(go.Scatter(
+            x=df_filtered['datetime'], y=rsi_values, name='RSI',
+            line=dict(color='#ffaa00', width=2), mode='lines'
+        ), row=3, col=1)
+        
+        for level, color, label in [(70, "red", "Overbought"), (30, "green", "Oversold"), (50, "gray", "Midline")]:
+            fig.add_hline(y=level, line_dash="dash" if level != 50 else "dot", 
+                         line_color=color, annotation_text=f"{label} ({level})", row=3, col=1)
+        
+        fig.update_yaxes(range=[0, 100], row=3, col=1)
+    
+    # USD/INR chart
+    if rows == 4 and usd_inr_df is not None and not usd_inr_df.empty:
+        fig.add_trace(go.Candlestick(
+            x=usd_inr_df['datetime'], 
+            open=usd_inr_df['open'], 
+            high=usd_inr_df['high'], 
+            low=usd_inr_df['low'], 
+            close=usd_inr_df['close'], 
+            name='USD/INR',
+            increasing_line_color='#FFA500', 
+            decreasing_line_color='#8A2BE2'
+        ), row=4, col=1)
+    
+    fig.update_layout(
+        title=title, 
+        template='plotly_dark', 
+        height=800 if rows == 4 else 700,
+        xaxis_rangeslider_visible=False, 
+        showlegend=False
+    )
+    
+    # Update x-axis labels
+    for i in range(1, rows):
+        fig.update_xaxes(showticklabels=False, row=i, col=1)
+    fig.update_xaxes(showticklabels=True, row=rows, col=1)
+    
+    return fig
 
 def analyze_options(expiry):
-    """Analyze options data"""
     option_data = get_option_chain(expiry)
     if not option_data or 'data' not in option_data:
-        return None, None
+        return None, None, None, None
     
     data = option_data['data']
     underlying = data['last_price']
     oc_data = data['oc']
     
+    # Process options data
     calls, puts = [], []
     for strike, strike_data in oc_data.items():
         if 'ce' in strike_data:
@@ -703,7 +541,7 @@ def analyze_options(expiry):
     df_pe = pd.DataFrame(puts)
     df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
     
-    # Rename columns
+    # Rename columns for compatibility
     rename_map = {
         'last_price': 'lastPrice', 'oi': 'openInterest', 'previous_oi': 'previousOpenInterest',
         'top_ask_quantity': 'askQty', 'top_bid_quantity': 'bidQty', 'volume': 'totalTradedVolume'
@@ -745,73 +583,18 @@ def analyze_options(expiry):
             "changeinOpenInterest_PE": row['changeinOpenInterest_PE']
         })
     
-    return underlying, pd.DataFrame(bias_results)
+    # Calculate additional analytics
+    max_pain = calculate_max_pain(option_data)
+    gamma_levels = get_gamma_levels(option_data)
+    iv_analysis = analyze_iv_rank(option_data)
+    
+    return underlying, pd.DataFrame(bias_results), max_pain, gamma_levels, iv_analysis
 
-def get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, market_trend, current_rsi):
-    """Get comprehensive bias information with updated quantitative data"""
-    try:
-        atm_data = option_data[option_data['Zone'] == 'ATM']
-        if atm_data.empty:
-            return "Options data unavailable for bias analysis"
-        
-        row = atm_data.iloc[0]
-        
-        # Technical metrics (removed volume dependencies)
-        volatility = get_market_volatility(df)
-        momentum_score = get_momentum_score(df)
-        price_profile = get_price_momentum_profile(df)
-        market_regime = detect_market_regime(df)
-        session = get_session_performance()
-        time_ok = is_good_signal_time()
-        
-        bias_info = f"""
-📊 COMPREHENSIVE BIAS ANALYSIS 📊
-
-🔹 OPTIONS BIASES:
-• ChgOI Bias: {row['ChgOI_Bias']}
-• Volume Bias: {row['Volume_Bias']} 
-• Ask Bias: {row['Ask_Bias']}
-• Bid Bias: {row['Bid_Bias']}
-• Level Bias: {row['Level']} (OI-based)
-• PCR: {row['PCR']} (PE/CE ratio)
-
-🔹 TECHNICAL BIASES:
-• Market Trend: {market_trend.title()}
-• RSI: {current_rsi:.1f} ({'Oversold' if current_rsi < 30 else 'Overbought' if current_rsi > 70 else 'Neutral'})
-• Volatility: {volatility.title()}
-• Momentum: {momentum_score}/10
-• Price Profile: {price_profile["profile"].title()} ({price_profile["strength"]:.1f}x)
-• Market Regime: {market_regime.replace('_', ' ').title()}
-• Session: {session.replace('_', ' ').title()}
-• Timing: {'Good' if time_ok else 'Poor'}
-
-🔹 SENTIMENT BIASES:
-• News Sentiment: {news_sentiment['overall'].title()} (Score: {news_sentiment['score']:.2f})
-
-🔹 QUANTITATIVE DATA:
-• CE ChgOI: {row.get('changeinOpenInterest_CE', 0):,}
-• PE ChgOI: {row.get('changeinOpenInterest_PE', 0):,}
-• CE OI: {row.get('openInterest_CE', 0):,}
-• PE OI: {row.get('openInterest_PE', 0):,}
-• CE Volume: {row.get('totalTradedVolume_CE', 0):,}
-• PE Volume: {row.get('totalTradedVolume_PE', 0):,}
-• CE Ask: {row.get('askQty_CE', 0):,}
-• CE Bid: {row.get('bidQty_CE', 0):,}
-• PE Ask: {row.get('askQty_PE', 0):,}
-• PE Bid: {row.get('bidQty_PE', 0):,}
-• ATM Strike: {row['Strike']}
-"""
-        return bias_info
-        
-    except Exception as e:
-        return f"Error calculating comprehensive bias: {str(e)}"
-
-def check_signals(df, option_data, current_price, proximity=5):
-    """Comprehensive signal checking with 8 signals"""
+def check_enhanced_signals(df, option_data, current_price, max_pain, gamma_levels, iv_analysis, usd_inr_df=None):
     if df.empty or option_data is None or not current_price:
         return
     
-    # Get news and market analysis
+    # Get analysis data
     news_items = fetch_alpha_vantage_news()
     news_sentiment = analyze_news_sentiment(news_items)
     market_trend = get_market_trend(df)
@@ -821,10 +604,28 @@ def check_signals(df, option_data, current_price, proximity=5):
         return
     
     row = atm_data.iloc[0]
-    
-    # Get current RSI
     rsi_values = calculate_rsi(df)
     current_rsi = rsi_values.iloc[-1] if len(rsi_values) > 0 and not pd.isna(rsi_values.iloc[-1]) else 50
+    
+    # Check USD/INR correlation
+    usd_inr_direction = ""
+    if usd_inr_df is not None and not usd_inr_df.empty and len(usd_inr_df) > 1:
+        usd_inr_change = usd_inr_df['close'].iloc[-1] - usd_inr_df['close'].iloc[-2]
+        usd_inr_direction = f"USD/INR {'Rising' if usd_inr_change > 0 else 'Falling'} ({usd_inr_change:+.4f})"
+    
+    # Fibonacci levels
+    fib_levels = calculate_fibonacci_levels(df)
+    fib_support = None
+    fib_resistance = None
+    
+    if fib_levels:
+        for level, price in fib_levels.items():
+            if level in ['38.2%', '50%', '61.8%']:
+                if abs(current_price - price) < 10:  # Within 10 points
+                    if price < current_price:
+                        fib_support = f"Fib {level}: {price:.1f}"
+                    else:
+                        fib_resistance = f"Fib {level}: {price:.1f}"
     
     # Bias checks
     bias_aligned_bullish = all([
@@ -845,379 +646,308 @@ def check_signals(df, option_data, current_price, proximity=5):
     # News alignment
     news_emoji = "📈" if news_sentiment["overall"] == "bullish" else "📉" if news_sentiment["overall"] == "bearish" else "📊"
     
-    # Get comprehensive info for messages
-    comprehensive_bias_info = get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, market_trend, current_rsi)
+    # Enhanced signal conditions
+    max_pain_info = f"Max Pain: {max_pain:.0f}" if max_pain else "Max Pain: N/A"
+    gamma_info = f"Top Gamma: {gamma_levels[0]['strike']:.0f}" if gamma_levels else "Gamma: N/A"
+    iv_info = f"IV Rank: {iv_analysis['rank'].title()} ({iv_analysis['current_iv']:.1f}%)"
     
-    # Signal 1: Primary Signal - Pivot + Bias alignment + PCR
-    nearby_levels = get_nearby_pivot_levels(df, current_price, proximity)
-    if nearby_levels:
-        pivot_level = nearby_levels[0]
-        primary_bullish = row['Level'] == 'Support' and bias_aligned_bullish and pivot_level['type'] == 'support' and pcr_bullish
-        primary_bearish = row['Level'] == 'Resistance' and bias_aligned_bearish and pivot_level['type'] == 'resistance' and pcr_bearish
-        
-        if primary_bullish or primary_bearish:
-            signal_type = "CALL" if primary_bullish else "PUT"
-            price_diff = current_price - pivot_level['value']
-            pcr_text = get_pcr_condition_text(pcr, "bullish" if primary_bullish else "bearish")
-            
-            message = f"""
-🚨 PRIMARY NIFTY {signal_type} SIGNAL 🚨
+    # Comprehensive bias info
+    comprehensive_info = f"""
+📊 ENHANCED ANALYSIS 📊
 
-📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
-📌 Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f}
+🔹 OPTIONS ANALYTICS:
+• {max_pain_info}
+• {gamma_info}
+• {iv_info}
+• PCR: {pcr:.2f}
+• Level: {row['Level']}
+
+🔹 FIBONACCI LEVELS:
+• Support: {fib_support if fib_support else 'None nearby'}
+• Resistance: {fib_resistance if fib_resistance else 'None nearby'}
+
+🔹 TECHNICAL STATUS:
+• RSI: {current_rsi:.1f}
+• Trend: {market_trend.title()}
+• {news_emoji} News: {news_sentiment['overall'].title()}
+
+🔹 CORRELATIONS:
+• {usd_inr_direction if usd_inr_direction else 'USD/INR: N/A'}
+
+🔹 QUANTITATIVE DATA:
+• CE OI: {row.get('openInterest_CE', 0):,}
+• PE OI: {row.get('openInterest_PE', 0):,}
+• CE Volume: {row.get('totalTradedVolume_CE', 0):,}
+• PE Volume: {row.get('totalTradedVolume_PE', 0):,}
+• Strike: {row['Strike']}
+"""
+    
+    # Enhanced Primary Signal
+    if bias_aligned_bullish and pcr_bullish:
+        signal_type = "CALL"
+        pcr_text = get_pcr_condition_text(pcr, "bullish")
+        
+        # Check confluence with other factors
+        confluence_factors = []
+        if max_pain and current_price > max_pain:
+            confluence_factors.append("Above Max Pain")
+        if fib_support:
+            confluence_factors.append(f"Near {fib_support}")
+        if iv_analysis['rank'] == 'low':
+            confluence_factors.append("Low IV Environment")
+        
+        confluence_text = f"\nConfluence: {', '.join(confluence_factors)}" if confluence_factors else ""
+        
+        message = f"""
+🚨 ENHANCED PRIMARY {signal_type} SIGNAL 🚨
+
+📍 Spot: ₹{current_price:.2f}
 🎯 ATM: {row['Strike']}
 📊 RSI: {current_rsi:.1f}
-📈 {pcr_text} {'✅' if pcr_bullish or pcr_bearish else '❌'}
+📈 {pcr_text}
 
-{news_emoji} News Sentiment: {news_sentiment['overall'].title()}
-Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot, PCR Condition Met
+{news_emoji} Market Sentiment: {news_sentiment['overall'].title()}
+{max_pain_info} | {gamma_info}
+{iv_info}{confluence_text}
+
+All Bias Aligned + Enhanced Analytics Confirm
 
 🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
 
-{comprehensive_bias_info}
+{comprehensive_info}
 """
-            send_telegram(message)
-            st.success(f"PRIMARY {signal_type} signal sent!")
+        send_telegram(message)
+        st.success(f"ENHANCED PRIMARY {signal_type} signal sent!")
+        
+    elif bias_aligned_bearish and pcr_bearish:
+        signal_type = "PUT"
+        pcr_text = get_pcr_condition_text(pcr, "bearish")
+        
+        # Check confluence with other factors
+        confluence_factors = []
+        if max_pain and current_price < max_pain:
+            confluence_factors.append("Below Max Pain")
+        if fib_resistance:
+            confluence_factors.append(f"Near {fib_resistance}")
+        if iv_analysis['rank'] == 'low':
+            confluence_factors.append("Low IV Environment")
+        
+        confluence_text = f"\nConfluence: {', '.join(confluence_factors)}" if confluence_factors else ""
+        
+        message = f"""
+🚨 ENHANCED PRIMARY {signal_type} SIGNAL 🚨
+
+📍 Spot: ₹{current_price:.2f}
+🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.1f}
+📈 {pcr_text}
+
+{news_emoji} Market Sentiment: {news_sentiment['overall'].title()}
+{max_pain_info} | {gamma_info}
+{iv_info}{confluence_text}
+
+All Bias Aligned + Enhanced Analytics Confirm
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+
+{comprehensive_info}
+"""
+        send_telegram(message)
+        st.success(f"ENHANCED PRIMARY {signal_type} signal sent!")
 
 def main():
-    st.title("📈 Nifty Trading Analyzer")
+    st.title("📈 Enhanced Nifty Analyzer")
     
-    # Show market status
+    # Market status
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist)
     
     if not is_market_hours():
-        st.warning(f"⚠️ Market is closed. Current time: {current_time.strftime('%H:%M:%S IST')}")
-        st.info("Market hours: Monday-Friday, 9:00 AM to 3:45 PM IST")
+        st.warning(f"⚠️ Market closed. Time: {current_time.strftime('%H:%M:%S IST')}")
     
-    # Sidebar settings with Telegram debugging
-    st.sidebar.header("🎛️ Settings")
+    # Sidebar
+    st.sidebar.header("🎛️ Enhanced Settings")
     interval = st.sidebar.selectbox("Timeframe", ["1", "3", "5", "10", "15"], index=2)
-    enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
-    proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
+    enable_signals = st.sidebar.checkbox("Enable Enhanced Signals", value=True)
+    enable_usd_inr = st.sidebar.checkbox("Show USD/INR Chart", value=True)
     
-    # Telegram Configuration Check
-    st.sidebar.subheader("📱 Telegram Setup")
-    
+    # Telegram Setup
+    st.sidebar.subheader("📱 Telegram")
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        st.sidebar.success("✅ Telegram credentials configured")
-        
-        # Show configuration details (masked)
-        if len(TELEGRAM_BOT_TOKEN) > 10:
-            masked_token = TELEGRAM_BOT_TOKEN[:8] + "..." + TELEGRAM_BOT_TOKEN[-4:]
-            st.sidebar.text(f"Bot Token: {masked_token}")
-        st.sidebar.text(f"Chat ID: {TELEGRAM_CHAT_ID}")
-        
-        # Test button
-        if st.sidebar.button("📤 Test Telegram"):
-            test_message = f"""
-Enhanced Test Message from Nifty Analyzer
-
-System Status: Online
-Time: {current_time.strftime('%H:%M:%S IST')}
-All Systems Operational
-
-Enhanced Features Active:
-✅ 8 Advanced Signal Types
-✅ PCR Integration (above 1.3 Bull, below 0.7 Bear)
-✅ RSI Values in All Messages
-✅ Price Momentum Analysis
-✅ News Sentiment Display
-✅ Major Signal with Full Alert
-✅ Ultimate Signal (Max Conviction)
-✅ Enhanced Quantitative Data
-✅ Non-Volume Dependent Analysis
-✅ Comprehensive Bias Analysis
-
-New Signals:
-• 7th: MAJOR SIGNAL (Triple Confirmation)
-• 8th: ULTIMATE SIGNAL (Maximum Conviction)
-
-All systems optimized and ready!
-"""
-            success = send_telegram(test_message)
-            if not success:
-                st.sidebar.error("❌ Test message failed!")
-        
-        # Quick troubleshooting guide
-        with st.sidebar.expander("🔧 Troubleshooting", expanded=False):
-            st.write("""
-**If messages aren't working:**
-
-1. **Start your bot**: Send `/start` to your bot in Telegram
-2. **Check Chat ID**: Use @userinfobot to get correct chat ID
-3. **Verify Bot Token**: Make sure it's correct in secrets
-4. **Bot permissions**: Ensure bot can send messages
-5. **Group chats**: Use negative chat ID (-1234567890)
-
-**How to get Chat ID:**
-- Send message to @userinfobot in Telegram
-- It will reply with your chat ID
-- Use this exact number in secrets
-""")
+        st.sidebar.success("✅ Configured")
+        if st.sidebar.button("📤 Test Message"):
+            test_msg = f"Enhanced Nifty Analyzer Test\nTime: {current_time.strftime('%H:%M:%S IST')}\nAll systems operational!"
+            send_telegram(test_msg)
     else:
-        st.sidebar.error("❌ Telegram not configured")
-        with st.sidebar.expander("📝 Setup Instructions", expanded=True):
-            st.write("""
-**Step 1: Create Bot**
-1. Message @BotFather on Telegram
-2. Send `/newbot`
-3. Follow instructions
-4. Copy bot token
-
-**Step 2: Get Chat ID**
-1. Send message to @userinfobot
-2. Copy your chat ID
-
-**Step 3: Add to Secrets**
-```
-TELEGRAM_BOT_TOKEN = "your_bot_token"
-TELEGRAM_CHAT_ID = "your_chat_id"
-```
-
-**Step 4: Start Bot**
-Send `/start` to your bot
-""")
+        st.sidebar.error("❌ Not configured")
     
-    if st.sidebar.button("Refresh News"):
-        for key in ['news_cache', 'last_news_request', 'alpha_vantage_news']:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.sidebar.success("News cache cleared!")
-    
+    # Main content
     api = DhanAPI()
-    
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns([3, 1])
     
     with col1:
-        st.header("Chart")
+        st.header("Enhanced Chart Analysis")
         
         # Get data
-        data = api.get_intraday_data(interval)
+        data = api.get_intraday_data(NIFTY_SCRIP, interval)
         df = process_candle_data(data) if data else pd.DataFrame()
         
+        # Get VIX data
+        vix_data = api.get_intraday_data(VIX_SCRIP, interval) if VIX_SCRIP else None
+        vix_df = process_candle_data(vix_data) if vix_data else pd.DataFrame()
+        
+        # Get USD/INR data
+        usd_inr_df = fetch_usd_inr_data() if enable_usd_inr else None
+        
         # Get current price
-        ltp_data = api.get_ltp_data()
         current_price = None
-        if ltp_data and 'data' in ltp_data:
-            for exchange, data in ltp_data['data'].items():
-                for security_id, price_data in data.items():
-                    current_price = price_data.get('last_price', 0)
-                    break
+        vix_price = None
         
-        if current_price is None and not df.empty:
+        if not df.empty:
             current_price = df['close'].iloc[-1]
+        if not vix_df.empty:
+            vix_price = vix_df['close'].iloc[-1]
         
-        # Show metrics
+        # Display metrics
         if not df.empty and len(df) > 1:
             prev_close = df['close'].iloc[-2]
             change = current_price - prev_close
             change_pct = (change / prev_close) * 100
             
-            col1_m, col2_m, col3_m = st.columns(3)
+            col1_m, col2_m, col3_m, col4_m = st.columns(4)
             with col1_m:
-                st.metric("Price", f"₹{current_price:,.2f}", f"{change:+.2f} ({change_pct:+.2f}%)")
+                st.metric("Nifty", f"₹{current_price:,.2f}", f"{change:+.2f} ({change_pct:+.2f}%)")
             with col2_m:
                 st.metric("High", f"₹{df['high'].max():,.2f}")
             with col3_m:
                 st.metric("Low", f"₹{df['low'].min():,.2f}")
+            with col4_m:
+                if vix_price:
+                    st.metric("VIX", f"{vix_price:.2f}")
+                else:
+                    st.metric("VIX", "N/A")
         
-        # Chart
+        # Enhanced chart
         if not df.empty:
-            fig = create_chart(df, f"Nifty {interval}min")
+            fig = create_enhanced_chart(df, usd_inr_df, f"Enhanced Nifty {interval}min")
             st.plotly_chart(fig, use_container_width=True)
             
-            # Show nearby pivot levels info
-            if current_price:
-                nearby_levels = get_nearby_pivot_levels(df, current_price, proximity)
-                if nearby_levels:
-                    st.info(f"📍 Nearby Levels: {len(nearby_levels)} confirmed pivot levels within {proximity} points")
-                    for i, level in enumerate(nearby_levels[:3]):  # Show top 3
-                        status = "✓" if level.get('confirmed', True) else "?"
-                        st.caption(f"{i+1}. {level['timeframe']}M {level['type'].title()} {status}: ₹{level['value']:.1f} (Distance: {level['distance']:.1f})")
+            # Enhanced market analysis
+            if len(df) > 20:
+                st.subheader("📊 Enhanced Market Analysis")
                 
-                # News analysis with proper display
-                if current_price:
-                    news_items = fetch_alpha_vantage_news()
-                    news_sentiment = analyze_news_sentiment(news_items)
+                # Get all analysis data
+                fib_levels = calculate_fibonacci_levels(df)
+                market_trend = get_market_trend(df)
+                momentum_score = get_momentum_score(df)
+                rsi_values = calculate_rsi(df)
+                current_rsi = rsi_values.iloc[-1] if len(rsi_values) > 0 and not pd.isna(rsi_values.iloc[-1]) else 50
+                
+                # Display analysis
+                col_a, col_b, col_c, col_d = st.columns(4)
+                with col_a:
+                    trend_color = "🟢" if market_trend == "bullish" else "🔴" if market_trend == "bearish" else "🟡"
+                    st.metric("Trend", f"{trend_color} {market_trend.title()}")
+                with col_b:
+                    rsi_color = "🔴" if current_rsi > 70 else "🟢" if current_rsi < 30 else "🟡"
+                    st.metric("RSI", f"{rsi_color} {current_rsi:.1f}")
+                with col_c:
+                    momentum_color = "🟢" if momentum_score >= 6 else "🔴" if momentum_score <= 4 else "🟡"
+                    st.metric("Momentum", f"{momentum_color} {momentum_score}/10")
+                with col_d:
+                    if vix_price:
+                        vix_color = "🔴" if vix_price > 20 else "🟢" if vix_price < 15 else "🟡"
+                        st.metric("Fear Index", f"{vix_color} {vix_price:.1f}")
+                    else:
+                        st.metric("Fear Index", "N/A")
+                
+                # Fibonacci levels display
+                if fib_levels:
+                    st.subheader("🔄 Fibonacci Retracement Levels")
+                    fib_col1, fib_col2 = st.columns(2)
+                    with fib_col1:
+                        st.write(f"**Swing High:** ₹{fib_levels['high']:.2f}")
+                        st.write(f"**23.6%:** ₹{fib_levels['23.6%']:.2f}")
+                        st.write(f"**38.2%:** ₹{fib_levels['38.2%']:.2f}")
+                    with fib_col2:
+                        st.write(f"**Swing Low:** ₹{fib_levels['low']:.2f}")
+                        st.write(f"**50%:** ₹{fib_levels['50%']:.2f}")
+                        st.write(f"**61.8%:** ₹{fib_levels['61.8%']:.2f}")
+                
+                # News analysis
+                news_items = fetch_alpha_vantage_news()
+                news_sentiment = analyze_news_sentiment(news_items)
+                
+                if news_items:
+                    st.subheader("📰 Market Sentiment")
+                    sentiment_color = {"bullish": "🟢", "bearish": "🔴", "neutral": "🟡"}.get(news_sentiment["overall"], "🟡")
                     
-                    st.subheader("📰 Market News & Sentiment")
-                    
-                    # News sentiment display
-                    sentiment_color = {
-                        "bullish": "🟢",
-                        "bearish": "🔴", 
-                        "neutral": "🟡"
-                    }.get(news_sentiment["overall"], "🟡")
-                    
-                    col_news1, col_news2, col_news3, col_news4 = st.columns(4)
+                    col_news1, col_news2, col_news3 = st.columns(3)
                     with col_news1:
-                        st.metric("News Sentiment", f"{sentiment_color} {news_sentiment['overall'].title()}", 
-                                f"Score: {news_sentiment['score']:.2f}")
+                        st.metric("News Sentiment", f"{sentiment_color} {news_sentiment['overall'].title()}")
                     with col_news2:
                         st.metric("Bullish Items", news_sentiment["bullish_count"])
                     with col_news3:
                         st.metric("Bearish Items", news_sentiment["bearish_count"])
-                    with col_news4:
-                        st.metric("Confidence", f"{news_sentiment.get('confidence', 0)*100:.0f}%")
-                    
-                    # News impact indicator
-                    market_trend = get_market_trend(df)
-                    if news_sentiment["overall"] == market_trend:
-                        st.success("📈 News sentiment ALIGNED with market trend")
-                    elif news_sentiment["overall"] != "neutral" and market_trend != "neutral":
-                        st.warning("⚠️ News sentiment CONTRARIAN to market trend")
-                    else:
-                        st.info("📊 News sentiment NEUTRAL relative to market trend")
-                    
-                    # Show recent news items
-                    if news_items and not any('error' in item.get('title', '').lower() for item in news_items):
-                        with st.expander("📰 Latest News Items", expanded=False):
-                            for i, item in enumerate(news_items[:3], 1):
-                                sentiment_emoji = "📈" if item.get('sentiment_score', 0) > 0.2 else "📉" if item.get('sentiment_score', 0) < -0.2 else "📊"
-                                st.write(f"**{sentiment_emoji} {i}. {item['title']}**")
-                                if 'summary' in item and item['summary']:
-                                    st.caption(item['summary'][:150] + "..." if len(item.get('summary', '')) > 150 else item.get('summary', ''))
-                                st.caption(f"Source: {item.get('source', 'Unknown')} | Sentiment: {item.get('sentiment_score', 0):.2f}")
-                    
-                    # Show next news update time
-                    if 'last_news_request' in st.session_state:
-                        next_update = st.session_state.last_news_request + 900  # 15 minutes
-                        time_remaining = next_update - time.time()
-                        if time_remaining > 0:
-                            minutes = int(time_remaining // 60)
-                            seconds = int(time_remaining % 60)
-                            st.caption(f"⏰ Next news update in: {minutes}m {seconds}s")
-                    else:
-                        st.caption("⏰ News will auto-update every 15 minutes during market hours")
-                
-                # Technical analysis (updated without volume dependency)
-                if len(df) > 20:
-                    market_trend = get_market_trend(df)
-                    volatility = get_market_volatility(df)
-                    momentum_score = get_momentum_score(df)
-                    price_profile = get_price_momentum_profile(df)
-                    market_regime = detect_market_regime(df)
-                    time_ok = is_good_signal_time()
-                    is_breakout, breakout_type = check_breakout_pattern(df, current_price)
-                    session = get_session_performance()
-                    
-                    # Get current RSI
-                    rsi_values = calculate_rsi(df)
-                    current_rsi = rsi_values.iloc[-1] if len(rsi_values) > 0 and not pd.isna(rsi_values.iloc[-1]) else 50
-                    
-                    st.subheader("📊 Technical Analysis")
-                    
-                    # Primary metrics row
-                    col_a, col_b, col_c, col_d = st.columns(4)
-                    with col_a:
-                        trend_color = "🟢" if market_trend == "bullish" else "🔴" if market_trend == "bearish" else "🟡"
-                        st.metric("Trend", f"{trend_color} {market_trend.title()}")
-                    with col_b:
-                        rsi_color = "🔴" if current_rsi > 70 else "🟢" if current_rsi < 30 else "🟡"
-                        st.metric("RSI", f"{rsi_color} {current_rsi:.1f}")
-                    with col_c:
-                        vol_color = "🟢" if volatility == "normal" else "🟡" if volatility == "low" else "🔴"
-                        st.metric("Volatility", f"{vol_color} {volatility.title()}")
-                    with col_d:
-                        time_color = "🟢" if time_ok else "🔴"
-                        st.metric("Timing", f"{time_color} {'Good' if time_ok else 'Poor'}")
-                    
-                    # Secondary metrics row  
-                    col_e, col_f, col_g, col_h = st.columns(4)
-                    with col_e:
-                        momentum_color = "🟢" if momentum_score >= 6 else "🔴" if momentum_score <= 4 else "🟡"
-                        st.metric("Momentum", f"{momentum_color} {momentum_score}/10")
-                    with col_f:
-                        regime_color = "🟢" if "trending" in market_regime else "🟡"
-                        st.metric("Regime", f"{regime_color} {market_regime.replace('_', ' ').title()}")
-                    with col_g:
-                        price_prof_color = "🟢" if price_profile["strength"] >= 1.2 else "🟡" if price_profile["strength"] >= 1.0 else "🔴"
-                        st.metric("Price Profile", f"{price_prof_color} {price_profile['profile'].title()}")
-                    with col_h:
-                        session_color = "🟢" if session in ["mid_session", "afternoon_session"] else "🟡"
-                        st.metric("Session", f"{session_color} {session.replace('_', ' ').title()}")
-                    
-                    # Breakout status
-                    if is_breakout:
-                        breakout_color = "🚀" if breakout_type == "upside_breakout" else "⬇️"
-                        st.info(f"{breakout_color} **Breakout Detected:** {breakout_type.replace('_', ' ').title()}")
-                    
-                    # Signal environment summary (without volume)
-                    filter_count = sum([volatility == "normal", time_ok, 
-                                      momentum_score >= 6 or momentum_score <= 4,
-                                      price_profile["strength"] >= 1.2])
-                    
-                    if filter_count >= 3:
-                        st.success(f"🌟 **Excellent Signal Environment** - {filter_count}/4 conditions favorable")
-                    elif filter_count >= 2:
-                        st.info(f"⚡ **Good Signal Environment** - {filter_count}/4 conditions favorable")
-                    elif filter_count >= 1:
-                        st.warning(f"⚠️ **Fair Signal Environment** - {filter_count}/4 conditions favorable")
-                    else:
-                        st.error(f"❌ **Poor Signal Environment** - {filter_count}/4 conditions favorable")
         else:
             st.error("No chart data available")
     
     with col2:
-        st.header("Options Analysis")
+        st.header("Enhanced Options")
         
+        # Get expiry list
         expiry_data = get_expiry_list()
         if expiry_data and 'data' in expiry_data:
-            expiry_dates = expiry_data['data']
-            selected_expiry = st.selectbox("Expiry", expiry_dates)
+            selected_expiry = st.selectbox("Expiry", expiry_data['data'])
             
-            underlying_price, option_summary = analyze_options(selected_expiry)
-            
-            if underlying_price and option_summary is not None:
-                st.info(f"Spot: ₹{underlying_price:.2f}")
-                st.dataframe(option_summary, use_container_width=True)
+            # Analyze options
+            result = analyze_options(selected_expiry)
+            if result and len(result) == 5:
+                underlying_price, option_summary, max_pain, gamma_levels, iv_analysis = result
                 
-                if enable_signals and not df.empty and is_market_hours():
-                    check_signals(df, option_summary, underlying_price, proximity)
-                        
+                if underlying_price and option_summary is not None:
+                    st.info(f"Spot: ₹{underlying_price:.2f}")
+                    
+                    # Enhanced options metrics
+                    col_opt1, col_opt2 = st.columns(2)
+                    with col_opt1:
+                        if max_pain:
+                            pain_diff = underlying_price - max_pain
+                            pain_color = "🟢" if abs(pain_diff) < 50 else "🟡"
+                            st.metric("Max Pain", f"{pain_color} {max_pain:.0f}", f"{pain_diff:+.0f}")
+                        else:
+                            st.metric("Max Pain", "N/A")
+                    
+                    with col_opt2:
+                        iv_color = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(iv_analysis['rank'], "🟡")
+                        st.metric("IV Rank", f"{iv_color} {iv_analysis['rank'].title()}", f"{iv_analysis['current_iv']:.1f}%")
+                    
+                    # Gamma levels
+                    if gamma_levels:
+                        st.subheader("⚡ Top Gamma Levels")
+                        for i, level in enumerate(gamma_levels[:3]):
+                            st.write(f"{i+1}. Strike {level['strike']:.0f}: Gamma {level['gamma']:.4f}")
+                    
+                    # Options summary table
+                    st.dataframe(option_summary, use_container_width=True)
+                    
+                    # Enhanced signals
+                    if enable_signals and not df.empty and is_market_hours() and current_price:
+                        check_enhanced_signals(df, option_summary, current_price, max_pain, gamma_levels, iv_analysis, usd_inr_df)
+                else:
+                    st.error("Options analysis failed")
             else:
                 st.error("Options data unavailable")
         else:
-            st.error("Expiry data unavailable")
+            st.error("Expiry list unavailable")
     
     # Footer
-    current_time = datetime.now(ist).strftime("%H:%M:%S IST")
-    st.sidebar.info(f"🕒 Last Updated: {current_time}")
-    
-    # Additional debugging info
-    if st.sidebar.checkbox("Show Debug Info", value=False):
-        st.sidebar.subheader("🔍 Debug Information")
-        st.sidebar.text(f"Market Hours: {is_market_hours()}")
-        st.sidebar.text(f"Current Time: {current_time}")
-        st.sidebar.text(f"Bot Token Set: {'Yes' if TELEGRAM_BOT_TOKEN else 'No'}")
-        st.sidebar.text(f"Chat ID Set: {'Yes' if TELEGRAM_CHAT_ID else 'No'}")
-        
-        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-            # Test bot connectivity
-            if st.sidebar.button("🔍 Test Bot Connection"):
-                test_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
-                try:
-                    response = requests.get(test_url, timeout=10)
-                    if response.status_code == 200:
-                        bot_info = response.json()
-                        if bot_info.get('ok'):
-                            bot_data = bot_info.get('result', {})
-                            st.sidebar.success(f"✅ Bot '{bot_data.get('first_name', 'Unknown')}' is active")
-                        else:
-                            st.sidebar.error("❌ Bot token invalid")
-                    else:
-                        st.sidebar.error(f"❌ Bot API error: {response.status_code}")
-                except Exception as e:
-                    st.sidebar.error(f"❌ Connection error: {str(e)}")
+    st.sidebar.info(f"🕒 Updated: {current_time.strftime('%H:%M:%S IST')}")
 
 if __name__ == "__main__":
     # Initialize session state
-    if 'signal_log' not in st.session_state:
-        st.session_state.signal_log = []
-    if 'news_cache' not in st.session_state:
-        st.session_state.news_cache = {}
-    if 'alpha_vantage_news' not in st.session_state:
-        st.session_state.alpha_vantage_news = []
+    for key in ['signal_log', 'news_cache', 'alpha_vantage_news', 'usd_inr_data']:
+        if key not in st.session_state:
+            st.session_state[key] = [] if 'news' in key else {}
     
     main()
