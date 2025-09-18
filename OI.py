@@ -66,8 +66,6 @@ class InstitutionalDhanAPI:
             'access-token': DHAN_ACCESS_TOKEN,
             'client-id': DHAN_CLIENT_ID
         }
-        self.depth_cache = {}
-        self.volume_profile = defaultdict(list)
     
     def get_market_quote_bulk(self, instruments):
         """Get market depth for multiple instruments"""
