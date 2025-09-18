@@ -1,5 +1,6 @@
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
+from streamlit_autorefresh 
+import st_autorefresh
 import requests
 import pandas as pd
 import plotly.graph_objects as go
