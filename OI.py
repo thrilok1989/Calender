@@ -464,14 +464,13 @@ def get_market_trend(df, period=20):
     else:
         return "neutral"
 
-def check_volume_confirmation(df, lookback=10):
-    """Volume confirmation check"""
-    if len(df) < lookback:
-        return False
-    
-    recent_volume = df['volume'].tail(3).mean()
-    avg_volume = df['volume'].rolling(lookback).mean().iloc[-1]
-    return recent_volume > avg_volume * 1.2
+def check_pcr_condition(pcr, signal_type):
+    """Check PCR condition for signals"""
+    if signal_type == "bullish":
+        return pcr > 1.3  # More puts than calls = bullish
+    elif signal_type == "bearish":
+        return pcr < 0.7  # More calls than puts = bearish
+    return False
 
 def get_momentum_score(df, periods=14):
     """Calculate momentum score from RSI"""
@@ -506,27 +505,29 @@ def is_good_signal_time():
     market_end = now.replace(hour=15, minute=15, second=0)
     return market_start <= now <= market_end
 
-def get_volume_profile(df, periods=20):
-    """Volume profile analysis"""
+def get_price_momentum_profile(df, periods=20):
+    """Price momentum analysis (replaces volume profile)"""
     if len(df) < periods:
         return {"profile": "insufficient_data", "strength": 1}
     
-    recent_vol = df['volume'].tail(5).mean()
-    avg_vol = df['volume'].tail(periods).mean()
-    vol_ratio = recent_vol / avg_vol if avg_vol > 0 else 1
+    # Use price momentum instead of volume
+    returns = df['close'].pct_change().tail(periods)
+    recent_momentum = abs(returns.tail(5).mean())
+    avg_momentum = abs(returns.mean())
+    momentum_ratio = recent_momentum / avg_momentum if avg_momentum > 0 else 1
     
-    if vol_ratio > 2.0:
+    if momentum_ratio > 2.0:
         profile, strength = "explosive", 2.5
-    elif vol_ratio > 1.5:
+    elif momentum_ratio > 1.5:
         profile, strength = "strong", 2.0
-    elif vol_ratio > 1.2:
+    elif momentum_ratio > 1.2:
         profile, strength = "above_average", 1.5
-    elif vol_ratio > 0.8:
+    elif momentum_ratio > 0.8:
         profile, strength = "normal", 1.0
     else:
         profile, strength = "weak", 0.7
     
-    return {"profile": profile, "strength": round(strength, 2), "vol_ratio": vol_ratio}
+    return {"profile": profile, "strength": round(strength, 2), "momentum_ratio": momentum_ratio}
 
 def detect_market_regime(df, short_period=10, long_period=30):
     """Market regime detection"""
@@ -555,7 +556,7 @@ def detect_market_regime(df, short_period=10, long_period=30):
         return "ranging"
 
 def check_breakout_pattern(df, current_price, lookback=20):
-    """Breakout detection"""
+    """Breakout detection (without volume dependency)"""
     if len(df) < lookback:
         return False, "insufficient_data"
     
@@ -572,14 +573,13 @@ def check_breakout_pattern(df, current_price, lookback=20):
     
     breakout_threshold = atr * 0.5
     
-    # Volume confirmation
-    avg_volume = df['volume'].tail(lookback).mean()
-    current_volume = df['volume'].iloc[-1]
-    volume_multiplier = current_volume / avg_volume if avg_volume > 0 else 1
+    # Price momentum confirmation instead of volume
+    recent_returns = df['close'].pct_change().tail(5)
+    momentum_strength = abs(recent_returns.mean()) > abs(df['close'].pct_change().tail(20).mean()) * 1.5
     
-    if current_price > recent_high + breakout_threshold and volume_multiplier > 1.2:
+    if current_price > recent_high + breakout_threshold and momentum_strength:
         return True, "upside_breakout"
-    elif current_price < recent_low - breakout_threshold and volume_multiplier > 1.2:
+    elif current_price < recent_low - breakout_threshold and momentum_strength:
         return True, "downside_breakout"
     elif current_price > recent_high + (breakout_threshold * 0.5):
         return True, "weak_upside_breakout"
@@ -672,7 +672,7 @@ def analyze_options(expiry):
     return underlying, pd.DataFrame(bias_results)
 
 def check_signals(df, option_data, current_price, proximity=5):
-    """Comprehensive signal checking"""
+    """Comprehensive signal checking with 8 signals"""
     if df.empty or option_data is None or not current_price:
         return
     
@@ -687,6 +687,10 @@ def check_signals(df, option_data, current_price, proximity=5):
     
     row = atm_data.iloc[0]
     
+    # Get current RSI
+    rsi_values = calculate_rsi(df)
+    current_rsi = rsi_values.iloc[-1] if len(rsi_values) > 0 and not pd.isna(rsi_values.iloc[-1]) else 50
+    
     # Bias checks
     bias_aligned_bullish = all([
         row['ChgOI_Bias'] == 'Bullish', row['Volume_Bias'] == 'Bullish',
@@ -698,18 +702,23 @@ def check_signals(df, option_data, current_price, proximity=5):
         row['Ask_Bias'] == 'Bearish', row['Bid_Bias'] == 'Bearish'
     ])
     
+    # PCR conditions
+    pcr = row['PCR']
+    pcr_bullish = check_pcr_condition(pcr, "bullish")
+    pcr_bearish = check_pcr_condition(pcr, "bearish")
+    
     # News alignment
     news_emoji = "📈" if news_sentiment["overall"] == "bullish" else "📉" if news_sentiment["overall"] == "bearish" else "📊"
     
     # Get comprehensive info for messages
-    comprehensive_bias_info = get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, market_trend)
+    comprehensive_bias_info = get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, market_trend, current_rsi)
     
-    # Signal 1: Primary Signal - Pivot + Bias alignment
+    # Signal 1: Primary Signal - Pivot + Bias alignment + PCR
     nearby_levels = get_nearby_pivot_levels(df, current_price, proximity)
     if nearby_levels:
         pivot_level = nearby_levels[0]
-        primary_bullish = row['Level'] == 'Support' and bias_aligned_bullish and pivot_level['type'] == 'support'
-        primary_bearish = row['Level'] == 'Resistance' and bias_aligned_bearish and pivot_level['type'] == 'resistance'
+        primary_bullish = row['Level'] == 'Support' and bias_aligned_bullish and pivot_level['type'] == 'support' and pcr_bullish
+        primary_bearish = row['Level'] == 'Resistance' and bias_aligned_bearish and pivot_level['type'] == 'resistance' and pcr_bearish
         
         if primary_bullish or primary_bearish:
             signal_type = "CALL" if primary_bullish else "PUT"
@@ -721,9 +730,11 @@ def check_signals(df, option_data, current_price, proximity=5):
 📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
 📌 Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f}
 🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.1f}
+📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
 
 {news_emoji} News Sentiment: {news_sentiment['overall'].title()}
-Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot
+Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot, PCR Condition Met
 
 🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
 
@@ -732,15 +743,15 @@ Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot
             send_telegram(message)
             st.success(f"PRIMARY {signal_type} signal sent!")
     
-    # Signal 2: Secondary Signal - OI Dominance
+    # Signal 2: Secondary Signal - OI Dominance + PCR
     ce_chg_oi = abs(row.get('changeinOpenInterest_CE', 0))
     pe_chg_oi = abs(row.get('changeinOpenInterest_PE', 0))
     
     put_dominance = pe_chg_oi > 1.3 * ce_chg_oi if ce_chg_oi > 0 else False
     call_dominance = ce_chg_oi > 1.3 * pe_chg_oi if pe_chg_oi > 0 else False
     
-    secondary_bullish = bias_aligned_bullish and put_dominance
-    secondary_bearish = bias_aligned_bearish and call_dominance
+    secondary_bullish = bias_aligned_bullish and put_dominance and pcr_bullish
+    secondary_bearish = bias_aligned_bearish and call_dominance and pcr_bearish
     
     if secondary_bullish or secondary_bearish:
         signal_type = "CALL" if secondary_bullish else "PUT"
@@ -751,10 +762,12 @@ Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot
 
 📍 Spot: ₹{current_price:.2f}
 🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.1f}
+📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
 
 {news_emoji} News Sentiment: {news_sentiment['overall'].title()}
 🔥 OI Dominance: {'PUT' if secondary_bullish else 'CALL'} ChgOI {dominance_ratio:.1f}x higher
-📊 All Bias Aligned
+📊 All Bias Aligned + PCR Condition
 
 🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
 
@@ -763,8 +776,308 @@ Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot
         send_telegram(message)
         st.success(f"SECONDARY {signal_type} signal sent!")
 
-def get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, market_trend):
-    """Get comprehensive bias information"""
+    # Signal 3: Breakout + Momentum + PCR
+    is_breakout, breakout_type = check_breakout_pattern(df, current_price)
+    momentum_score = get_momentum_score(df)
+    price_profile = get_price_momentum_profile(df)
+    
+    breakout_bullish_signal = (
+        is_breakout and 
+        breakout_type == "upside_breakout" and
+        momentum_score >= 6 and
+        price_profile["strength"] >= 1.2 and
+        bias_aligned_bullish and
+        pcr_bullish
+    )
+    
+    breakout_bearish_signal = (
+        is_breakout and 
+        breakout_type == "downside_breakout" and
+        momentum_score <= 4 and
+        price_profile["strength"] >= 1.2 and
+        bias_aligned_bearish and
+        pcr_bearish
+    )
+    
+    if breakout_bullish_signal or breakout_bearish_signal:
+        signal_type = "CALL" if breakout_bullish_signal else "PUT"
+        
+        message = f"""
+💥 THIRD SIGNAL - BREAKOUT + MOMENTUM {signal_type} 💥
+
+📍 Spot: ₹{current_price:.2f}
+🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.1f}
+📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
+
+{news_emoji} News Sentiment: {news_sentiment['overall'].title()}
+🚀 Breakout Type: {breakout_type.replace('_', ' ').title()}
+📊 Momentum Score: {momentum_score}/10
+🔊 Price Profile: {price_profile["profile"].title()} ({price_profile["strength"]:.1f}x)
+
+All ATM Biases + Breakout + PCR Confirmed
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+
+{comprehensive_bias_info}
+"""
+        send_telegram(message)
+        st.success(f"THIRD BREAKOUT {signal_type} signal sent!")
+
+    # Signal 4: All Bias Aligned + PCR
+    if (bias_aligned_bullish and pcr_bullish) or (bias_aligned_bearish and pcr_bearish):
+        signal_type = "CALL" if bias_aligned_bullish else "PUT"
+        
+        message = f"""
+🎯 FOURTH SIGNAL - ALL BIAS ALIGNED + PCR {signal_type} 🎯
+
+📍 Spot: ₹{current_price:.2f}
+🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.1f}
+📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
+
+{news_emoji} News: {news_sentiment['overall'].title()}
+All ATM Biases Aligned + PCR Condition: {signal_type}
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+
+{comprehensive_bias_info}
+"""
+        send_telegram(message)
+        st.success(f"FOURTH {signal_type} signal sent!")
+
+    # Signal 5: Enhanced Primary (No volume dependency)
+    if nearby_levels:
+        pivot_level = nearby_levels[0]
+        market_regime = detect_market_regime(df)
+        session = get_session_performance()
+        time_ok = is_good_signal_time()
+        volatility = get_market_volatility(df)
+        
+        enhanced_bullish = (
+            bias_aligned_bullish and
+            row['Level'] == 'Support' and
+            pivot_level['type'] == 'support' and
+            pcr_bullish and
+            market_trend in ["bullish", "neutral"] and
+            volatility == "normal" and
+            time_ok and
+            momentum_score >= 6 and
+            price_profile["strength"] >= 1.2
+        )
+        
+        enhanced_bearish = (
+            bias_aligned_bearish and
+            row['Level'] == 'Resistance' and
+            pivot_level['type'] == 'resistance' and
+            pcr_bearish and
+            market_trend in ["bearish", "neutral"] and
+            volatility == "normal" and
+            time_ok and
+            momentum_score <= 4 and
+            price_profile["strength"] >= 1.2
+        )
+        
+        if enhanced_bullish or enhanced_bearish:
+            signal_type = "CALL" if enhanced_bullish else "PUT"
+            price_diff = current_price - pivot_level['value']
+            
+            message = f"""
+🌟 FIFTH SIGNAL - ENHANCED PRIMARY {signal_type} 🌟
+
+📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
+📌 Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f}
+🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.1f}
+📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
+
+📊 Market Regime: {market_regime.replace('_', ' ').title()}
+🔊 Price Profile: {price_profile["profile"].title()} ({price_profile["strength"]:.1f}x)
+🚀 Momentum: {momentum_score}/10
+⏰ Session: {session.replace('_', ' ').title()}
+{news_emoji} News: {news_sentiment['overall'].title()}
+
+All Premium Conditions Met + PCR
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+
+{comprehensive_bias_info}
+"""
+            send_telegram(message)
+            st.success(f"ENHANCED FIFTH {signal_type} signal sent!")
+
+    # Signal 6: Confluence + Flow + PCR
+    strong_confluence_bullish = (
+        bias_aligned_bullish and
+        put_dominance and
+        pcr_bullish and
+        market_trend in ["bullish", "neutral"] and
+        volatility == "normal" and
+        time_ok and
+        momentum_score >= 6 and
+        price_profile["strength"] >= 1.3
+    )
+    
+    strong_confluence_bearish = (
+        bias_aligned_bearish and
+        call_dominance and
+        pcr_bearish and
+        market_trend in ["bearish", "neutral"] and
+        volatility == "normal" and
+        time_ok and
+        momentum_score <= 4 and
+        price_profile["strength"] >= 1.3
+    )
+    
+    if strong_confluence_bullish or strong_confluence_bearish:
+        signal_type = "CALL" if strong_confluence_bullish else "PUT"
+        dominance_ratio = pe_chg_oi / ce_chg_oi if strong_confluence_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
+        
+        message = f"""
+🚀 SIXTH SIGNAL - CONFLUENCE + FLOW + PCR {signal_type} 🚀
+
+📍 Spot: ₹{current_price:.2f}
+🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.1f}
+📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
+
+🔥 OI Dominance: {'PUT' if strong_confluence_bullish else 'CALL'} ChgOI {dominance_ratio:.1f}x higher
+🔊 Price Profile: {price_profile["profile"].title()} ({price_profile["strength"]:.1f}x)
+🚀 Momentum: {momentum_score}/10
+{news_emoji} News: {news_sentiment['overall'].title()}
+
+All Premium Filters + PCR Passed
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+
+{comprehensive_bias_info}
+"""
+        send_telegram(message)
+        st.success(f"CONFLUENCE SIXTH {signal_type} signal sent!")
+
+    # Signal 7: MAJOR SIGNAL - Triple Confirmation + Strong PCR
+    rsi_extreme_bullish = current_rsi < 35  # Oversold
+    rsi_extreme_bearish = current_rsi > 65  # Overbought
+    
+    major_bullish = (
+        bias_aligned_bullish and
+        row['Level'] == 'Support' and
+        pcr > 1.5 and  # Very strong PCR for major signal
+        put_dominance and
+        (rsi_extreme_bullish or momentum_score >= 7) and
+        market_trend != "bearish"
+    )
+    
+    major_bearish = (
+        bias_aligned_bearish and
+        row['Level'] == 'Resistance' and
+        pcr < 0.6 and  # Very strong PCR for major signal
+        call_dominance and
+        (rsi_extreme_bearish or momentum_score <= 3) and
+        market_trend != "bullish"
+    )
+    
+    if major_bullish or major_bearish:
+        signal_type = "CALL" if major_bullish else "PUT"
+        dominance_ratio = pe_chg_oi / ce_chg_oi if major_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
+        
+        message = f"""
+🔥🔥🔥 MAJOR SIGNAL - SEVENTH {signal_type} 🔥🔥🔥
+
+🚨 FULL ALERT - STRONG CONVICTION SIGNAL 🚨
+
+📍 Spot: ₹{current_price:.2f}
+🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.1f} {'(OVERSOLD)' if rsi_extreme_bullish else '(OVERBOUGHT)' if rsi_extreme_bearish else ''}
+📈 PCR: {pcr:.2f} {'🔥 VERY STRONG' if (major_bullish and pcr > 1.5) or (major_bearish and pcr < 0.6) else ''}
+
+🎯 Level: {row['Level']}
+🔥 OI Dominance: {'PUT' if major_bullish else 'CALL'} ChgOI {dominance_ratio:.1f}x
+🚀 Momentum: {momentum_score}/10
+🏛️ Trend: {market_trend.title()}
+{news_emoji} News: {news_sentiment['overall'].title()}
+
+🔥 TRIPLE CONFIRMATION:
+✅ All Biases Aligned
+✅ Strong PCR Condition (>{1.5 if major_bullish else '<0.6'})
+✅ OI Dominance + Level Support
+
+⚠️ HIGH CONVICTION TRADE SETUP ⚠️
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+
+{comprehensive_bias_info}
+"""
+        send_telegram(message)
+        st.success(f"🔥 MAJOR SEVENTH {signal_type} SIGNAL SENT! 🔥")
+
+    # Signal 8: Ultimate Signal - All Conditions + Extreme PCR + RSI
+    ultimate_bullish = (
+        bias_aligned_bullish and
+        pcr > 1.4 and
+        put_dominance and
+        row['Level'] == 'Support' and
+        current_rsi < 40 and
+        momentum_score >= 6 and
+        price_profile["strength"] >= 1.5 and
+        nearby_levels and
+        nearby_levels[0]['type'] == 'support'
+    )
+    
+    ultimate_bearish = (
+        bias_aligned_bearish and
+        pcr < 0.65 and
+        call_dominance and
+        row['Level'] == 'Resistance' and
+        current_rsi > 60 and
+        momentum_score <= 4 and
+        price_profile["strength"] >= 1.5 and
+        nearby_levels and
+        nearby_levels[0]['type'] == 'resistance'
+    )
+    
+    if ultimate_bullish or ultimate_bearish:
+        signal_type = "CALL" if ultimate_bullish else "PUT"
+        pivot_level = nearby_levels[0] if nearby_levels else None
+        price_diff = current_price - pivot_level['value'] if pivot_level else 0
+        dominance_ratio = pe_chg_oi / ce_chg_oi if ultimate_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
+        
+        message = f"""
+🌟🔥⚡ ULTIMATE SIGNAL - EIGHTH {signal_type} ⚡🔥🌟
+
+🚨🚨 MAXIMUM CONVICTION - RARE SETUP 🚨🚨
+
+📍 Spot: ₹{current_price:.2f}
+📌 Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f} ({price_diff:+.2f})
+🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.1f} {'🔴 EXTREME OVERSOLD' if ultimate_bullish else '🔴 EXTREME OVERBOUGHT'}
+📈 PCR: {pcr:.2f} 🔥 EXTREME {'BULLISH' if ultimate_bullish else 'BEARISH'}
+
+🎯 PERFECT ALIGNMENT:
+✅ All ATM Biases Aligned
+✅ Extreme PCR (>{1.4 if ultimate_bullish else '<0.65'})
+✅ RSI Extreme ({'<40' if ultimate_bullish else '>60'})
+✅ OI Dominance {dominance_ratio:.1f}x
+✅ Level + Pivot Confluence
+✅ Strong Price Momentum ({price_profile["strength"]:.1f}x)
+
+🔥 PRIMARY: All Bias + Level + Pivot
+🔥 SECONDARY: Extreme PCR + OI Dominance
+🔥 BONUS: RSI Extreme + Momentum
+
+⚠️⚠️ ULTRA HIGH CONVICTION ⚠️⚠️
+🎯 POSITION SIZE: MAXIMUM
+💰 RISK/REWARD: EXCELLENT
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+
+{comprehensive_bias_info}
+"""
+        send_telegram(message)
+        st.success(f"🌟 ULTIMATE EIGHTH {signal_type} SIGNAL SENT! 🌟")
+
+def get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, market_trend, current_rsi):
+    """Get comprehensive bias information with updated quantitative data"""
     try:
         atm_data = option_data[option_data['Zone'] == 'ATM']
         if atm_data.empty:
@@ -772,13 +1085,13 @@ def get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, 
         
         row = atm_data.iloc[0]
         
-        # Technical metrics
-        volume_ok = check_volume_confirmation(df)
+        # Technical metrics (removed volume dependencies)
         volatility = get_market_volatility(df)
         momentum_score = get_momentum_score(df)
-        volume_profile = get_volume_profile(df)
+        price_profile = get_price_momentum_profile(df)
         market_regime = detect_market_regime(df)
         session = get_session_performance()
+        time_ok = is_good_signal_time()
         
         bias_info = f"""
 📊 COMPREHENSIVE BIAS ANALYSIS 📊
@@ -793,12 +1106,13 @@ def get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, 
 
 🔹 TECHNICAL BIASES:
 • Market Trend: {market_trend.title()}
-• Volume Strength: {'Strong' if volume_ok else 'Weak'}
+• RSI: {current_rsi:.1f} ({'Oversold' if current_rsi < 30 else 'Overbought' if current_rsi > 70 else 'Neutral'})
 • Volatility: {volatility.title()}
 • Momentum: {momentum_score}/10
-• Volume Profile: {volume_profile["profile"].title()} ({volume_profile["strength"]:.1f}x)
+• Price Profile: {price_profile["profile"].title()} ({price_profile["strength"]:.1f}x)
 • Market Regime: {market_regime.replace('_', ' ').title()}
 • Session: {session.replace('_', ' ').title()}
+• Timing: {'Good' if time_ok else 'Poor'}
 
 🔹 SENTIMENT BIASES:
 • News Sentiment: {news_sentiment['overall'].title()} (Score: {news_sentiment['score']:.2f})
@@ -808,6 +1122,12 @@ def get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, 
 • PE ChgOI: {row.get('changeinOpenInterest_PE', 0):,}
 • CE OI: {row.get('openInterest_CE', 0):,}
 • PE OI: {row.get('openInterest_PE', 0):,}
+• CE Volume: {row.get('totalTradedVolume_CE', 0):,}
+• PE Volume: {row.get('totalTradedVolume_PE', 0):,}
+• CE Ask: {row.get('askQty_CE', 0):,}
+• CE Bid: {row.get('bidQty_CE', 0):,}
+• PE Ask: {row.get('askQty_PE', 0):,}
+• PE Bid: {row.get('bidQty_PE', 0):,}
 • ATM Strike: {row['Strike']}
 """
         return bias_info
@@ -895,23 +1215,71 @@ def main():
                     with col_news3:
                         st.metric("Bearish Items", news_sentiment["bearish_count"])
                 
-                # Technical analysis
+                # Technical analysis (updated without volume dependency)
                 if len(df) > 20:
                     market_trend = get_market_trend(df)
-                    volume_ok = check_volume_confirmation(df)
                     volatility = get_market_volatility(df)
                     momentum_score = get_momentum_score(df)
+                    price_profile = get_price_momentum_profile(df)
+                    market_regime = detect_market_regime(df)
+                    time_ok = is_good_signal_time()
+                    is_breakout, breakout_type = check_breakout_pattern(df, current_price)
+                    session = get_session_performance()
                     
-                    st.subheader("📊 Market Analysis")
+                    # Get current RSI
+                    rsi_values = calculate_rsi(df)
+                    current_rsi = rsi_values.iloc[-1] if len(rsi_values) > 0 and not pd.isna(rsi_values.iloc[-1]) else 50
+                    
+                    st.subheader("📊 Technical Analysis")
+                    
+                    # Primary metrics row
                     col_a, col_b, col_c, col_d = st.columns(4)
                     with col_a:
-                        st.metric("Trend", market_trend.title())
+                        trend_color = "🟢" if market_trend == "bullish" else "🔴" if market_trend == "bearish" else "🟡"
+                        st.metric("Trend", f"{trend_color} {market_trend.title()}")
                     with col_b:
-                        st.metric("Volume", "Strong" if volume_ok else "Weak")
+                        rsi_color = "🔴" if current_rsi > 70 else "🟢" if current_rsi < 30 else "🟡"
+                        st.metric("RSI", f"{rsi_color} {current_rsi:.1f}")
                     with col_c:
-                        st.metric("Volatility", volatility.title())
+                        vol_color = "🟢" if volatility == "normal" else "🟡" if volatility == "low" else "🔴"
+                        st.metric("Volatility", f"{vol_color} {volatility.title()}")
                     with col_d:
-                        st.metric("Momentum", f"{momentum_score}/10")
+                        time_color = "🟢" if time_ok else "🔴"
+                        st.metric("Timing", f"{time_color} {'Good' if time_ok else 'Poor'}")
+                    
+                    # Secondary metrics row  
+                    col_e, col_f, col_g, col_h = st.columns(4)
+                    with col_e:
+                        momentum_color = "🟢" if momentum_score >= 6 else "🔴" if momentum_score <= 4 else "🟡"
+                        st.metric("Momentum", f"{momentum_color} {momentum_score}/10")
+                    with col_f:
+                        regime_color = "🟢" if "trending" in market_regime else "🟡"
+                        st.metric("Regime", f"{regime_color} {market_regime.replace('_', ' ').title()}")
+                    with col_g:
+                        price_prof_color = "🟢" if price_profile["strength"] >= 1.2 else "🟡" if price_profile["strength"] >= 1.0 else "🔴"
+                        st.metric("Price Profile", f"{price_prof_color} {price_profile['profile'].title()}")
+                    with col_h:
+                        session_color = "🟢" if session in ["mid_session", "afternoon_session"] else "🟡"
+                        st.metric("Session", f"{session_color} {session.replace('_', ' ').title()}")
+                    
+                    # Breakout status
+                    if is_breakout:
+                        breakout_color = "🚀" if breakout_type == "upside_breakout" else "⬇️"
+                        st.info(f"{breakout_color} **Breakout Detected:** {breakout_type.replace('_', ' ').title()}")
+                    
+                    # Signal environment summary (without volume)
+                    filter_count = sum([volatility == "normal", time_ok, 
+                                      momentum_score >= 6 or momentum_score <= 4,
+                                      price_profile["strength"] >= 1.2])
+                    
+                    if filter_count >= 3:
+                        st.success(f"🌟 **Excellent Signal Environment** - {filter_count}/4 conditions favorable")
+                    elif filter_count >= 2:
+                        st.info(f"⚡ **Good Signal Environment** - {filter_count}/4 conditions favorable")
+                    elif filter_count >= 1:
+                        st.warning(f"⚠️ **Fair Signal Environment** - {filter_count}/4 conditions favorable")
+                    else:
+                        st.error(f"❌ **Poor Signal Environment** - {filter_count}/4 conditions favorable")
         else:
             st.error("No chart data available")
     
@@ -943,14 +1311,32 @@ def main():
     
     if st.sidebar.button("📤 Test Telegram"):
         test_message = f"""
-🔔 Test Message from Nifty Analyzer
+🔔 Enhanced Test Message from Nifty Analyzer
 
 📊 System Status: Online
 🕒 Time: {current_time}
 ⚙️ All Systems Operational
+
+🚀 Enhanced Features Active:
+✅ 8 Advanced Signal Types
+✅ PCR Integration (>1.3 Bull, <0.7 Bear)
+✅ RSI Values in All Messages
+✅ Price Momentum Analysis
+✅ News Sentiment Display
+✅ Major Signal with Full Alert
+✅ Ultimate Signal (Max Conviction)
+✅ Enhanced Quantitative Data
+✅ Non-Volume Dependent Analysis
+✅ Comprehensive Bias Analysis
+
+🔥 New Signals:
+• 7th: MAJOR SIGNAL (Triple Confirmation)
+• 8th: ULTIMATE SIGNAL (Maximum Conviction)
+
+📈 All systems optimized and ready!
 """
         send_telegram(test_message)
-        st.sidebar.success("📤 Test message sent!")
+        st.sidebar.success("📤 Enhanced test message sent!")
 
 if __name__ == "__main__":
     # Initialize session state
