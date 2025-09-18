@@ -458,38 +458,51 @@ RSI indicates oversold conditions. Consider potential bounce or reversal.
             send_telegram(message)
             st.success("⚠️ RSI Oversold signal sent!")
 # PART 7 CONTINUED: ML Signals Class (Rest of the class)
-            df_temp['low_break'] = df_temp['low'] < df_temp['low'].rolling(10).min().shift(1)
-            
-            current_row = df_temp.iloc[-1]
-            
-            # Volume breakout conditions
-            volume_spike = current_row['volume_ratio'] > 1.8  # 80% above average
-            significant_move = abs(current_row['price_change']) > 0.003  # 0.3% move
-            
-            breakout_signal = None
-            
-            if volume_spike and significant_move:
-                if current_row['high_break'] and current_row['price_change'] > 0:
-                    breakout_signal = "CALL"
-                elif current_row['low_break'] and current_row['price_change'] < 0:
-                    breakout_signal = "PUT"
-            
-            if breakout_signal:
-                # Get ATM strike
-                atm_data = option_data[option_data['Zone'] == 'ATM'] if option_data is not None else None
-                atm_strike = atm_data.iloc[0]['Strike'] if atm_data is not None and not atm_data.empty else "N/A"
-                
-                return {
-                    'signal_type': breakout_signal,
-                    'volume_ratio': round(current_row['volume_ratio'], 2),
-                    'price_change': round(current_row['price_change'] * 100, 2),
-                    'strike': atm_strike,
-                    'reason': f"Volume Breakout (Vol: {current_row['volume_ratio']:.1f}x avg)"
-                }
-                
-        except Exception as e:
-            print(f"Signal 7 error: {e}")
+def signal_7_volume_breakout(self, df, current_price, option_data):
+    """SIGNAL 7: Volume Breakout Detection"""
+    try:
+        if df.empty or len(df) < 20:
             return None
+            
+        df_temp = df.copy()
+        df_temp['price_change'] = df_temp['close'].pct_change()
+        df_temp['volume_ma'] = df_temp['volume'].rolling(20).mean()
+        df_temp['volume_ratio'] = df_temp['volume'] / df_temp['volume_ma']
+        
+        # Check for new highs/lows
+        df_temp['high_break'] = df_temp['high'] > df_temp['high'].rolling(10).max().shift(1)
+        df_temp['low_break'] = df_temp['low'] < df_temp['low'].rolling(10).min().shift(1)
+        
+        current_row = df_temp.iloc[-1]
+        
+        # Volume breakout conditions
+        volume_spike = current_row['volume_ratio'] > 1.8  # 80% above average
+        significant_move = abs(current_row['price_change']) > 0.003  # 0.3% move
+        
+        breakout_signal = None
+        
+        if volume_spike and significant_move:
+            if current_row['high_break'] and current_row['price_change'] > 0:
+                breakout_signal = "CALL"
+            elif current_row['low_break'] and current_row['price_change'] < 0:
+                breakout_signal = "PUT"
+        
+        if breakout_signal:
+            # Get ATM strike
+            atm_data = option_data[option_data['Zone'] == 'ATM'] if option_data is not None else None
+            atm_strike = atm_data.iloc[0]['Strike'] if atm_data is not None and not atm_data.empty else "N/A"
+            
+            return {
+                'signal_type': breakout_signal,
+                'volume_ratio': round(current_row['volume_ratio'], 2),
+                'price_change': round(current_row['price_change'] * 100, 2),
+                'strike': atm_strike,
+                'reason': f"Volume Breakout (Vol: {current_row['volume_ratio']:.1f}x avg)"
+            }
+            
+    except Exception as e:
+        print(f"Signal 7 error: {e}")
+        return None
     
     def signal_8_options_flow_anomaly(self, option_data, current_price):
         """SIGNAL 8: Unusual Options Flow Detection"""
