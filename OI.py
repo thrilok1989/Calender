@@ -326,7 +326,7 @@ def calculate_rsi(df, periods=14):
     return rsi_values
 
 def create_chart(df, title):
-    """Create enhanced chart with pivots and RSI - filtered to market hours only"""
+    """Create enhanced chart with pivots and RSI - market hours only"""
     if df.empty:
         return go.Figure()
     
@@ -346,14 +346,14 @@ def create_chart(df, title):
         row_heights=[0.6, 0.2, 0.2], subplot_titles=("Price Chart", "Volume", "RSI (14)")
     )
     
-    # Candlestick chart with filtered data
+    # Candlestick chart
     fig.add_trace(go.Candlestick(
         x=df_filtered['datetime'], open=df_filtered['open'], high=df_filtered['high'], 
         low=df_filtered['low'], close=df_filtered['close'], name='Nifty',
         increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
     ), row=1, col=1)
     
-    # Volume with filtered data
+    # Volume
     volume_colors = ['#00ff88' if close >= open else '#ff4444' 
                     for close, open in zip(df_filtered['close'], df_filtered['open'])]
     fig.add_trace(go.Bar(
@@ -361,7 +361,7 @@ def create_chart(df, title):
         marker_color=volume_colors, opacity=0.7
     ), row=2, col=1)
     
-    # RSI with filtered data
+    # RSI
     if len(df_filtered) > 14:
         rsi_values = calculate_rsi(df_filtered)
         fig.add_trace(go.Scatter(
@@ -376,7 +376,7 @@ def create_chart(df, title):
         
         fig.update_yaxes(range=[0, 100], row=3, col=1)
     
-    # Add pivot levels using original df for calculation but filtered x-axis range
+    # Add pivot levels using original df for calculation
     if len(df) > 50:
         timeframes = ["5", "10", "15"]
         colors = ["#ff9900", "#ff44ff", '#4444ff']
@@ -417,7 +417,7 @@ def create_chart(df, title):
                             showarrow=False, xshift=20, font=dict(size=9, color=color), row=1, col=1
                         )
     
-    # Update layout with custom x-axis formatting
+    # Update layout
     fig.update_layout(
         title=title, 
         template='plotly_dark', 
@@ -426,46 +426,10 @@ def create_chart(df, title):
         showlegend=False
     )
     
-    # Custom x-axis formatting to show only market hours
-    fig.update_xaxes(
-        tickformat="%H:%M",  # Show time in HH:MM format
-        showticklabels=False, 
-        row=1, col=1
-    )
-    fig.update_xaxes(
-        tickformat="%H:%M",
-        showticklabels=False, 
-        row=2, col=1
-    )
-    fig.update_xaxes(
-        tickformat="%H:%M %d-%b",  # Show time and date on bottom chart
-        showticklabels=True, 
-        row=3, col=1
-    )
-    
-    # Add market session markers
-    if not df_filtered.empty:
-        session_times = [
-            ("09:15", "Opening Bell", "#ffdd44"),
-            ("12:00", "Midday", "#44ddff"), 
-            ("15:30", "Closing Bell", "#ff4444")
-        ]
-        
-        for time_str, label, color in session_times:
-            # Find dates in the filtered data
-            for date in df_filtered['datetime'].dt.date.unique():
-                session_datetime = pd.Timestamp(f"{date} {time_str}").tz_localize('Asia/Kolkata')
-                
-                # Only add marker if it's within our data range
-                if x_start <= session_datetime <= x_end:
-                    fig.add_vline(
-                        x=session_datetime, 
-                        line_dash="dot", 
-                        line_color=color,
-                        annotation_text=label,
-                        annotation_position="top",
-                        row=1, col=1
-                    )
+    # Custom x-axis formatting
+    fig.update_xaxes(tickformat="%H:%M", showticklabels=False, row=1, col=1)
+    fig.update_xaxes(tickformat="%H:%M", showticklabels=False, row=2, col=1)
+    fig.update_xaxes(tickformat="%H:%M %d-%b", showticklabels=True, row=3, col=1)
     
     return fig
 
@@ -783,6 +747,65 @@ def analyze_options(expiry):
     
     return underlying, pd.DataFrame(bias_results)
 
+def get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, market_trend, current_rsi):
+    """Get comprehensive bias information with updated quantitative data"""
+    try:
+        atm_data = option_data[option_data['Zone'] == 'ATM']
+        if atm_data.empty:
+            return "Options data unavailable for bias analysis"
+        
+        row = atm_data.iloc[0]
+        
+        # Technical metrics (removed volume dependencies)
+        volatility = get_market_volatility(df)
+        momentum_score = get_momentum_score(df)
+        price_profile = get_price_momentum_profile(df)
+        market_regime = detect_market_regime(df)
+        session = get_session_performance()
+        time_ok = is_good_signal_time()
+        
+        bias_info = f"""
+📊 COMPREHENSIVE BIAS ANALYSIS 📊
+
+🔹 OPTIONS BIASES:
+• ChgOI Bias: {row['ChgOI_Bias']}
+• Volume Bias: {row['Volume_Bias']} 
+• Ask Bias: {row['Ask_Bias']}
+• Bid Bias: {row['Bid_Bias']}
+• Level Bias: {row['Level']} (OI-based)
+• PCR: {row['PCR']} (PE/CE ratio)
+
+🔹 TECHNICAL BIASES:
+• Market Trend: {market_trend.title()}
+• RSI: {current_rsi:.1f} ({'Oversold' if current_rsi < 30 else 'Overbought' if current_rsi > 70 else 'Neutral'})
+• Volatility: {volatility.title()}
+• Momentum: {momentum_score}/10
+• Price Profile: {price_profile["profile"].title()} ({price_profile["strength"]:.1f}x)
+• Market Regime: {market_regime.replace('_', ' ').title()}
+• Session: {session.replace('_', ' ').title()}
+• Timing: {'Good' if time_ok else 'Poor'}
+
+🔹 SENTIMENT BIASES:
+• News Sentiment: {news_sentiment['overall'].title()} (Score: {news_sentiment['score']:.2f})
+
+🔹 QUANTITATIVE DATA:
+• CE ChgOI: {row.get('changeinOpenInterest_CE', 0):,}
+• PE ChgOI: {row.get('changeinOpenInterest_PE', 0):,}
+• CE OI: {row.get('openInterest_CE', 0):,}
+• PE OI: {row.get('openInterest_PE', 0):,}
+• CE Volume: {row.get('totalTradedVolume_CE', 0):,}
+• PE Volume: {row.get('totalTradedVolume_PE', 0):,}
+• CE Ask: {row.get('askQty_CE', 0):,}
+• CE Bid: {row.get('bidQty_CE', 0):,}
+• PE Ask: {row.get('askQty_PE', 0):,}
+• PE Bid: {row.get('bidQty_PE', 0):,}
+• ATM Strike: {row['Strike']}
+"""
+        return bias_info
+        
+    except Exception as e:
+        return f"Error calculating comprehensive bias: {str(e)}"
+
 def check_signals(df, option_data, current_price, proximity=5):
     """Comprehensive signal checking with 8 signals"""
     if df.empty or option_data is None or not current_price:
@@ -855,413 +878,6 @@ Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot, PCR Condition Met
 """
             send_telegram(message)
             st.success(f"PRIMARY {signal_type} signal sent!")
-    
-    # Signal 2: Secondary Signal - OI Dominance + PCR
-    ce_chg_oi = abs(row.get('changeinOpenInterest_CE', 0))
-    pe_chg_oi = abs(row.get('changeinOpenInterest_PE', 0))
-    
-    put_dominance = pe_chg_oi > 1.3 * ce_chg_oi if ce_chg_oi > 0 else False
-    call_dominance = ce_chg_oi > 1.3 * pe_chg_oi if pe_chg_oi > 0 else False
-    
-    secondary_bullish = bias_aligned_bullish and put_dominance and pcr_bullish
-    secondary_bearish = bias_aligned_bearish and call_dominance and pcr_bearish
-    
-    if secondary_bullish or secondary_bearish:
-        signal_type = "CALL" if secondary_bullish else "PUT"
-        dominance_ratio = pe_chg_oi / ce_chg_oi if secondary_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
-        pcr_text = get_pcr_condition_text(pcr, "bullish" if secondary_bullish else "bearish")
-        
-        message = f"""
-⚡ SECONDARY NIFTY {signal_type} SIGNAL - OI DOMINANCE ⚡
-
-📍 Spot: ₹{current_price:.2f}
-🎯 ATM: {row['Strike']}
-📊 RSI: {current_rsi:.1f}
-📈 {pcr_text} {'✅' if pcr_bullish or pcr_bearish else '❌'}
-
-{news_emoji} News Sentiment: {news_sentiment['overall'].title()}
-🔥 OI Dominance: {'PUT' if secondary_bullish else 'CALL'} ChgOI {dominance_ratio:.1f}x higher
-📊 All Bias Aligned + PCR Condition
-
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-
-{comprehensive_bias_info}
-"""
-        send_telegram(message)
-        st.success(f"SECONDARY {signal_type} signal sent!")
-
-    # Signal 3: Breakout + Momentum + PCR
-    is_breakout, breakout_type = check_breakout_pattern(df, current_price)
-    momentum_score = get_momentum_score(df)
-    price_profile = get_price_momentum_profile(df)
-    
-    breakout_bullish_signal = (
-        is_breakout and 
-        breakout_type == "upside_breakout" and
-        momentum_score >= 6 and
-        price_profile["strength"] >= 1.2 and
-        bias_aligned_bullish and
-        pcr_bullish
-    )
-    
-    breakout_bearish_signal = (
-        is_breakout and 
-        breakout_type == "downside_breakout" and
-        momentum_score <= 4 and
-        price_profile["strength"] >= 1.2 and
-        bias_aligned_bearish and
-        pcr_bearish
-    )
-    
-    if breakout_bullish_signal or breakout_bearish_signal:
-        signal_type = "CALL" if breakout_bullish_signal else "PUT"
-        
-        message = f"""
-💥 THIRD SIGNAL - BREAKOUT + MOMENTUM {signal_type} 💥
-
-📍 Spot: ₹{current_price:.2f}
-🎯 ATM: {row['Strike']}
-📊 RSI: {current_rsi:.1f}
-📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
-
-{news_emoji} News Sentiment: {news_sentiment['overall'].title()}
-🚀 Breakout Type: {breakout_type.replace('_', ' ').title()}
-📊 Momentum Score: {momentum_score}/10
-🔊 Price Profile: {price_profile["profile"].title()} ({price_profile["strength"]:.1f}x)
-
-All ATM Biases + Breakout + PCR Confirmed
-
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-
-{comprehensive_bias_info}
-"""
-        send_telegram(message)
-        st.success(f"THIRD BREAKOUT {signal_type} signal sent!")
-
-    # Signal 4: All Bias Aligned + PCR
-    if (bias_aligned_bullish and pcr_bullish) or (bias_aligned_bearish and pcr_bearish):
-        signal_type = "CALL" if bias_aligned_bullish else "PUT"
-        
-        message = f"""
-🎯 FOURTH SIGNAL - ALL BIAS ALIGNED + PCR {signal_type} 🎯
-
-📍 Spot: ₹{current_price:.2f}
-🎯 ATM: {row['Strike']}
-📊 RSI: {current_rsi:.1f}
-📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
-
-{news_emoji} News: {news_sentiment['overall'].title()}
-All ATM Biases Aligned + PCR Condition: {signal_type}
-
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-
-{comprehensive_bias_info}
-"""
-        send_telegram(message)
-        st.success(f"FOURTH {signal_type} signal sent!")
-
-    # Signal 5: Enhanced Primary (No volume dependency)
-    if nearby_levels:
-        pivot_level = nearby_levels[0]
-        market_regime = detect_market_regime(df)
-        session = get_session_performance()
-        time_ok = is_good_signal_time()
-        volatility = get_market_volatility(df)
-        
-        enhanced_bullish = (
-            bias_aligned_bullish and
-            row['Level'] == 'Support' and
-            pivot_level['type'] == 'support' and
-            pcr_bullish and
-            market_trend in ["bullish", "neutral"] and
-            volatility == "normal" and
-            time_ok and
-            momentum_score >= 6 and
-            price_profile["strength"] >= 1.2
-        )
-        
-        enhanced_bearish = (
-            bias_aligned_bearish and
-            row['Level'] == 'Resistance' and
-            pivot_level['type'] == 'resistance' and
-            pcr_bearish and
-            market_trend in ["bearish", "neutral"] and
-            volatility == "normal" and
-            time_ok and
-            momentum_score <= 4 and
-            price_profile["strength"] >= 1.2
-        )
-        
-        if enhanced_bullish or enhanced_bearish:
-            signal_type = "CALL" if enhanced_bullish else "PUT"
-            price_diff = current_price - pivot_level['value']
-            
-            message = f"""
-🌟 FIFTH SIGNAL - ENHANCED PRIMARY {signal_type} 🌟
-
-📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
-📌 Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f}
-🎯 ATM: {row['Strike']}
-📊 RSI: {current_rsi:.1f}
-📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
-
-📊 Market Regime: {market_regime.replace('_', ' ').title()}
-🔊 Price Profile: {price_profile["profile"].title()} ({price_profile["strength"]:.1f}x)
-🚀 Momentum: {momentum_score}/10
-⏰ Session: {session.replace('_', ' ').title()}
-{news_emoji} News: {news_sentiment['overall'].title()}
-
-All Premium Conditions Met + PCR
-
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-
-{comprehensive_bias_info}
-"""
-            send_telegram(message)
-            st.success(f"ENHANCED FIFTH {signal_type} signal sent!")
-
-    # Signal 6: Confluence + Flow + PCR
-    strong_confluence_bullish = (
-        bias_aligned_bullish and
-        put_dominance and
-        pcr_bullish and
-        market_trend in ["bullish", "neutral"] and
-        volatility == "normal" and
-        time_ok and
-        momentum_score >= 6 and
-        price_profile["strength"] >= 1.3
-    )
-    
-    strong_confluence_bearish = (
-        bias_aligned_bearish and
-        call_dominance and
-        pcr_bearish and
-        market_trend in ["bearish", "neutral"] and
-        volatility == "normal" and
-        time_ok and
-        momentum_score <= 4 and
-        price_profile["strength"] >= 1.3
-    )
-    
-    if strong_confluence_bullish or strong_confluence_bearish:
-        signal_type = "CALL" if strong_confluence_bullish else "PUT"
-        dominance_ratio = pe_chg_oi / ce_chg_oi if strong_confluence_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
-        
-        message = f"""
-🚀 SIXTH SIGNAL - CONFLUENCE + FLOW + PCR {signal_type} 🚀
-
-📍 Spot: ₹{current_price:.2f}
-🎯 ATM: {row['Strike']}
-📊 RSI: {current_rsi:.1f}
-📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
-
-🔥 OI Dominance: {'PUT' if strong_confluence_bullish else 'CALL'} ChgOI {dominance_ratio:.1f}x higher
-🔊 Price Profile: {price_profile["profile"].title()} ({price_profile["strength"]:.1f}x)
-🚀 Momentum: {momentum_score}/10
-{news_emoji} News: {news_sentiment['overall'].title()}
-
-All Premium Filters + PCR Passed
-
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-
-{comprehensive_bias_info}
-"""
-        send_telegram(message)
-        st.success(f"CONFLUENCE SIXTH {signal_type} signal sent!")
-
-    # Signal 7: MAJOR SIGNAL - Triple Confirmation + Strong PCR
-    rsi_extreme_bullish = current_rsi < 35  # Oversold
-    rsi_extreme_bearish = current_rsi > 65  # Overbought
-    
-    major_bullish = (
-        bias_aligned_bullish and
-        row['Level'] == 'Support' and
-        pcr > 1.5 and  # Very strong PCR for major signal
-        put_dominance and
-        (rsi_extreme_bullish or momentum_score >= 7) and
-        market_trend != "bearish"
-    )
-    
-    major_bearish = (
-        bias_aligned_bearish and
-        row['Level'] == 'Resistance' and
-        pcr < 0.6 and  # Very strong PCR for major signal
-        call_dominance and
-        (rsi_extreme_bearish or momentum_score <= 3) and
-        market_trend != "bullish"
-    )
-    
-    if major_bullish or major_bearish:
-        signal_type = "CALL" if major_bullish else "PUT"
-        dominance_ratio = pe_chg_oi / ce_chg_oi if major_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
-        
-        # Create safe PCR text for major signals
-        if major_bullish:
-            pcr_strength = "VERY STRONG" if pcr > 1.5 else "STRONG"
-            pcr_description = f"PCR {pcr:.2f} (above 1.5 threshold)"
-        else:
-            pcr_strength = "VERY STRONG" if pcr < 0.6 else "STRONG" 
-            pcr_description = f"PCR {pcr:.2f} (below 0.6 threshold)"
-        
-        message = f"""
-MAJOR SIGNAL - SEVENTH {signal_type}
-
-FULL ALERT - STRONG CONVICTION SIGNAL
-
-Spot: ₹{current_price:.2f}
-ATM: {row['Strike']}
-RSI: {current_rsi:.1f} {'(OVERSOLD)' if rsi_extreme_bullish else '(OVERBOUGHT)' if rsi_extreme_bearish else ''}
-{pcr_description} {pcr_strength}
-
-Level: {row['Level']}
-OI Dominance: {'PUT' if major_bullish else 'CALL'} ChgOI {dominance_ratio:.1f}x
-Momentum: {momentum_score}/10
-Trend: {market_trend.title()}
-News: {news_sentiment['overall'].title()}
-
-TRIPLE CONFIRMATION:
-✅ All Biases Aligned
-✅ Strong PCR Condition (threshold met)
-✅ OI Dominance + Level Support
-
-⚠️ HIGH CONVICTION TRADE SETUP ⚠️
-
-Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-
-{comprehensive_bias_info}
-"""
-        send_telegram(message)
-        st.success(f"MAJOR SEVENTH {signal_type} SIGNAL SENT!")
-
-    # Signal 8: Ultimate Signal - All Conditions + Extreme PCR + RSI
-    ultimate_bullish = (
-        bias_aligned_bullish and
-        pcr > 1.4 and
-        put_dominance and
-        row['Level'] == 'Support' and
-        current_rsi < 40 and
-        momentum_score >= 6 and
-        price_profile["strength"] >= 1.5 and
-        nearby_levels and
-        nearby_levels[0]['type'] == 'support'
-    )
-    
-    ultimate_bearish = (
-        bias_aligned_bearish and
-        pcr < 0.65 and
-        call_dominance and
-        row['Level'] == 'Resistance' and
-        current_rsi > 60 and
-        momentum_score <= 4 and
-        price_profile["strength"] >= 1.5 and
-        nearby_levels and
-        nearby_levels[0]['type'] == 'resistance'
-    )
-    
-    if ultimate_bullish or ultimate_bearish:
-        signal_type = "CALL" if ultimate_bullish else "PUT"
-        pivot_level = nearby_levels[0] if nearby_levels else None
-        price_diff = current_price - pivot_level['value'] if pivot_level else 0
-        dominance_ratio = pe_chg_oi / ce_chg_oi if ultimate_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
-        
-        # Create safe PCR text for ultimate signals
-        if ultimate_bullish:
-            pcr_description = f"PCR {pcr:.2f} (above 1.4 extreme threshold)"
-        else:
-            pcr_description = f"PCR {pcr:.2f} (below 0.65 extreme threshold)"
-        
-        message = f"""
-ULTIMATE SIGNAL - EIGHTH {signal_type}
-
-MAXIMUM CONVICTION - RARE SETUP
-
-Spot: ₹{current_price:.2f}
-Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f} ({price_diff:+.2f})
-ATM: {row['Strike']}
-RSI: {current_rsi:.1f} {'EXTREME OVERSOLD' if ultimate_bullish else 'EXTREME OVERBOUGHT'}
-{pcr_description} EXTREME {'BULLISH' if ultimate_bullish else 'BEARISH'}
-
-PERFECT ALIGNMENT:
-✅ All ATM Biases Aligned
-✅ Extreme PCR Condition (threshold met)
-✅ RSI Extreme ({'below 40' if ultimate_bullish else 'above 60'})
-✅ OI Dominance {dominance_ratio:.1f}x
-✅ Level + Pivot Confluence
-✅ Strong Price Momentum ({price_profile["strength"]:.1f}x)
-
-PRIMARY: All Bias + Level + Pivot
-SECONDARY: Extreme PCR + OI Dominance
-BONUS: RSI Extreme + Momentum
-
-ULTRA HIGH CONVICTION
-POSITION SIZE: MAXIMUM
-RISK/REWARD: EXCELLENT
-
-Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-
-{comprehensive_bias_info}
-"""
-        send_telegram(message)
-        st.success(f"ULTIMATE EIGHTH {signal_type} SIGNAL SENT!")
-
-def get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, market_trend, current_rsi):
-    """Get comprehensive bias information with updated quantitative data"""
-    try:
-        atm_data = option_data[option_data['Zone'] == 'ATM']
-        if atm_data.empty:
-            return "Options data unavailable for bias analysis"
-        
-        row = atm_data.iloc[0]
-        
-        # Technical metrics (removed volume dependencies)
-        volatility = get_market_volatility(df)
-        momentum_score = get_momentum_score(df)
-        price_profile = get_price_momentum_profile(df)
-        market_regime = detect_market_regime(df)
-        session = get_session_performance()
-        time_ok = is_good_signal_time()
-        
-        bias_info = f"""
-📊 COMPREHENSIVE BIAS ANALYSIS 📊
-
-🔹 OPTIONS BIASES:
-• ChgOI Bias: {row['ChgOI_Bias']}
-• Volume Bias: {row['Volume_Bias']} 
-• Ask Bias: {row['Ask_Bias']}
-• Bid Bias: {row['Bid_Bias']}
-• Level Bias: {row['Level']} (OI-based)
-• PCR: {row['PCR']} (PE/CE ratio)
-
-🔹 TECHNICAL BIASES:
-• Market Trend: {market_trend.title()}
-• RSI: {current_rsi:.1f} ({'Oversold' if current_rsi < 30 else 'Overbought' if current_rsi > 70 else 'Neutral'})
-• Volatility: {volatility.title()}
-• Momentum: {momentum_score}/10
-• Price Profile: {price_profile["profile"].title()} ({price_profile["strength"]:.1f}x)
-• Market Regime: {market_regime.replace('_', ' ').title()}
-• Session: {session.replace('_', ' ').title()}
-• Timing: {'Good' if time_ok else 'Poor'}
-
-🔹 SENTIMENT BIASES:
-• News Sentiment: {news_sentiment['overall'].title()} (Score: {news_sentiment['score']:.2f})
-
-🔹 QUANTITATIVE DATA:
-• CE ChgOI: {row.get('changeinOpenInterest_CE', 0):,}
-• PE ChgOI: {row.get('changeinOpenInterest_PE', 0):,}
-• CE OI: {row.get('openInterest_CE', 0):,}
-• PE OI: {row.get('openInterest_PE', 0):,}
-• CE Volume: {row.get('totalTradedVolume_CE', 0):,}
-• PE Volume: {row.get('totalTradedVolume_PE', 0):,}
-• CE Ask: {row.get('askQty_CE', 0):,}
-• CE Bid: {row.get('bidQty_CE', 0):,}
-• PE Ask: {row.get('askQty_PE', 0):,}
-• PE Bid: {row.get('bidQty_PE', 0):,}
-• ATM Strike: {row['Strike']}
-"""
-        return bias_info
-        
-    except Exception as e:
-        return f"Error calculating comprehensive bias: {str(e)}"
 
 def main():
     st.title("📈 Nifty Trading Analyzer")
@@ -1295,15 +911,15 @@ def main():
         # Test button
         if st.sidebar.button("📤 Test Telegram"):
             test_message = f"""
-🔔 Enhanced Test Message from Nifty Analyzer
+Enhanced Test Message from Nifty Analyzer
 
-📊 System Status: Online
-🕒 Time: {current_time}
-⚙️ All Systems Operational
+System Status: Online
+Time: {current_time.strftime('%H:%M:%S IST')}
+All Systems Operational
 
-🚀 Enhanced Features Active:
+Enhanced Features Active:
 ✅ 8 Advanced Signal Types
-✅ PCR Integration (>1.3 Bull, <0.7 Bear)
+✅ PCR Integration (above 1.3 Bull, below 0.7 Bear)
 ✅ RSI Values in All Messages
 ✅ Price Momentum Analysis
 ✅ News Sentiment Display
@@ -1313,11 +929,11 @@ def main():
 ✅ Non-Volume Dependent Analysis
 ✅ Comprehensive Bias Analysis
 
-🔥 New Signals:
+New Signals:
 • 7th: MAJOR SIGNAL (Triple Confirmation)
 • 8th: ULTIMATE SIGNAL (Maximum Conviction)
 
-📈 All systems optimized and ready!
+All systems optimized and ready!
 """
             success = send_telegram(test_message)
             if not success:
@@ -1411,20 +1027,69 @@ Send `/start` to your bot
             fig = create_chart(df, f"Nifty {interval}min")
             st.plotly_chart(fig, use_container_width=True)
             
-            # News analysis
+            # Show nearby pivot levels info
             if current_price:
-                news_items = fetch_alpha_vantage_news()
-                news_sentiment = analyze_news_sentiment(news_items)
+                nearby_levels = get_nearby_pivot_levels(df, current_price, proximity)
+                if nearby_levels:
+                    st.info(f"📍 Nearby Levels: {len(nearby_levels)} confirmed pivot levels within {proximity} points")
+                    for i, level in enumerate(nearby_levels[:3]):  # Show top 3
+                        status = "✓" if level.get('confirmed', True) else "?"
+                        st.caption(f"{i+1}. {level['timeframe']}M {level['type'].title()} {status}: ₹{level['value']:.1f} (Distance: {level['distance']:.1f})")
                 
-                if news_items:
-                    st.subheader("Market News")
-                    col_news1, col_news2, col_news3 = st.columns(3)
+                # News analysis with proper display
+                if current_price:
+                    news_items = fetch_alpha_vantage_news()
+                    news_sentiment = analyze_news_sentiment(news_items)
+                    
+                    st.subheader("📰 Market News & Sentiment")
+                    
+                    # News sentiment display
+                    sentiment_color = {
+                        "bullish": "🟢",
+                        "bearish": "🔴", 
+                        "neutral": "🟡"
+                    }.get(news_sentiment["overall"], "🟡")
+                    
+                    col_news1, col_news2, col_news3, col_news4 = st.columns(4)
                     with col_news1:
-                        st.metric("News Sentiment", news_sentiment["overall"].title())
+                        st.metric("News Sentiment", f"{sentiment_color} {news_sentiment['overall'].title()}", 
+                                f"Score: {news_sentiment['score']:.2f}")
                     with col_news2:
                         st.metric("Bullish Items", news_sentiment["bullish_count"])
                     with col_news3:
                         st.metric("Bearish Items", news_sentiment["bearish_count"])
+                    with col_news4:
+                        st.metric("Confidence", f"{news_sentiment.get('confidence', 0)*100:.0f}%")
+                    
+                    # News impact indicator
+                    market_trend = get_market_trend(df)
+                    if news_sentiment["overall"] == market_trend:
+                        st.success("📈 News sentiment ALIGNED with market trend")
+                    elif news_sentiment["overall"] != "neutral" and market_trend != "neutral":
+                        st.warning("⚠️ News sentiment CONTRARIAN to market trend")
+                    else:
+                        st.info("📊 News sentiment NEUTRAL relative to market trend")
+                    
+                    # Show recent news items
+                    if news_items and not any('error' in item.get('title', '').lower() for item in news_items):
+                        with st.expander("📰 Latest News Items", expanded=False):
+                            for i, item in enumerate(news_items[:3], 1):
+                                sentiment_emoji = "📈" if item.get('sentiment_score', 0) > 0.2 else "📉" if item.get('sentiment_score', 0) < -0.2 else "📊"
+                                st.write(f"**{sentiment_emoji} {i}. {item['title']}**")
+                                if 'summary' in item and item['summary']:
+                                    st.caption(item['summary'][:150] + "..." if len(item.get('summary', '')) > 150 else item.get('summary', ''))
+                                st.caption(f"Source: {item.get('source', 'Unknown')} | Sentiment: {item.get('sentiment_score', 0):.2f}")
+                    
+                    # Show next news update time
+                    if 'last_news_request' in st.session_state:
+                        next_update = st.session_state.last_news_request + 900  # 15 minutes
+                        time_remaining = next_update - time.time()
+                        if time_remaining > 0:
+                            minutes = int(time_remaining // 60)
+                            seconds = int(time_remaining % 60)
+                            st.caption(f"⏰ Next news update in: {minutes}m {seconds}s")
+                    else:
+                        st.caption("⏰ News will auto-update every 15 minutes during market hours")
                 
                 # Technical analysis (updated without volume dependency)
                 if len(df) > 20:
