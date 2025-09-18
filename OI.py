@@ -115,6 +115,11 @@ def send_telegram(message):
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
+    # Clean message to avoid HTML parsing issues
+    # Replace problematic characters that cause HTML parsing errors
+    clean_message = message.replace("<", "less than ").replace(">", "greater than ")
+    clean_message = clean_message.replace("&", "and")
+    
     # Try both string and integer chat ID formats
     chat_ids_to_try = [TELEGRAM_CHAT_ID]
     if TELEGRAM_CHAT_ID.isdigit() or (TELEGRAM_CHAT_ID.startswith('-') and TELEGRAM_CHAT_ID[1:].isdigit()):
@@ -123,8 +128,7 @@ def send_telegram(message):
     for chat_id in chat_ids_to_try:
         payload = {
             "chat_id": chat_id, 
-            "text": message, 
-            "parse_mode": "HTML",
+            "text": clean_message, 
             "disable_web_page_preview": True
         }
         
@@ -512,6 +516,18 @@ def check_pcr_condition(pcr, signal_type):
         return pcr < 0.7  # More calls than puts = bearish
     return False
 
+def get_pcr_condition_text(pcr, signal_type):
+    """Get PCR condition text without problematic symbols"""
+    if signal_type == "bullish":
+        threshold = 1.3
+        condition = "above" if pcr > threshold else "below"
+        return f"PCR {pcr:.2f} ({condition} {threshold} for bull)"
+    elif signal_type == "bearish":
+        threshold = 0.7
+        condition = "below" if pcr < threshold else "above"
+        return f"PCR {pcr:.2f} ({condition} {threshold} for bear)"
+    return f"PCR {pcr:.2f}"
+
 def get_momentum_score(df, periods=14):
     """Calculate momentum score from RSI"""
     if len(df) < periods + 1:
@@ -763,6 +779,7 @@ def check_signals(df, option_data, current_price, proximity=5):
         if primary_bullish or primary_bearish:
             signal_type = "CALL" if primary_bullish else "PUT"
             price_diff = current_price - pivot_level['value']
+            pcr_text = get_pcr_condition_text(pcr, "bullish" if primary_bullish else "bearish")
             
             message = f"""
 🚨 PRIMARY NIFTY {signal_type} SIGNAL 🚨
@@ -771,7 +788,7 @@ def check_signals(df, option_data, current_price, proximity=5):
 📌 Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f}
 🎯 ATM: {row['Strike']}
 📊 RSI: {current_rsi:.1f}
-📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
+📈 {pcr_text} {'✅' if pcr_bullish or pcr_bearish else '❌'}
 
 {news_emoji} News Sentiment: {news_sentiment['overall'].title()}
 Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot, PCR Condition Met
@@ -796,6 +813,7 @@ Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot, PCR Condition Met
     if secondary_bullish or secondary_bearish:
         signal_type = "CALL" if secondary_bullish else "PUT"
         dominance_ratio = pe_chg_oi / ce_chg_oi if secondary_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
+        pcr_text = get_pcr_condition_text(pcr, "bullish" if secondary_bullish else "bearish")
         
         message = f"""
 ⚡ SECONDARY NIFTY {signal_type} SIGNAL - OI DOMINANCE ⚡
@@ -803,7 +821,7 @@ Conditions: {row['Level']}, All Bias Aligned, Confirmed Pivot, PCR Condition Met
 📍 Spot: ₹{current_price:.2f}
 🎯 ATM: {row['Strike']}
 📊 RSI: {current_rsi:.1f}
-📈 PCR: {pcr:.2f} ({'✅' if pcr_bullish or pcr_bearish else '❌'})
+📈 {pcr_text} {'✅' if pcr_bullish or pcr_bearish else '❌'}
 
 {news_emoji} News Sentiment: {news_sentiment['overall'].title()}
 🔥 OI Dominance: {'PUT' if secondary_bullish else 'CALL'} ChgOI {dominance_ratio:.1f}x higher
@@ -1021,35 +1039,43 @@ All Premium Filters + PCR Passed
         signal_type = "CALL" if major_bullish else "PUT"
         dominance_ratio = pe_chg_oi / ce_chg_oi if major_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
         
+        # Create safe PCR text for major signals
+        if major_bullish:
+            pcr_strength = "VERY STRONG" if pcr > 1.5 else "STRONG"
+            pcr_description = f"PCR {pcr:.2f} (above 1.5 threshold)"
+        else:
+            pcr_strength = "VERY STRONG" if pcr < 0.6 else "STRONG" 
+            pcr_description = f"PCR {pcr:.2f} (below 0.6 threshold)"
+        
         message = f"""
-🔥🔥🔥 MAJOR SIGNAL - SEVENTH {signal_type} 🔥🔥🔥
+MAJOR SIGNAL - SEVENTH {signal_type}
 
-🚨 FULL ALERT - STRONG CONVICTION SIGNAL 🚨
+FULL ALERT - STRONG CONVICTION SIGNAL
 
-📍 Spot: ₹{current_price:.2f}
-🎯 ATM: {row['Strike']}
-📊 RSI: {current_rsi:.1f} {'(OVERSOLD)' if rsi_extreme_bullish else '(OVERBOUGHT)' if rsi_extreme_bearish else ''}
-📈 PCR: {pcr:.2f} {'🔥 VERY STRONG' if (major_bullish and pcr > 1.5) or (major_bearish and pcr < 0.6) else ''}
+Spot: ₹{current_price:.2f}
+ATM: {row['Strike']}
+RSI: {current_rsi:.1f} {'(OVERSOLD)' if rsi_extreme_bullish else '(OVERBOUGHT)' if rsi_extreme_bearish else ''}
+{pcr_description} {pcr_strength}
 
-🎯 Level: {row['Level']}
-🔥 OI Dominance: {'PUT' if major_bullish else 'CALL'} ChgOI {dominance_ratio:.1f}x
-🚀 Momentum: {momentum_score}/10
-🏛️ Trend: {market_trend.title()}
-{news_emoji} News: {news_sentiment['overall'].title()}
+Level: {row['Level']}
+OI Dominance: {'PUT' if major_bullish else 'CALL'} ChgOI {dominance_ratio:.1f}x
+Momentum: {momentum_score}/10
+Trend: {market_trend.title()}
+News: {news_sentiment['overall'].title()}
 
-🔥 TRIPLE CONFIRMATION:
+TRIPLE CONFIRMATION:
 ✅ All Biases Aligned
-✅ Strong PCR Condition (>{1.5 if major_bullish else '<0.6'})
+✅ Strong PCR Condition (threshold met)
 ✅ OI Dominance + Level Support
 
 ⚠️ HIGH CONVICTION TRADE SETUP ⚠️
 
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
 
 {comprehensive_bias_info}
 """
         send_telegram(message)
-        st.success(f"🔥 MAJOR SEVENTH {signal_type} SIGNAL SENT! 🔥")
+        st.success(f"MAJOR SEVENTH {signal_type} SIGNAL SENT!")
 
     # Signal 8: Ultimate Signal - All Conditions + Extreme PCR + RSI
     ultimate_bullish = (
@@ -1082,39 +1108,45 @@ All Premium Filters + PCR Passed
         price_diff = current_price - pivot_level['value'] if pivot_level else 0
         dominance_ratio = pe_chg_oi / ce_chg_oi if ultimate_bullish and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
         
+        # Create safe PCR text for ultimate signals
+        if ultimate_bullish:
+            pcr_description = f"PCR {pcr:.2f} (above 1.4 extreme threshold)"
+        else:
+            pcr_description = f"PCR {pcr:.2f} (below 0.65 extreme threshold)"
+        
         message = f"""
-🌟🔥⚡ ULTIMATE SIGNAL - EIGHTH {signal_type} ⚡🔥🌟
+ULTIMATE SIGNAL - EIGHTH {signal_type}
 
-🚨🚨 MAXIMUM CONVICTION - RARE SETUP 🚨🚨
+MAXIMUM CONVICTION - RARE SETUP
 
-📍 Spot: ₹{current_price:.2f}
-📌 Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f} ({price_diff:+.2f})
-🎯 ATM: {row['Strike']}
-📊 RSI: {current_rsi:.1f} {'🔴 EXTREME OVERSOLD' if ultimate_bullish else '🔴 EXTREME OVERBOUGHT'}
-📈 PCR: {pcr:.2f} 🔥 EXTREME {'BULLISH' if ultimate_bullish else 'BEARISH'}
+Spot: ₹{current_price:.2f}
+Pivot: {pivot_level['timeframe']}M {pivot_level['type'].title()} at ₹{pivot_level['value']:.2f} ({price_diff:+.2f})
+ATM: {row['Strike']}
+RSI: {current_rsi:.1f} {'EXTREME OVERSOLD' if ultimate_bullish else 'EXTREME OVERBOUGHT'}
+{pcr_description} EXTREME {'BULLISH' if ultimate_bullish else 'BEARISH'}
 
-🎯 PERFECT ALIGNMENT:
+PERFECT ALIGNMENT:
 ✅ All ATM Biases Aligned
-✅ Extreme PCR (>{1.4 if ultimate_bullish else '<0.65'})
-✅ RSI Extreme ({'<40' if ultimate_bullish else '>60'})
+✅ Extreme PCR Condition (threshold met)
+✅ RSI Extreme ({'below 40' if ultimate_bullish else 'above 60'})
 ✅ OI Dominance {dominance_ratio:.1f}x
 ✅ Level + Pivot Confluence
 ✅ Strong Price Momentum ({price_profile["strength"]:.1f}x)
 
-🔥 PRIMARY: All Bias + Level + Pivot
-🔥 SECONDARY: Extreme PCR + OI Dominance
-🔥 BONUS: RSI Extreme + Momentum
+PRIMARY: All Bias + Level + Pivot
+SECONDARY: Extreme PCR + OI Dominance
+BONUS: RSI Extreme + Momentum
 
-⚠️⚠️ ULTRA HIGH CONVICTION ⚠️⚠️
-🎯 POSITION SIZE: MAXIMUM
-💰 RISK/REWARD: EXCELLENT
+ULTRA HIGH CONVICTION
+POSITION SIZE: MAXIMUM
+RISK/REWARD: EXCELLENT
 
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
 
 {comprehensive_bias_info}
 """
         send_telegram(message)
-        st.success(f"🌟 ULTIMATE EIGHTH {signal_type} SIGNAL SENT! 🌟")
+        st.success(f"ULTIMATE EIGHTH {signal_type} SIGNAL SENT!")
 
 def get_comprehensive_bias_info(df, option_data, current_price, news_sentiment, market_trend, current_rsi):
     """Get comprehensive bias information with updated quantitative data"""
