@@ -108,15 +108,55 @@ def get_expiry_list():
         return None
 
 def send_telegram(message):
-    """Send message to Telegram"""
+    """Send message to Telegram with proper error handling"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
+        st.error("❌ Telegram credentials not configured in secrets")
+        return False
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        requests.post(url, json=payload, timeout=10)
-    except:
-        pass
+    
+    # Try both string and integer chat ID formats
+    chat_ids_to_try = [TELEGRAM_CHAT_ID]
+    if TELEGRAM_CHAT_ID.isdigit() or (TELEGRAM_CHAT_ID.startswith('-') and TELEGRAM_CHAT_ID[1:].isdigit()):
+        chat_ids_to_try.append(int(TELEGRAM_CHAT_ID))
+    
+    for chat_id in chat_ids_to_try:
+        payload = {
+            "chat_id": chat_id, 
+            "text": message, 
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            
+            if response.status_code == 200:
+                st.success(f"✅ Telegram message sent successfully!")
+                return True
+            else:
+                error_data = response.json()
+                error_msg = error_data.get('description', 'Unknown error')
+                st.error(f"❌ Telegram API Error: {error_msg}")
+                
+                # Common error solutions
+                if "chat not found" in error_msg.lower():
+                    st.info("💡 Solution: Make sure the bot has been started by sending /start to your bot first")
+                elif "bot was blocked" in error_msg.lower():
+                    st.info("💡 Solution: Unblock the bot in your Telegram and send /start")
+                elif "unauthorized" in error_msg.lower():
+                    st.info("💡 Solution: Check your bot token in secrets")
+                
+                return False
+                
+        except requests.exceptions.RequestException as e:
+            st.error(f"❌ Network error: {str(e)}")
+            return False
+        except Exception as e:
+            st.error(f"❌ Unexpected error: {str(e)}")
+            return False
+    
+    return False
 
 def process_candle_data(data):
     """Process raw candle data into DataFrame"""
@@ -1146,11 +1186,94 @@ def main():
         st.warning(f"⚠️ Market is closed. Current time: {current_time.strftime('%H:%M:%S IST')}")
         st.info("Market hours: Monday-Friday, 9:00 AM to 3:45 PM IST")
     
-    # Sidebar settings
+    # Sidebar settings with Telegram debugging
     st.sidebar.header("🎛️ Settings")
     interval = st.sidebar.selectbox("Timeframe", ["1", "3", "5", "10", "15"], index=2)
     enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
     proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
+    
+    # Telegram Configuration Check
+    st.sidebar.subheader("📱 Telegram Setup")
+    
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        st.sidebar.success("✅ Telegram credentials configured")
+        
+        # Show configuration details (masked)
+        if len(TELEGRAM_BOT_TOKEN) > 10:
+            masked_token = TELEGRAM_BOT_TOKEN[:8] + "..." + TELEGRAM_BOT_TOKEN[-4:]
+            st.sidebar.text(f"Bot Token: {masked_token}")
+        st.sidebar.text(f"Chat ID: {TELEGRAM_CHAT_ID}")
+        
+        # Test button
+        if st.sidebar.button("📤 Test Telegram"):
+            test_message = f"""
+🔔 Enhanced Test Message from Nifty Analyzer
+
+📊 System Status: Online
+🕒 Time: {current_time}
+⚙️ All Systems Operational
+
+🚀 Enhanced Features Active:
+✅ 8 Advanced Signal Types
+✅ PCR Integration (>1.3 Bull, <0.7 Bear)
+✅ RSI Values in All Messages
+✅ Price Momentum Analysis
+✅ News Sentiment Display
+✅ Major Signal with Full Alert
+✅ Ultimate Signal (Max Conviction)
+✅ Enhanced Quantitative Data
+✅ Non-Volume Dependent Analysis
+✅ Comprehensive Bias Analysis
+
+🔥 New Signals:
+• 7th: MAJOR SIGNAL (Triple Confirmation)
+• 8th: ULTIMATE SIGNAL (Maximum Conviction)
+
+📈 All systems optimized and ready!
+"""
+            success = send_telegram(test_message)
+            if not success:
+                st.sidebar.error("❌ Test message failed!")
+        
+        # Quick troubleshooting guide
+        with st.sidebar.expander("🔧 Troubleshooting", expanded=False):
+            st.write("""
+**If messages aren't working:**
+
+1. **Start your bot**: Send `/start` to your bot in Telegram
+2. **Check Chat ID**: Use @userinfobot to get correct chat ID
+3. **Verify Bot Token**: Make sure it's correct in secrets
+4. **Bot permissions**: Ensure bot can send messages
+5. **Group chats**: Use negative chat ID (-1234567890)
+
+**How to get Chat ID:**
+- Send message to @userinfobot in Telegram
+- It will reply with your chat ID
+- Use this exact number in secrets
+""")
+    else:
+        st.sidebar.error("❌ Telegram not configured")
+        with st.sidebar.expander("📝 Setup Instructions", expanded=True):
+            st.write("""
+**Step 1: Create Bot**
+1. Message @BotFather on Telegram
+2. Send `/newbot`
+3. Follow instructions
+4. Copy bot token
+
+**Step 2: Get Chat ID**
+1. Send message to @userinfobot
+2. Copy your chat ID
+
+**Step 3: Add to Secrets**
+```
+TELEGRAM_BOT_TOKEN = "your_bot_token"
+TELEGRAM_CHAT_ID = "your_chat_id"
+```
+
+**Step 4: Start Bot**
+Send `/start` to your bot
+""")
     
     if st.sidebar.button("Refresh News"):
         for key in ['news_cache', 'last_news_request', 'alpha_vantage_news']:
@@ -1309,34 +1432,31 @@ def main():
     current_time = datetime.now(ist).strftime("%H:%M:%S IST")
     st.sidebar.info(f"🕒 Last Updated: {current_time}")
     
-    if st.sidebar.button("📤 Test Telegram"):
-        test_message = f"""
-🔔 Enhanced Test Message from Nifty Analyzer
-
-📊 System Status: Online
-🕒 Time: {current_time}
-⚙️ All Systems Operational
-
-🚀 Enhanced Features Active:
-✅ 8 Advanced Signal Types
-✅ PCR Integration (>1.3 Bull, <0.7 Bear)
-✅ RSI Values in All Messages
-✅ Price Momentum Analysis
-✅ News Sentiment Display
-✅ Major Signal with Full Alert
-✅ Ultimate Signal (Max Conviction)
-✅ Enhanced Quantitative Data
-✅ Non-Volume Dependent Analysis
-✅ Comprehensive Bias Analysis
-
-🔥 New Signals:
-• 7th: MAJOR SIGNAL (Triple Confirmation)
-• 8th: ULTIMATE SIGNAL (Maximum Conviction)
-
-📈 All systems optimized and ready!
-"""
-        send_telegram(test_message)
-        st.sidebar.success("📤 Enhanced test message sent!")
+    # Additional debugging info
+    if st.sidebar.checkbox("Show Debug Info", value=False):
+        st.sidebar.subheader("🔍 Debug Information")
+        st.sidebar.text(f"Market Hours: {is_market_hours()}")
+        st.sidebar.text(f"Current Time: {current_time}")
+        st.sidebar.text(f"Bot Token Set: {'Yes' if TELEGRAM_BOT_TOKEN else 'No'}")
+        st.sidebar.text(f"Chat ID Set: {'Yes' if TELEGRAM_CHAT_ID else 'No'}")
+        
+        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            # Test bot connectivity
+            if st.sidebar.button("🔍 Test Bot Connection"):
+                test_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
+                try:
+                    response = requests.get(test_url, timeout=10)
+                    if response.status_code == 200:
+                        bot_info = response.json()
+                        if bot_info.get('ok'):
+                            bot_data = bot_info.get('result', {})
+                            st.sidebar.success(f"✅ Bot '{bot_data.get('first_name', 'Unknown')}' is active")
+                        else:
+                            st.sidebar.error("❌ Bot token invalid")
+                    else:
+                        st.sidebar.error(f"❌ Bot API error: {response.status_code}")
+                except Exception as e:
+                    st.sidebar.error(f"❌ Connection error: {str(e)}")
 
 if __name__ == "__main__":
     # Initialize session state
