@@ -46,7 +46,8 @@ TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
 NIFTY_SCRIP = 13
 NIFTY_SEG = "IDX_I"
-# PART 2: API Classes and Helper Functions
+
+# API Classes and Helper Functions
 class DhanAPI:
     def __init__(self):
         self.headers = {
@@ -116,7 +117,8 @@ def send_telegram(message):
         requests.post(url, json=payload, timeout=10)
     except:
         pass
-# PART 3: Data Processing Functions
+
+# Data Processing Functions
 def process_candle_data(data):
     if not data or 'open' not in data:
         return pd.DataFrame()
@@ -175,7 +177,8 @@ def get_pivots(df, timeframe="5", length=4):
         return pivots
     except:
         return []
-# PART 4: Chart Creation Function
+
+# Chart Creation Function
 def create_chart(df, title):
     if df.empty:
         return go.Figure()
@@ -238,7 +241,8 @@ def create_chart(df, title):
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=3, col=1)
     
     return fig
-# PART 5: Options Analysis Function
+
+# Options Analysis Function
 def analyze_options(expiry):
     option_data = get_option_chain(expiry)
     if not option_data or 'data' not in option_data:
@@ -311,7 +315,8 @@ def analyze_options(expiry):
         })
     
     return underlying, pd.DataFrame(bias_results)
-# PART 6: Original Signal Functions (Your existing signals 1-5)
+
+# Original Signal Functions (Your existing signals 1-5)
 def check_signals(df, option_data, current_price, proximity=5):
     if df.empty or option_data is None or not current_price:
         return
@@ -457,52 +462,126 @@ RSI indicates oversold conditions. Consider potential bounce or reversal.
 """
             send_telegram(message)
             st.success("⚠️ RSI Oversold signal sent!")
-# PART 7 CONTINUED: ML Signals Class (Rest of the class)
-def signal_7_volume_breakout(self, df, current_price, option_data):
-    """SIGNAL 7: Volume Breakout Detection"""
-    try:
-        if df.empty or len(df) < 20:
+
+# ML Signals Class
+class MLSignals:
+    def __init__(self):
+        self.trend_model = None
+        self.historical_oi_data = []  # Store for anomaly detection
+        
+    def signal_6_trend_prediction(self, df, current_price, option_data):
+        """SIGNAL 6: ML Trend Prediction"""
+        try:
+            if df.empty or len(df) < 30:
+                return None
+                
+            # Calculate features
+            df_temp = df.copy()
+            df_temp['sma_5'] = df_temp['close'].rolling(5).mean()
+            df_temp['sma_20'] = df_temp['close'].rolling(20).mean()
+            df_temp['volume_ratio'] = df_temp['volume'] / df_temp['volume'].rolling(10).mean()
+            df_temp['price_change'] = df_temp['close'].pct_change()
+            df_temp['rsi'] = self._calculate_rsi(df_temp['close'])
+            
+            # Create target (price direction in next 3 candles)
+            df_temp['future_close'] = df_temp['close'].shift(-3)
+            df_temp['target'] = (df_temp['future_close'] > df_temp['close']).astype(int)
+            
+            # Prepare features
+            features = ['rsi', 'sma_5', 'sma_20', 'volume_ratio', 'price_change']
+            df_clean = df_temp[features + ['target']].dropna()
+            
+            if len(df_clean) < 20:
+                return None
+                
+            # Train model on recent data
+            X = df_clean[features].values
+            y = df_clean['target'].values
+            
+            if len(X) < 10:
+                return None
+                
+            # Use last 50 points for training, predict current
+            train_size = min(50, len(X) - 1)
+            X_train = X[-train_size-1:-1]
+            y_train = y[-train_size-1:-1]
+            X_current = X[-1].reshape(1, -1)
+            
+            # Simple Random Forest
+            self.trend_model = RandomForestClassifier(
+                n_estimators=20, 
+                max_depth=3, 
+                random_state=42
+            )
+            self.trend_model.fit(X_train, y_train)
+            
+            # Get prediction and confidence
+            prediction = self.trend_model.predict(X_current)[0]
+            confidence = self.trend_model.predict_proba(X_current)[0].max()
+            
+            # Only signal if confidence is high
+            if confidence > 0.65:
+                direction = "CALL" if prediction == 1 else "PUT"
+                
+                # Get ATM strike for signal
+                atm_data = option_data[option_data['Zone'] == 'ATM'] if option_data is not None else None
+                atm_strike = atm_data.iloc[0]['Strike'] if atm_data is not None and not atm_data.empty else "N/A"
+                
+                return {
+                    'signal_type': direction,
+                    'confidence': round(confidence * 100, 1),
+                    'strike': atm_strike,
+                    'reason': f"ML Trend Prediction ({confidence*100:.1f}% confidence)"
+                }
+                
+        except Exception as e:
+            print(f"Signal 6 error: {e}")
             return None
+    
+    def signal_7_volume_breakout(self, df, current_price, option_data):
+        """SIGNAL 7: Volume Breakout Detection"""
+        try:
+            if df.empty or len(df) < 20:
+                return None
+                
+            # Calculate volume metrics
+            df_temp = df.copy()
+            df_temp['volume_sma'] = df_temp['volume'].rolling(20).mean()
+            df_temp['volume_ratio'] = df_temp['volume'] / df_temp['volume_sma']
+            df_temp['price_change'] = df_temp['close'].pct_change()
+            df_temp['high_break'] = df_temp['high'] > df_temp['high'].rolling(10).max().shift(1)
+            df_temp['low_break'] = df_temp['low'] < df_temp['low'].rolling(10).min().shift(1)
             
-        df_temp = df.copy()
-        df_temp['price_change'] = df_temp['close'].pct_change()
-        df_temp['volume_ma'] = df_temp['volume'].rolling(20).mean()
-        df_temp['volume_ratio'] = df_temp['volume'] / df_temp['volume_ma']
-        
-        # Check for new highs/lows
-        df_temp['high_break'] = df_temp['high'] > df_temp['high'].rolling(10).max().shift(1)
-        df_temp['low_break'] = df_temp['low'] < df_temp['low'].rolling(10).min().shift(1)
-        
-        current_row = df_temp.iloc[-1]
-        
-        # Volume breakout conditions
-        volume_spike = current_row['volume_ratio'] > 1.8  # 80% above average
-        significant_move = abs(current_row['price_change']) > 0.003  # 0.3% move
-        
-        breakout_signal = None
-        
-        if volume_spike and significant_move:
-            if current_row['high_break'] and current_row['price_change'] > 0:
-                breakout_signal = "CALL"
-            elif current_row['low_break'] and current_row['price_change'] < 0:
-                breakout_signal = "PUT"
-        
-        if breakout_signal:
-            # Get ATM strike
-            atm_data = option_data[option_data['Zone'] == 'ATM'] if option_data is not None else None
-            atm_strike = atm_data.iloc[0]['Strike'] if atm_data is not None and not atm_data.empty else "N/A"
+            current_row = df_temp.iloc[-1]
             
-            return {
-                'signal_type': breakout_signal,
-                'volume_ratio': round(current_row['volume_ratio'], 2),
-                'price_change': round(current_row['price_change'] * 100, 2),
-                'strike': atm_strike,
-                'reason': f"Volume Breakout (Vol: {current_row['volume_ratio']:.1f}x avg)"
-            }
+            # Volume breakout conditions
+            volume_spike = current_row['volume_ratio'] > 1.8  # 80% above average
+            significant_move = abs(current_row['price_change']) > 0.003  # 0.3% move
             
-    except Exception as e:
-        print(f"Signal 7 error: {e}")
-        return None
+            breakout_signal = None
+            
+            if volume_spike and significant_move:
+                if current_row['high_break'] and current_row['price_change'] > 0:
+                    breakout_signal = "CALL"
+                elif current_row['low_break'] and current_row['price_change'] < 0:
+                    breakout_signal = "PUT"
+            
+            if breakout_signal:
+                # Get ATM strike
+                atm_data = option_data[option_data['Zone'] == 'ATM'] if option_data is not None else None
+                atm_strike = atm_data.iloc[0]['Strike'] if atm_data is not None and not atm_data.empty else "N/A"
+                
+                return {
+                    'signal_type': breakout_signal,
+                    'volume_ratio': round(current_row['volume_ratio'], 2),
+                    'price_change': round(current_row['price_change'] * 100, 2),
+                    'strike': atm_strike,
+                    'reason': f"Volume Breakout (Vol: {current_row['volume_ratio']:.1f}x avg)"
+                }
+                
+        except Exception as e:
+            print(f"Signal 7 error: {e}")
+            return None
     
     def signal_8_options_flow_anomaly(self, option_data, current_price):
         """SIGNAL 8: Unusual Options Flow Detection"""
@@ -578,17 +657,28 @@ def signal_7_volume_breakout(self, df, current_price, option_data):
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
         rs = gain / loss
         return 100 - (100 / (1 + rs))
-# PART 8: ML Signal Integration Function
+
+# ML Signal Integration Function with Debug
 def check_ml_signals(df, option_data, current_price, send_telegram_func):
     """
-    ML Signals - Signals 6, 7, 8 (NEW)
+    DEBUG VERSION - Shows ML signal status
     """
     ml_signals = MLSignals()
     
-    # Signal 6: ML Trend Prediction
-    signal_6 = ml_signals.signal_6_trend_prediction(df, current_price, option_data)
-    if signal_6:
-        message = f"""
+    # Add debug info to main display
+    with st.expander("🤖 ML Signals Debug Info", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.subheader("Signal 6 Status")
+            if len(df) < 30:
+                st.warning(f"Need 30+ candles (have {len(df)})")
+            else:
+                signal_6 = ml_signals.signal_6_trend_prediction(df, current_price, option_data)
+                if signal_6:
+                    st.success(f"🤖 READY: {signal_6['signal_type']} ({signal_6['confidence']}%)")
+                    # Send actual signal
+                    message = f"""
 🤖 SIGNAL 6 - ML TREND PREDICTION 🤖
 
 📍 Spot: ₹{current_price:.2f}
@@ -600,13 +690,28 @@ def check_ml_signals(df, option_data, current_price, send_telegram_func):
 
 🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
 """
-        send_telegram_func(message)
-        st.success(f"🤖 ML TREND {signal_6['signal_type']} signal sent!")
-    
-    # Signal 7: Volume Breakout
-    signal_7 = ml_signals.signal_7_volume_breakout(df, current_price, option_data)
-    if signal_7:
-        message = f"""
+                    send_telegram_func(message)
+                    st.success(f"🤖 ML TREND {signal_6['signal_type']} signal sent!")
+                else:
+                    st.info("Building ML model... (confidence < 65%)")
+        
+        with col2:
+            st.subheader("Signal 7 Status")
+            if len(df) < 20:
+                st.warning(f"Need 20+ candles (have {len(df)})")
+            else:
+                # Show current volume ratio
+                if not df.empty:
+                    current_vol = df['volume'].iloc[-1]
+                    avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+                    vol_ratio = current_vol / avg_vol if avg_vol > 0 else 0
+                    st.metric("Volume Ratio", f"{vol_ratio:.2f}x", "Need 1.8x+")
+                
+                signal_7 = ml_signals.signal_7_volume_breakout(df, current_price, option_data)
+                if signal_7:
+                    st.success(f"📈 BREAKOUT: {signal_7['signal_type']}")
+                    # Send actual signal
+                    message = f"""
 📈 SIGNAL 7 - VOLUME BREAKOUT 📈
 
 📍 Spot: ₹{current_price:.2f}
@@ -619,13 +724,31 @@ def check_ml_signals(df, option_data, current_price, send_telegram_func):
 
 🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
 """
-        send_telegram_func(message)
-        st.success(f"📈 VOLUME BREAKOUT {signal_7['signal_type']} signal sent!")
-    
-    # Signal 8: Options Flow Anomaly
-    signal_8 = ml_signals.signal_8_options_flow_anomaly(option_data, current_price)
-    if signal_8:
-        message = f"""
+                    send_telegram_func(message)
+                    st.success(f"📈 VOLUME BREAKOUT {signal_7['signal_type']} signal sent!")
+                else:
+                    st.info("Waiting for volume spike...")
+        
+        with col3:
+            st.subheader("Signal 8 Status")
+            data_points = len(ml_signals.historical_oi_data)
+            if data_points < 10:
+                st.warning(f"Building history... ({data_points}/10)")
+            
+            if option_data is not None:
+                # Show current OI activity
+                atm_otm_data = option_data[option_data['Zone'].isin(['ATM', 'OTM'])]
+                if not atm_otm_data.empty:
+                    total_ce_chg = atm_otm_data['changeinOpenInterest_CE'].sum()
+                    total_pe_chg = atm_otm_data['changeinOpenInterest_PE'].sum()
+                    total_chg = abs(total_ce_chg) + abs(total_pe_chg)
+                    st.metric("Total OI Change", f"{total_chg:,}", "Need 30k+")
+            
+            signal_8 = ml_signals.signal_8_options_flow_anomaly(option_data, current_price)
+            if signal_8:
+                st.success(f"🔥 ANOMALY: {signal_8['signal_type']}")
+                # Send actual signal
+                message = f"""
 🔥 SIGNAL 8 - UNUSUAL OPTIONS FLOW 🔥
 
 📍 Spot: ₹{current_price:.2f}
@@ -639,9 +762,12 @@ def check_ml_signals(df, option_data, current_price, send_telegram_func):
 
 🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
 """
-        send_telegram_func(message)
-        st.success(f"🔥 OPTIONS FLOW {signal_8['signal_type']} signal sent!")
-# PART 9: Main Function
+                send_telegram_func(message)
+                st.success(f"🔥 OPTIONS FLOW {signal_8['signal_type']} signal sent!")
+            else:
+                st.info("No unusual activity detected")
+
+# Main Function
 def main():
     st.title("📈 Nifty Trading Analyzer with ML Signals")
     
@@ -725,8 +851,8 @@ def main():
                 if enable_signals and not df.empty and is_market_hours():
                     check_signals(df, option_summary, underlying_price, proximity)
                 
-                # NEW ML SIGNALS (6-8)
-                if enable_ml_signals and not df.empty and is_market_hours():
+                # NEW ML SIGNALS (6-8) WITH DEBUG
+                if enable_ml_signals and not df.empty:
                     check_ml_signals(df, option_summary, underlying_price, send_telegram)
                     
             else:
