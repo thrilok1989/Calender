@@ -8,12 +8,28 @@ import datetime
 import pytz
 import numpy as np
 import math
+from scipy.stats import norm
 from datetime import datetime, timedelta
 import warnings
+import asyncio
+import websocket
+import json
+import threading
+from collections import defaultdict, deque
 warnings.filterwarnings('ignore')
 
 # Page config
-st.set_page_config(page_title="Real Institutional Nifty Analyzer", page_icon="🏛️", layout="wide")
+st.set_page_config(page_title="Institutional Nifty Analyzer", page_icon="🏛️", layout="wide")
+
+# Enhanced session state management
+if 'market_depth_data' not in st.session_state:
+    st.session_state.market_depth_data = {}
+if 'volume_flow_data' not in st.session_state:
+    st.session_state.volume_flow_data = deque(maxlen=1000)
+if 'option_flow_tracker' not in st.session_state:
+    st.session_state.option_flow_tracker = {}
+if 'portfolio_greeks' not in st.session_state:
+    st.session_state.portfolio_greeks = {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0}
 
 # Function to check if it's market hours
 def is_market_hours():
@@ -28,11 +44,11 @@ def is_market_hours():
     
     return market_start <= now <= market_end
 
-# Auto-refresh during market hours
+# Auto-refresh with different intervals for different data
 if is_market_hours():
-    st_autorefresh(interval=20000, key="main_refresh")  # 20 seconds
+    st_autorefresh(interval=15000, key="main_refresh")  # 15 seconds for main data
 else:
-    st.info("Market is closed. Analysis in preview mode.")
+    st.info("🏛️ Market is closed. Institutional analysis in preview mode.")
 
 # Credentials
 DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
@@ -42,7 +58,7 @@ TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
 NIFTY_SCRIP = 13
 NIFTY_SEG = "IDX_I"
 
-class RealInstitutionalAPI:
+class InstitutionalDhanAPI:
     def __init__(self):
         self.headers = {
             'Accept': 'application/json',
@@ -50,40 +66,20 @@ class RealInstitutionalAPI:
             'access-token': DHAN_ACCESS_TOKEN,
             'client-id': DHAN_CLIENT_ID
         }
+        self.depth_cache = {}
+        self.volume_profile = defaultdict(list)
     
-    def get_market_depth(self, instruments):
-        """Get real market depth data"""
+    def get_market_quote_bulk(self, instruments):
+        """Get market depth for multiple instruments"""
         url = "https://api.dhan.co/v2/marketfeed/quote"
-        try:
-            response = requests.post(url, headers=self.headers, json=instruments)
-            return response.json() if response.status_code == 200 else None
-        except Exception as e:
-            st.error(f"Market depth error: {str(e)}")
-            return None
-    
-    def get_ltp_data(self):
-        """Get current price"""
-        url = "https://api.dhan.co/v2/marketfeed/ltp"
-        payload = {NIFTY_SEG: [NIFTY_SCRIP]}
+        payload = instruments
         try:
             response = requests.post(url, headers=self.headers, json=payload)
             return response.json() if response.status_code == 200 else None
-        except Exception as e:
-            st.error(f"LTP error: {str(e)}")
+        except:
             return None
     
-    def get_ohlc_data(self, instruments):
-        """Get OHLC data"""
-        url = "https://api.dhan.co/v2/marketfeed/ohlc"
-        try:
-            response = requests.post(url, headers=self.headers, json=instruments)
-            return response.json() if response.status_code == 200 else None
-        except Exception as e:
-            st.error(f"OHLC error: {str(e)}")
-            return None
-    
-    def get_intraday_data(self, interval="5", days_back=2):
-        """Get historical data"""
+    def get_intraday_data(self, interval="5", days_back=1):
         url = "https://api.dhan.co/v2/charts/intraday"
         ist = pytz.timezone('Asia/Kolkata')
         end_date = datetime.now(ist)
@@ -102,40 +98,42 @@ class RealInstitutionalAPI:
         try:
             response = requests.post(url, headers=self.headers, json=payload)
             return response.json() if response.status_code == 200 else None
-        except Exception as e:
-            st.error(f"Historical data error: {str(e)}")
+        except:
             return None
 
-def get_option_chain(expiry):
-    """Get real option chain data"""
+def get_option_chain_detailed(expiry):
+    """Enhanced option chain with full data"""
     url = "https://api.dhan.co/v2/optionchain"
     headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
     payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG, "Expiry": expiry}
     try:
         response = requests.post(url, headers=headers, json=payload)
         return response.json() if response.status_code == 200 else None
-    except Exception as e:
-        st.error(f"Option chain error: {str(e)}")
+    except:
         return None
 
 def get_expiry_list():
-    """Get expiry dates"""
     url = "https://api.dhan.co/v2/optionchain/expirylist"
     headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
     payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG}
     try:
         response = requests.post(url, headers=headers, json=payload)
         return response.json() if response.status_code == 200 else None
-    except Exception as e:
-        st.error(f"Expiry list error: {str(e)}")
+    except:
         return None
 
-def send_alert(message, priority="NORMAL"):
-    """Send Telegram alert"""
+def send_institutional_alert(message, priority="NORMAL"):
+    """Enhanced alert system for institutional signals"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     
-    priority_emojis = {"LOW": "📊", "NORMAL": "🏛️", "HIGH": "🚨", "CRITICAL": "🔴"}
+    priority_emojis = {
+        "LOW": "📊",
+        "NORMAL": "🏛️", 
+        "HIGH": "🚨",
+        "CRITICAL": "🔴"
+    }
+    
     formatted_message = f"{priority_emojis.get(priority, '📊')} INSTITUTIONAL ALERT - {priority}\n\n{message}"
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -146,7 +144,6 @@ def send_alert(message, priority="NORMAL"):
         pass
 
 def process_candle_data(data):
-    """Process historical data"""
     if not data or 'open' not in data:
         return pd.DataFrame()
     
@@ -163,84 +160,20 @@ def process_candle_data(data):
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
     return df
 
-def process_real_market_depth(depth_data):
-    """Process actual market depth data from API"""
-    if not depth_data or 'data' not in depth_data:
-        return None
-    
-    processed = {}
-    
-    for exchange, instruments in depth_data['data'].items():
-        for scrip_id, depth_info in instruments.items():
-            analysis = {
-                'last_price': depth_info.get('last_price', 0),
-                'volume': depth_info.get('volume', 0),
-                'buy_quantity': depth_info.get('buy_quantity', 0),
-                'sell_quantity': depth_info.get('sell_quantity', 0),
-                'average_price': depth_info.get('average_price', 0),
-                'net_change': depth_info.get('net_change', 0),
-                'last_quantity': depth_info.get('last_quantity', 0),
-                'ohlc': depth_info.get('ohlc', {}),
-                'depth_levels': []
-            }
-            
-            # Process actual depth levels from API
-            if 'depth' in depth_info:
-                buy_depth = depth_info['depth'].get('buy', [])
-                sell_depth = depth_info['depth'].get('sell', [])
-                
-                # Calculate real depth metrics
-                total_bid_qty = sum(level.get('quantity', 0) for level in buy_depth[:5] if level.get('price', 0) > 0)
-                total_ask_qty = sum(level.get('quantity', 0) for level in sell_depth[:5] if level.get('price', 0) > 0)
-                
-                analysis['total_bid_qty'] = total_bid_qty
-                analysis['total_ask_qty'] = total_ask_qty
-                analysis['depth_imbalance'] = (total_bid_qty - total_ask_qty) / (total_bid_qty + total_ask_qty) * 100 if (total_bid_qty + total_ask_qty) > 0 else 0
-                
-                # Best bid/ask
-                if buy_depth and buy_depth[0].get('price', 0) > 0:
-                    analysis['best_bid'] = buy_depth[0]['price']
-                    analysis['best_bid_qty'] = buy_depth[0]['quantity']
-                
-                if sell_depth and sell_depth[0].get('price', 0) > 0:
-                    analysis['best_ask'] = sell_depth[0]['price']
-                    analysis['best_ask_qty'] = sell_depth[0]['quantity']
-                
-                # Bid-ask spread
-                if 'best_bid' in analysis and 'best_ask' in analysis:
-                    analysis['bid_ask_spread'] = analysis['best_ask'] - analysis['best_bid']
-                    analysis['bid_ask_spread_pct'] = (analysis['bid_ask_spread'] / analysis['best_ask']) * 100
-                
-                # Store actual depth levels
-                for i in range(min(5, len(buy_depth), len(sell_depth))):
-                    if buy_depth[i].get('price', 0) > 0 and sell_depth[i].get('price', 0) > 0:
-                        analysis['depth_levels'].append({
-                            'level': i + 1,
-                            'bid_price': buy_depth[i].get('price', 0),
-                            'bid_qty': buy_depth[i].get('quantity', 0),
-                            'bid_orders': buy_depth[i].get('orders', 0),
-                            'ask_price': sell_depth[i].get('price', 0),
-                            'ask_qty': sell_depth[i].get('quantity', 0),
-                            'ask_orders': sell_depth[i].get('orders', 0)
-                        })
-            
-            processed[f"{exchange}_{scrip_id}"] = analysis
-    
-    return processed
-
-def calculate_real_technical_indicators(df):
-    """Calculate technical indicators using actual data"""
-    if df.empty or len(df) < 20:
+# Advanced Technical Indicators
+def calculate_institutional_indicators(df):
+    """Calculate institutional-grade technical indicators"""
+    if df.empty:
         return df
     
-    # Real VWAP calculation
+    # Enhanced VWAP with multiple timeframes
     typical_price = (df['high'] + df['low'] + df['close']) / 3
     cumulative_pv = (typical_price * df['volume']).cumsum()
     cumulative_volume = df['volume'].cumsum()
     
     df['vwap'] = cumulative_pv / cumulative_volume
     
-    # VWAP standard deviation bands
+    # VWAP bands (institutional levels)
     price_variance = ((typical_price - df['vwap']) ** 2 * df['volume']).cumsum() / cumulative_volume
     std_dev = np.sqrt(price_variance)
     
@@ -248,505 +181,699 @@ def calculate_real_technical_indicators(df):
     df['vwap_lower_1'] = df['vwap'] - std_dev
     df['vwap_upper_2'] = df['vwap'] + 2 * std_dev
     df['vwap_lower_2'] = df['vwap'] - 2 * std_dev
+    df['vwap_upper_3'] = df['vwap'] + 3 * std_dev  # Extreme levels
+    df['vwap_lower_3'] = df['vwap'] - 3 * std_dev
     
-    # RSI calculation
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+    # Volume-weighted RSI
+    df['rsi'] = calculate_rsi(df)
+    df['volume_rsi'] = calculate_volume_weighted_rsi(df)
     
-    # ATR calculation
+    # True Range and ATR variants
     df['prev_close'] = df['close'].shift(1)
     df['tr1'] = df['high'] - df['low']
     df['tr2'] = abs(df['high'] - df['prev_close'])
     df['tr3'] = abs(df['low'] - df['prev_close'])
     df['true_range'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-    df['atr'] = df['true_range'].rolling(window=14).mean()
+    
+    # Multiple ATR periods for different strategies
+    df['atr_14'] = df['true_range'].rolling(window=14).mean()
+    df['atr_21'] = df['true_range'].rolling(window=21).mean()
+    df['atr_50'] = df['true_range'].rolling(window=50).mean()
+    
+    # Volume Profile Analysis
+    df['volume_profile'] = calculate_volume_profile(df)
+    
+    # Price Action Strength
+    df['price_momentum'] = calculate_price_momentum(df)
     
     return df
 
-def analyze_real_options(expiry, current_price):
-    """Analyze options using only real API data"""
-    option_data = get_option_chain(expiry)
+def calculate_rsi(data, period=14):
+    """Enhanced RSI calculation"""
+    delta = data['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def calculate_volume_weighted_rsi(df, period=14):
+    """Volume-weighted RSI for institutional flow analysis"""
+    if len(df) < period + 1:
+        return pd.Series([np.nan] * len(df), index=df.index)
+    
+    price_change = df['close'].diff()
+    volume_weighted_change = price_change * df['volume']
+    
+    gains = volume_weighted_change.where(volume_weighted_change > 0, 0)
+    losses = -volume_weighted_change.where(volume_weighted_change < 0, 0)
+    
+    avg_gains = gains.rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
+    avg_losses = losses.rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
+    
+    rs = avg_gains / avg_losses
+    volume_rsi = 100 - (100 / (1 + rs))
+    
+    return volume_rsi
+
+def calculate_volume_profile(df, bins=20):
+    """Calculate volume profile for institutional accumulation/distribution"""
+    if df.empty:
+        return pd.Series([np.nan] * len(df), index=df.index)
+    
+    price_range = df['high'].max() - df['low'].min()
+    bin_size = price_range / bins
+    
+    volume_at_price = []
+    for _, row in df.iterrows():
+        price_bin = int((row['close'] - df['low'].min()) / bin_size)
+        price_bin = min(price_bin, bins - 1)
+        volume_at_price.append(price_bin)
+    
+    return pd.Series(volume_at_price, index=df.index)
+
+def calculate_price_momentum(df, period=10):
+    """Calculate price momentum for trend strength"""
+    if len(df) < period:
+        return pd.Series([0] * len(df), index=df.index)
+    
+    momentum = ((df['close'] / df['close'].shift(period)) - 1) * 100
+    return momentum
+
+# Advanced Options Analysis
+def analyze_institutional_options(expiry, spot_price):
+    """Comprehensive institutional options analysis"""
+    option_data = get_option_chain_detailed(expiry)
     if not option_data or 'data' not in option_data:
-        return None, None, None
+        return None, None, None, None
     
     data = option_data['data']
     underlying = data['last_price']
     oc_data = data['oc']
     
-    # Calculate real days to expiry
+    # Calculate days to expiry
     expiry_date = datetime.strptime(expiry, "%Y-%m-%d")
     current_date = datetime.now()
     days_to_expiry = max((expiry_date - current_date).days, 1)
+    time_to_expiry = days_to_expiry / 365.0
     
-    # Process real option data - handle strikes more carefully
-    options_analysis = []
+    calls, puts = [], []
+    for strike, strike_data in oc_data.items():
+        if 'ce' in strike_data:
+            ce_data = strike_data['ce'].copy()
+            ce_data['strikePrice'] = float(strike)
+            calls.append(ce_data)
+        if 'pe' in strike_data:
+            pe_data = strike_data['pe'].copy()
+            pe_data['strikePrice'] = float(strike)
+            puts.append(pe_data)
+    
+    df_ce = pd.DataFrame(calls)
+    df_pe = pd.DataFrame(puts)
+    df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
+    
+    # Filter for institutional analysis (ATM ±5 strikes)
+    atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
+    df_filtered = df[abs(df['strikePrice'] - atm_strike) <= 250]  # ±5 strikes
+    
+    # Enhanced institutional metrics
+    institutional_metrics = []
     total_ce_volume = total_pe_volume = 0
     total_ce_oi = total_pe_oi = 0
-    total_ce_oi_change = total_pe_oi_change = 0
+    gamma_exposure = 0
+    vega_exposure = 0
     
-    # Get available strikes from the actual API response
-    available_strikes = []
-    for strike_key, strike_data in oc_data.items():
-        try:
-            strike_value = float(strike_key)
-            available_strikes.append(strike_value)
-        except (ValueError, TypeError):
-            continue
+    # Volatility surface data
+    volatility_surface = []
     
-    if not available_strikes:
-        return None, None, None
-    
-    # Find ATM strike from available strikes
-    atm_strike = min(available_strikes, key=lambda x: abs(x - underlying))
-    
-    # Filter ATM ±3 strikes for focused analysis
-    relevant_strikes = [s for s in available_strikes if abs(s - atm_strike) <= 150]
-    
-    for strike in relevant_strikes:
-        # Use the exact string key from the API response
-        strike_key = None
-        for key in oc_data.keys():
-            try:
-                if abs(float(key) - strike) < 0.1:  # Handle floating point precision
-                    strike_key = key
-                    break
-            except (ValueError, TypeError):
-                continue
+    for _, row in df_filtered.iterrows():
+        strike = row['strikePrice']
         
-        if not strike_key:
-            continue
-            
-        strike_data = oc_data[strike_key]
+        # Get all available data
+        ce_last_price = row.get('last_price_CE', 0)
+        pe_last_price = row.get('last_price_PE', 0)
+        ce_volume = row.get('volume_CE', 0)
+        pe_volume = row.get('volume_PE', 0)
+        ce_oi = row.get('oi_CE', 0)
+        pe_oi = row.get('oi_PE', 0)
+        ce_prev_oi = row.get('previous_oi_CE', 0)
+        pe_prev_oi = row.get('previous_oi_PE', 0)
         
-        # Check if both CE and PE data exist
-        if 'ce' not in strike_data or 'pe' not in strike_data:
-            continue
-            
-        ce_data = strike_data['ce']
-        pe_data = strike_data['pe']
+        # Greeks from API
+        ce_greeks = row.get('greeks_CE', {})
+        pe_greeks = row.get('greeks_PE', {})
         
-        # Extract real data from API with safe defaults
-        ce_ltp = ce_data.get('last_price', 0)
-        pe_ltp = pe_data.get('last_price', 0)
-        ce_volume = ce_data.get('volume', 0)
-        pe_volume = pe_data.get('volume', 0)
-        ce_oi = ce_data.get('oi', 0)
-        pe_oi = pe_data.get('oi', 0)
-        ce_prev_oi = ce_data.get('previous_oi', 0)
-        pe_prev_oi = pe_data.get('previous_oi', 0)
+        ce_delta = ce_greeks.get('delta', 0)
+        pe_delta = pe_greeks.get('delta', 0)
+        ce_gamma = ce_greeks.get('gamma', 0)
+        pe_gamma = pe_greeks.get('gamma', 0)
+        ce_theta = ce_greeks.get('theta', 0)
+        pe_theta = pe_greeks.get('theta', 0)
+        ce_vega = ce_greeks.get('vega', 0)
+        pe_vega = pe_greeks.get('vega', 0)
         
-        # Real OI changes
-        ce_oi_change = ce_oi - ce_prev_oi
-        pe_oi_change = pe_oi - pe_prev_oi
+        # IV from API
+        ce_iv = row.get('implied_volatility_CE', 0) * 100 if row.get('implied_volatility_CE') else 0
+        pe_iv = row.get('implied_volatility_PE', 0) * 100 if row.get('implied_volatility_PE') else 0
         
-        # Real Greeks from API with safe handling
-        ce_greeks = ce_data.get('greeks', {}) or {}
-        pe_greeks = pe_data.get('greeks', {}) or {}
+        # Advanced order flow analysis
+        ce_bid_qty = row.get('top_bid_quantity_CE', 0)
+        ce_ask_qty = row.get('top_ask_quantity_CE', 0)
+        pe_bid_qty = row.get('top_bid_quantity_PE', 0)
+        pe_ask_qty = row.get('top_ask_quantity_PE', 0)
         
-        ce_delta = ce_greeks.get('delta', 0) if ce_greeks else 0
-        pe_delta = pe_greeks.get('delta', 0) if pe_greeks else 0
-        ce_gamma = ce_greeks.get('gamma', 0) if ce_greeks else 0
-        pe_gamma = pe_greeks.get('gamma', 0) if pe_greeks else 0
-        ce_vega = ce_greeks.get('vega', 0) if ce_greeks else 0
-        pe_vega = pe_greeks.get('vega', 0) if pe_greeks else 0
+        # Institutional flow classification
+        ce_aggressive_buy = ce_ask_qty * 0.6 if ce_ask_qty > 0 else ce_volume * 0.3
+        ce_aggressive_sell = ce_bid_qty * 0.6 if ce_bid_qty > 0 else ce_volume * 0.3
+        pe_aggressive_buy = pe_ask_qty * 0.6 if pe_ask_qty > 0 else pe_volume * 0.3
+        pe_aggressive_sell = pe_bid_qty * 0.6 if pe_bid_qty > 0 else pe_volume * 0.3
         
-        # Real IV from API with safe handling
-        ce_iv = ce_data.get('implied_volatility', 0)
-        pe_iv = pe_data.get('implied_volatility', 0)
-        ce_iv = (ce_iv * 100) if ce_iv else 0
-        pe_iv = (pe_iv * 100) if pe_iv else 0
+        # Volume spread delta
+        ce_volume_delta = ce_aggressive_buy - ce_aggressive_sell
+        pe_volume_delta = pe_aggressive_buy - pe_aggressive_sell
         
-        # Real bid-ask data
-        ce_bid_qty = ce_data.get('top_bid_quantity', 0)
-        ce_ask_qty = ce_data.get('top_ask_quantity', 0)
-        pe_bid_qty = pe_data.get('top_bid_quantity', 0)
-        pe_ask_qty = pe_data.get('top_ask_quantity', 0)
+        # Gamma exposure calculation (institutional focus)
+        ce_gex = ce_oi * ce_gamma * underlying * underlying * 0.01
+        pe_gex = pe_oi * pe_gamma * underlying * underlying * 0.01 * (-1)
+        net_gex = ce_gex + pe_gex
         
-        # Calculate real metrics
-        pcr_oi = pe_oi / ce_oi if ce_oi > 0 else 0
-        pcr_volume = pe_volume / ce_volume if ce_volume > 0 else 0
-        
-        # Real gamma exposure calculation
-        if underlying > 0:
-            ce_gex = ce_oi * ce_gamma * underlying * underlying * 0.01
-            pe_gex = pe_oi * pe_gamma * underlying * underlying * 0.01 * (-1)  # PE GEX is negative
-            net_gex = ce_gex + pe_gex
-        else:
-            net_gex = 0
+        # Vega exposure
+        ce_vex = ce_oi * ce_vega
+        pe_vex = pe_oi * pe_vega
+        net_vex = ce_vex + pe_vex
         
         # Accumulate totals
         total_ce_volume += ce_volume
         total_pe_volume += pe_volume
         total_ce_oi += ce_oi
         total_pe_oi += pe_oi
-        total_ce_oi_change += ce_oi_change
-        total_pe_oi_change += pe_oi_change
+        gamma_exposure += abs(net_gex)
+        vega_exposure += abs(net_vex)
         
-        # Determine levels based on real OI
-        if pe_oi > ce_oi * 1.5:
-            level = "Strong Support"
-        elif pe_oi > ce_oi * 1.2:
-            level = "Support"
-        elif ce_oi > pe_oi * 1.5:
-            level = "Strong Resistance"
-        elif ce_oi > pe_oi * 1.2:
-            level = "Resistance"
-        else:
-            level = "Neutral"
+        # Volatility surface point
+        volatility_surface.append({
+            'strike': strike,
+            'moneyness': strike / underlying,
+            'ce_iv': ce_iv,
+            'pe_iv': pe_iv,
+            'days_to_expiry': days_to_expiry
+        })
         
-        options_analysis.append({
+        # Institutional bias analysis
+        volume_bias = "Bullish" if pe_volume > ce_volume * 1.1 else "Bearish" if ce_volume > pe_volume * 1.1 else "Neutral"
+        oi_bias = "Bullish" if (pe_oi - pe_prev_oi) > (ce_oi - ce_prev_oi) else "Bearish" if (ce_oi - ce_prev_oi) > (pe_oi - pe_prev_oi) else "Neutral"
+        flow_bias = "Bullish" if pe_volume_delta > ce_volume_delta else "Bearish" if ce_volume_delta > pe_volume_delta else "Neutral"
+        
+        # Support/Resistance levels
+        level = "Strong Support" if pe_oi > ce_oi * 1.5 else "Support" if pe_oi > ce_oi * 1.2 else "Strong Resistance" if ce_oi > pe_oi * 1.5 else "Resistance" if ce_oi > pe_oi * 1.2 else "Neutral"
+        
+        institutional_metrics.append({
             "Strike": strike,
             "Zone": 'ATM' if strike == atm_strike else 'ITM' if strike < underlying else 'OTM',
             "Level": level,
-            "CE_LTP": ce_ltp,
-            "PE_LTP": pe_ltp,
-            "CE_Volume": ce_volume,
-            "PE_Volume": pe_volume,
-            "CE_OI": ce_oi,
-            "PE_OI": pe_oi,
-            "CE_OI_Change": ce_oi_change,
-            "PE_OI_Change": pe_oi_change,
-            "PCR_OI": round(pcr_oi, 3),
-            "PCR_Volume": round(pcr_volume, 3),
+            "Volume_Bias": volume_bias,
+            "OI_Bias": oi_bias,
+            "Flow_Bias": flow_bias,
+            "PCR": round(pe_oi / ce_oi if ce_oi > 0 else 0, 3),
             "CE_IV": round(ce_iv, 1),
             "PE_IV": round(pe_iv, 1),
             "IV_Skew": round(pe_iv - ce_iv, 1),
-            "CE_Delta": round(ce_delta, 3),
-            "PE_Delta": round(pe_delta, 3),
-            "CE_Gamma": round(ce_gamma, 4),
-            "PE_Gamma": round(pe_gamma, 4),
-            "Net_GEX": round(net_gex / 1000000, 2) if net_gex != 0 else 0,  # In millions
-            "CE_Bid_Qty": ce_bid_qty,
-            "CE_Ask_Qty": ce_ask_qty,
-            "PE_Bid_Qty": pe_bid_qty,
-            "PE_Ask_Qty": pe_ask_qty
+            "CE_Volume_Delta": round(ce_volume_delta, 0),
+            "PE_Volume_Delta": round(pe_volume_delta, 0),
+            "Net_GEX": round(net_gex / 1000000, 2),  # In millions
+            "Net_VEX": round(net_vex / 1000, 2),     # In thousands
+            "CE_Delta_Exposure": round(ce_oi * ce_delta / 1000, 2),  # In thousands
+            "PE_Delta_Exposure": round(pe_oi * abs(pe_delta) / 1000, 2),
+            "Total_Volume": ce_volume + pe_volume,
+            "OI_Change": (ce_oi - ce_prev_oi) + (pe_oi - pe_prev_oi)
         })
     
-    if not options_analysis:
-        return None, None, None
-    
-    # Real summary metrics
-    summary = {
-        'total_ce_volume': total_ce_volume,
-        'total_pe_volume': total_pe_volume,
-        'total_ce_oi': total_ce_oi,
-        'total_pe_oi': total_pe_oi,
-        'pcr_volume': total_pe_volume / total_ce_volume if total_ce_volume > 0 else 0,
-        'pcr_oi': total_pe_oi / total_ce_oi if total_ce_oi > 0 else 0,
-        'net_oi_change': total_ce_oi_change + total_pe_oi_change,
-        'days_to_expiry': days_to_expiry
+    # Summary analytics
+    summary_analytics = {
+        'total_volume_ratio': total_pe_volume / total_ce_volume if total_ce_volume > 0 else 0,
+        'total_oi_ratio': total_pe_oi / total_ce_oi if total_ce_oi > 0 else 0,
+        'net_gamma_exposure': gamma_exposure / 1000000,  # In millions
+        'net_vega_exposure': vega_exposure / 1000,       # In thousands
+        'volatility_surface': volatility_surface,
+        'days_to_expiry': days_to_expiry,
+        'institutional_sentiment': determine_institutional_sentiment(institutional_metrics)
     }
     
-    return underlying, pd.DataFrame(options_analysis), summary
+    # Risk metrics
+    risk_metrics = calculate_portfolio_risk_metrics(institutional_metrics, underlying)
+    
+    return underlying, pd.DataFrame(institutional_metrics), summary_analytics, risk_metrics
 
-def create_real_market_depth_chart(depth_data):
-    """Create chart using real market depth data"""
-    if not depth_data:
-        return go.Figure()
+def determine_institutional_sentiment(metrics_data):
+    """Determine overall institutional sentiment"""
+    bullish_signals = bearish_signals = neutral_signals = 0
     
-    first_key = list(depth_data.keys())[0]
-    depth_info = depth_data[first_key]
-    
-    fig = make_subplots(
-        rows=2, cols=1,
-        subplot_titles=('Real Market Depth - Bid/Ask Levels', 'Depth Metrics'),
-        vertical_spacing=0.15,
-        row_heights=[0.7, 0.3]
-    )
-    
-    # Plot real depth levels
-    if depth_info['depth_levels']:
-        levels = depth_info['depth_levels']
+    for metric in metrics_data:
+        volume_bias = metric.get('Volume_Bias', 'Neutral')
+        oi_bias = metric.get('OI_Bias', 'Neutral')
+        flow_bias = metric.get('Flow_Bias', 'Neutral')
         
-        bid_prices = [level['bid_price'] for level in levels]
-        bid_qtys = [level['bid_qty'] for level in levels]
-        ask_prices = [level['ask_price'] for level in levels]
-        ask_qtys = [level['ask_qty'] for level in levels]
-        
-        # Bid side (green)
-        fig.add_trace(go.Bar(
-            x=bid_qtys,
-            y=bid_prices,
-            orientation='h',
-            name='Bids',
-            marker_color='green',
-            opacity=0.7,
-            text=[f"₹{p:.1f} ({q:,})" for p, q in zip(bid_prices, bid_qtys)],
-            textposition='inside'
-        ), row=1, col=1)
-        
-        # Ask side (red, negative for left side)
-        fig.add_trace(go.Bar(
-            x=[-qty for qty in ask_qtys],
-            y=ask_prices,
-            orientation='h',
-            name='Asks',
-            marker_color='red',
-            opacity=0.7,
-            text=[f"₹{p:.1f} ({q:,})" for p, q in zip(ask_prices, ask_qtys)],
-            textposition='inside'
-        ), row=1, col=1)
+        biases = [volume_bias, oi_bias, flow_bias]
+        bullish_signals += biases.count('Bullish')
+        bearish_signals += biases.count('Bearish')
+        neutral_signals += biases.count('Neutral')
     
-    # Real metrics table
-    metrics = {
-        'Last Price': f"₹{depth_info.get('last_price', 0):.2f}",
-        'Volume': f"{depth_info.get('volume', 0):,}",
-        'Depth Imbalance': f"{depth_info.get('depth_imbalance', 0):.1f}%",
-        'Bid-Ask Spread': f"₹{depth_info.get('bid_ask_spread', 0):.2f}",
-        'Best Bid': f"₹{depth_info.get('best_bid', 0):.2f} ({depth_info.get('best_bid_qty', 0):,})",
-        'Best Ask': f"₹{depth_info.get('best_ask', 0):.2f} ({depth_info.get('best_ask_qty', 0):,})"
+    if bullish_signals > bearish_signals * 1.2:
+        return "INSTITUTIONAL BULLISH"
+    elif bearish_signals > bullish_signals * 1.2:
+        return "INSTITUTIONAL BEARISH"
+    else:
+        return "INSTITUTIONAL NEUTRAL"
+
+def calculate_portfolio_risk_metrics(metrics_data, spot_price):
+    """Calculate portfolio-level risk metrics"""
+    total_delta = sum(m.get('CE_Delta_Exposure', 0) - m.get('PE_Delta_Exposure', 0) for m in metrics_data)
+    total_gamma = sum(abs(m.get('Net_GEX', 0)) for m in metrics_data)
+    total_vega = sum(abs(m.get('Net_VEX', 0)) for m in metrics_data)
+    
+    # Risk scenarios
+    price_scenarios = [0.95, 0.97, 0.99, 1.00, 1.01, 1.03, 1.05]  # ±5% range
+    scenario_pnl = []
+    
+    for scenario in price_scenarios:
+        new_price = spot_price * scenario
+        price_change = new_price - spot_price
+        # Simplified PnL calculation
+        pnl = total_delta * price_change + 0.5 * total_gamma * (price_change ** 2)
+        scenario_pnl.append(pnl)
+    
+    return {
+        'portfolio_delta': total_delta,
+        'portfolio_gamma': total_gamma,
+        'portfolio_vega': total_vega,
+        'max_loss_5pct': min(scenario_pnl),
+        'max_gain_5pct': max(scenario_pnl),
+        'scenarios': list(zip(price_scenarios, scenario_pnl))
     }
-    
-    # Add metrics as annotations
-    y_pos = 0.8
-    for i, (metric, value) in enumerate(metrics.items()):
-        fig.add_annotation(
-            x=0.1, y=y_pos - i * 0.12,
-            text=f"<b>{metric}:</b> {value}",
-            xref="x domain", yref="y domain",
-            showarrow=False,
-            font=dict(size=11),
-            row=2, col=1,
-            xanchor='left'
-        )
-    
-    fig.update_layout(
-        title='Real-time Market Depth Analysis',
-        template='plotly_dark',
-        height=700,
-        showlegend=True
-    )
-    
-    return fig
 
-def create_real_price_chart(df, title):
-    """Create price chart with real indicators"""
+def create_institutional_dashboard_chart(df, title):
+    """Create comprehensive institutional dashboard"""
     if df.empty:
         return go.Figure()
     
-    df = calculate_real_technical_indicators(df)
+    # Calculate all institutional indicators
+    df = calculate_institutional_indicators(df)
     
+    # Create multi-panel chart
     fig = make_subplots(
-        rows=3, cols=1,
+        rows=5, cols=2,
         shared_xaxes=True,
-        vertical_spacing=0.05,
-        row_heights=[0.6, 0.2, 0.2],
-        subplot_titles=('Price with VWAP Bands', 'Volume', 'RSI')
+        vertical_spacing=0.02,
+        row_heights=[0.35, 0.15, 0.15, 0.15, 0.2],
+        column_widths=[0.7, 0.3],
+        subplot_titles=[
+            'Price Action with Institutional Levels', 'Volume Profile',
+            'Volume Analysis', 'RSI Comparison',
+            'ATR Multi-Timeframe', 'Price Momentum',
+            'Order Flow Strength', 'VWAP Deviation'
+        ],
+        specs=[
+            [{"secondary_y": False}, {"secondary_y": False}],
+            [{"secondary_y": False}, {"secondary_y": False}],
+            [{"secondary_y": False}, {"secondary_y": False}],
+            [{"secondary_y": False}, {"secondary_y": False}],
+            [{"colspan": 2}, None]
+        ]
     )
     
-    # Price chart
+    # Main price chart with institutional levels
     fig.add_trace(go.Candlestick(
         x=df['datetime'], open=df['open'], high=df['high'],
         low=df['low'], close=df['close'], name='Nifty',
         increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
     ), row=1, col=1)
     
-    # VWAP and bands
+    # VWAP and institutional bands
     fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap'], name='VWAP',
                             line=dict(color='orange', width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap_upper_2'], name='VWAP +2σ',
                             line=dict(color='red', width=1, dash='dash')), row=1, col=1)
     fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap_lower_2'], name='VWAP -2σ',
                             line=dict(color='green', width=1, dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap_upper_3'], name='VWAP +3σ',
+                            line=dict(color='darkred', width=1, dash='dot'), opacity=0.7), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap_lower_3'], name='VWAP -3σ',
+                            line=dict(color='darkgreen', width=1, dash='dot'), opacity=0.7), row=1, col=1)
     
-    # Volume
+    # Volume profile (simplified histogram)
+    if 'volume_profile' in df.columns:
+        fig.add_trace(go.Histogram(y=df['close'], nbinsy=20, name='Volume Profile',
+                                  marker_color='rgba(55, 128, 191, 0.7)'), row=1, col=2)
+    
+    # Volume analysis
     volume_colors = ['#26a69a' if close >= open else '#ef5350'
                     for close, open in zip(df['close'], df['open'])]
     fig.add_trace(go.Bar(x=df['datetime'], y=df['volume'], name='Volume',
                         marker_color=volume_colors, opacity=0.7), row=2, col=1)
     
-    # RSI
-    fig.add_trace(go.Scatter(x=df['datetime'], y=df['rsi'], name='RSI',
-                            line=dict(color='purple', width=2)), row=3, col=1)
+    # Average volume line
+    avg_volume = df['volume'].rolling(20).mean()
+    fig.add_trace(go.Scatter(x=df['datetime'], y=avg_volume, name='Avg Volume',
+                            line=dict(color='purple', width=1)), row=2, col=1)
+    
+    # Volume strength indicator
+    volume_strength = df['volume'] / avg_volume
+    fig.add_trace(go.Scatter(x=df['datetime'], y=volume_strength, name='Volume Strength',
+                            line=dict(color='blue', width=2)), row=2, col=2)
+    fig.add_hline(y=1.5, line_dash="dash", line_color="red", row=2, col=2)
+    fig.add_hline(y=0.5, line_dash="dash", line_color="green", row=2, col=2)
+    
+    # RSI comparison
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['rsi'], name='Traditional RSI',
+                            line=dict(color='orange', width=2)), row=3, col=1)
+    if 'volume_rsi' in df.columns:
+        fig.add_trace(go.Scatter(x=df['datetime'], y=df['volume_rsi'], name='Volume RSI',
+                                line=dict(color='red', width=2)), row=3, col=1)
+    
+    # RSI levels
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    fig.add_hline(y=50, line_dash="dot", line_color="gray", row=3, col=1)
     
-    fig.update_layout(title=title, template='plotly_dark', height=800, showlegend=True)
+    # RSI divergence
+    rsi_divergence = df['rsi'] - df.get('volume_rsi', df['rsi'])
+    fig.add_trace(go.Scatter(x=df['datetime'], y=rsi_divergence, name='RSI Divergence',
+                            line=dict(color='purple', width=1), fill='tonexty'), row=3, col=2)
+    
+    # Multi-timeframe ATR
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['atr_14'], name='ATR 14',
+                            line=dict(color='blue', width=2)), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['atr_21'], name='ATR 21',
+                            line=dict(color='green', width=2)), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['atr_50'], name='ATR 50',
+                            line=dict(color='red', width=1)), row=4, col=1)
+    
+    # Price momentum
+    if 'price_momentum' in df.columns:
+        fig.add_trace(go.Scatter(x=df['datetime'], y=df['price_momentum'], name='Price Momentum',
+                                line=dict(color='purple', width=2), fill='tonexty'), row=4, col=2)
+        fig.add_hline(y=0, line_dash="solid", line_color="gray", row=4, col=2)
+    
+    # Order flow strength (bottom panel)
+    current_price = df['close'].iloc[-1] if not df.empty else 0
+    vwap_current = df['vwap'].iloc[-1] if 'vwap' in df.columns else 0
+    vwap_deviation = ((current_price - vwap_current) / vwap_current * 100) if vwap_current > 0 else 0
+    
+    # Create order flow strength indicator
+    order_flow_strength = calculate_order_flow_strength(df)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=order_flow_strength, name='Order Flow Strength',
+                            line=dict(color='gold', width=3), fill='tonexty'), row=5, col=1)
+    
+    fig.add_hline(y=0, line_dash="solid", line_color="white", row=5, col=1)
+    fig.add_hline(y=50, line_dash="dash", line_color="red", row=5, col=1)
+    fig.add_hline(y=-50, line_dash="dash", line_color="green", row=5, col=1)
+    
+    fig.update_layout(
+        title=title,
+        template='plotly_dark',
+        height=1200,
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    # Update y-axis ranges
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=3, col=1)
+    fig.update_yaxes(title_text="Order Flow", range=[-100, 100], row=5, col=1)
     
     return fig
 
-def create_real_options_chart(options_data):
-    """Create options analysis using real data"""
+def calculate_order_flow_strength(df, window=20):
+    """Calculate institutional order flow strength"""
+    if len(df) < window:
+        return pd.Series([0] * len(df), index=df.index)
+    
+    # Volume-weighted price change
+    price_change = df['close'].pct_change()
+    volume_norm = df['volume'] / df['volume'].rolling(window).mean()
+    
+    # Order flow strength combines price momentum with volume
+    flow_strength = (price_change * volume_norm * 100).rolling(window).mean()
+    
+    return flow_strength.fillna(0)
+
+def create_volatility_surface_chart(volatility_data):
+    """Create 3D volatility surface visualization"""
+    if not volatility_data:
+        return go.Figure()
+    
+    df_vol = pd.DataFrame(volatility_data)
+    
+    fig = go.Figure(data=[go.Surface(
+        z=df_vol.pivot_table(values='ce_iv', index='days_to_expiry', columns='moneyness').values,
+        x=df_vol['moneyness'].unique(),
+        y=df_vol['days_to_expiry'].unique(),
+        colorscale='RdYlBu_r',
+        name='Call IV Surface'
+    )])
+    
+    fig.update_layout(
+        title='Implied Volatility Surface - Calls',
+        scene=dict(
+            xaxis_title='Moneyness (Strike/Spot)',
+            yaxis_title='Days to Expiry',
+            zaxis_title='Implied Volatility (%)'
+        ),
+        template='plotly_dark',
+        height=500
+    )
+    
+    return fig
+
+def create_gamma_exposure_chart(options_data):
+    """Create gamma exposure visualization"""
+    if options_data is None or options_data.empty:
+        return go.Figure()
+    
+    fig = go.Figure()
+    
+    # Positive and negative GEX
+    pos_gex = options_data[options_data['Net_GEX'] > 0]
+    neg_gex = options_data[options_data['Net_GEX'] < 0]
+    
+    fig.add_trace(go.Bar(
+        x=pos_gex['Strike'],
+        y=pos_gex['Net_GEX'],
+        name='Positive GEX',
+        marker_color='green',
+        opacity=0.7
+    ))
+    
+    fig.add_trace(go.Bar(
+        x=neg_gex['Strike'],
+        y=neg_gex['Net_GEX'],
+        name='Negative GEX',
+        marker_color='red',
+        opacity=0.7
+    ))
+    
+    fig.update_layout(
+        title='Gamma Exposure by Strike',
+        xaxis_title='Strike Price',
+        yaxis_title='Net Gamma Exposure (₹ Millions)',
+        template='plotly_dark',
+        height=400
+    )
+    
+    return fig
+
+def create_options_flow_chart(options_data):
+    """Create options flow analysis chart"""
     if options_data is None or options_data.empty:
         return go.Figure()
     
     fig = make_subplots(
         rows=2, cols=2,
-        subplot_titles=('Open Interest Analysis', 'Volume Analysis', 'Greeks Analysis', 'IV Analysis')
+        subplot_titles=('Volume Delta Flow', 'OI vs Volume', 'IV Skew', 'PCR Analysis'),
+        specs=[[{"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"secondary_y": False}]]
     )
     
-    # OI Analysis
-    fig.add_trace(go.Bar(x=options_data['Strike'], y=options_data['CE_OI'], name='CE OI',
-                        marker_color='blue', opacity=0.7), row=1, col=1)
-    fig.add_trace(go.Bar(x=options_data['Strike'], y=options_data['PE_OI'], name='PE OI',
-                        marker_color='red', opacity=0.7), row=1, col=1)
+    # Volume Delta Flow
+    fig.add_trace(go.Bar(
+        x=options_data['Strike'],
+        y=options_data['CE_Volume_Delta'],
+        name='CE Volume Delta',
+        marker_color='blue',
+        opacity=0.7
+    ), row=1, col=1)
     
-    # Volume Analysis
-    fig.add_trace(go.Bar(x=options_data['Strike'], y=options_data['CE_Volume'], name='CE Vol',
-                        marker_color='lightblue', opacity=0.7), row=1, col=2)
-    fig.add_trace(go.Bar(x=options_data['Strike'], y=options_data['PE_Volume'], name='PE Vol',
-                        marker_color='lightcoral', opacity=0.7), row=1, col=2)
+    fig.add_trace(go.Bar(
+        x=options_data['Strike'],
+        y=options_data['PE_Volume_Delta'],
+        name='PE Volume Delta',
+        marker_color='red',
+        opacity=0.7
+    ), row=1, col=1)
     
-    # Gamma Analysis
-    fig.add_trace(go.Scatter(x=options_data['Strike'], y=options_data['CE_Gamma'], name='CE Gamma',
-                            line=dict(color='blue', width=2)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=options_data['Strike'], y=options_data['PE_Gamma'], name='PE Gamma',
-                            line=dict(color='red', width=2)), row=2, col=1)
+    # OI vs Volume scatter
+    fig.add_trace(go.Scatter(
+        x=options_data['Total_Volume'],
+        y=options_data['OI_Change'],
+        mode='markers+text',
+        text=options_data['Strike'],
+        name='OI Change vs Volume',
+        marker=dict(size=8, color=options_data['PCR'], colorscale='RdYlGn', showscale=True)
+    ), row=1, col=2)
     
-    # IV Analysis
-    fig.add_trace(go.Scatter(x=options_data['Strike'], y=options_data['CE_IV'], name='CE IV',
-                            line=dict(color='darkblue', width=2)), row=2, col=2)
-    fig.add_trace(go.Scatter(x=options_data['Strike'], y=options_data['PE_IV'], name='PE IV',
-                            line=dict(color='darkred', width=2)), row=2, col=2)
+    # IV Skew
+    fig.add_trace(go.Scatter(
+        x=options_data['Strike'],
+        y=options_data['CE_IV'],
+        name='Call IV',
+        line=dict(color='blue', width=2)
+    ), row=2, col=1)
     
-    fig.update_layout(title='Real Options Analysis', template='plotly_dark', height=600, showlegend=True)
+    fig.add_trace(go.Scatter(
+        x=options_data['Strike'],
+        y=options_data['PE_IV'],
+        name='Put IV',
+        line=dict(color='red', width=2)
+    ), row=2, col=1)
+    
+    # PCR Analysis
+    fig.add_trace(go.Bar(
+        x=options_data['Strike'],
+        y=options_data['PCR'],
+        name='PCR',
+        marker_color='purple',
+        opacity=0.7
+    ), row=2, col=2)
+    
+    fig.add_hline(y=1, line_dash="dash", line_color="white", row=2, col=2)
+    
+    fig.update_layout(
+        title='Institutional Options Flow Analysis',
+        template='plotly_dark',
+        height=800,
+        showlegend=True
+    )
     
     return fig
 
-def detect_real_signals(df, options_data, summary_metrics, current_price, depth_data=None):
-    """Detect signals using only real data"""
+def detect_institutional_signals(df, options_data, summary_analytics, current_price):
+    """Detect institutional-level trading signals"""
     signals = []
     
     if df.empty or options_data is None:
         return signals
     
-    df = calculate_real_technical_indicators(df)
+    # Calculate current indicators
+    df = calculate_institutional_indicators(df)
+    current_vwap = df['vwap'].iloc[-1] if 'vwap' in df.columns else current_price
+    current_rsi = df['rsi'].iloc[-1] if 'rsi' in df.columns else 50
+    current_volume_rsi = df.get('volume_rsi', pd.Series([50])).iloc[-1]
     
-    # Real VWAP signal
-    if 'vwap' in df.columns and len(df) > 0:
-        current_vwap = df['vwap'].iloc[-1]
-        vwap_deviation = ((current_price - current_vwap) / current_vwap) * 100
-        
-        if abs(vwap_deviation) > 0.75:  # Significant deviation
-            if 'vwap_upper_2' in df.columns and current_price > df['vwap_upper_2'].iloc[-1]:
-                signals.append({
-                    'type': 'VWAP_BREAKOUT',
-                    'direction': 'BULLISH',
-                    'strength': 'HIGH',
-                    'message': f'Price broke above VWAP +2σ. Current deviation: {vwap_deviation:.2f}%',
-                    'current_price': current_price,
-                    'vwap_level': df['vwap_upper_2'].iloc[-1]
-                })
-            elif 'vwap_lower_2' in df.columns and current_price < df['vwap_lower_2'].iloc[-1]:
-                signals.append({
-                    'type': 'VWAP_BREAKDOWN',
-                    'direction': 'BEARISH',
-                    'strength': 'HIGH',
-                    'message': f'Price broke below VWAP -2σ. Current deviation: {vwap_deviation:.2f}%',
-                    'current_price': current_price,
-                    'vwap_level': df['vwap_lower_2'].iloc[-1]
-                })
+    # 1. VWAP Institutional Levels Signal
+    vwap_deviation = ((current_price - current_vwap) / current_vwap) * 100
     
-    # Real RSI signals
-    if 'rsi' in df.columns and len(df) > 0:
-        current_rsi = df['rsi'].iloc[-1]
-        
-        if current_rsi > 75:
+    if abs(vwap_deviation) > 0.5:  # 0.5% deviation from VWAP
+        if 'vwap_upper_2' in df.columns and current_price > df['vwap_upper_2'].iloc[-1]:
             signals.append({
-                'type': 'RSI_OVERBOUGHT',
-                'direction': 'BEARISH',
-                'strength': 'MEDIUM',
-                'message': f'RSI severely overbought at {current_rsi:.1f}. Potential reversal zone.',
-                'rsi_value': current_rsi
-            })
-        elif current_rsi < 25:
-            signals.append({
-                'type': 'RSI_OVERSOLD',
+                'type': 'INSTITUTIONAL_BREAKOUT',
                 'direction': 'BULLISH',
-                'strength': 'MEDIUM',
-                'message': f'RSI severely oversold at {current_rsi:.1f}. Potential bounce zone.',
-                'rsi_value': current_rsi
+                'strength': 'HIGH',
+                'message': f'Price above VWAP +2σ band. Institutional breakout likely. Deviation: {vwap_deviation:.2f}%',
+                'level': df['vwap_upper_2'].iloc[-1]
+            })
+        elif 'vwap_lower_2' in df.columns and current_price < df['vwap_lower_2'].iloc[-1]:
+            signals.append({
+                'type': 'INSTITUTIONAL_BREAKDOWN',
+                'direction': 'BEARISH',
+                'strength': 'HIGH',
+                'message': f'Price below VWAP -2σ band. Institutional selling pressure. Deviation: {vwap_deviation:.2f}%',
+                'level': df['vwap_lower_2'].iloc[-1]
             })
     
-    # Real market depth signals
-    if depth_data:
-        for key, depth_info in depth_data.items():
-            depth_imbalance = depth_info.get('depth_imbalance', 0)
-            
-            if abs(depth_imbalance) > 30:  # Significant real imbalance
-                direction = "BULLISH" if depth_imbalance > 0 else "BEARISH"
-                signals.append({
-                    'type': 'DEPTH_IMBALANCE',
-                    'direction': direction,
-                    'strength': 'HIGH',
-                    'message': f'Significant depth imbalance: {depth_imbalance:.1f}%. {direction.title()} pressure detected.',
-                    'imbalance_value': depth_imbalance,
-                    'bid_qty': depth_info.get('total_bid_qty', 0),
-                    'ask_qty': depth_info.get('total_ask_qty', 0)
-                })
+    # 2. Volume RSI Divergence Signal
+    rsi_divergence = current_rsi - current_volume_rsi
+    if abs(rsi_divergence) > 15:  # Significant divergence
+        direction = "BEARISH" if rsi_divergence > 0 else "BULLISH"
+        signals.append({
+            'type': 'VOLUME_RSI_DIVERGENCE',
+            'direction': direction,
+            'strength': 'MEDIUM',
+            'message': f'RSI-Volume RSI divergence: {rsi_divergence:.1f}. Institutional flow contrary to price.',
+            'rsi': current_rsi,
+            'volume_rsi': current_volume_rsi
+        })
     
-    # Real options-based signals
+    # 3. Gamma Exposure Signals
+    net_gex = summary_analytics.get('net_gamma_exposure', 0)
+    if net_gex > 100:  # High gamma environment
+        signals.append({
+            'type': 'HIGH_GAMMA_ENVIRONMENT',
+            'direction': 'NEUTRAL',
+            'strength': 'HIGH',
+            'message': f'High Gamma Exposure: ₹{net_gex:.0f}M. Expect low volatility/pinning near strikes.',
+            'gamma_exposure': net_gex
+        })
+    elif net_gex < 20:  # Low gamma environment
+        signals.append({
+            'type': 'LOW_GAMMA_ENVIRONMENT',
+            'direction': 'NEUTRAL',
+            'strength': 'HIGH',
+            'message': f'Low Gamma Exposure: ₹{net_gex:.0f}M. Higher volatility expected.',
+            'gamma_exposure': net_gex
+        })
+    
+    # 4. Institutional Sentiment Signal
+    institutional_sentiment = summary_analytics.get('institutional_sentiment', 'NEUTRAL')
+    if 'BULLISH' in institutional_sentiment or 'BEARISH' in institutional_sentiment:
+        direction = 'BULLISH' if 'BULLISH' in institutional_sentiment else 'BEARISH'
+        signals.append({
+            'type': 'INSTITUTIONAL_SENTIMENT',
+            'direction': direction,
+            'strength': 'HIGH',
+            'message': f'Institutional sentiment: {institutional_sentiment}',
+            'sentiment': institutional_sentiment
+        })
+    
+    # 5. Volume Profile Signals
     atm_data = options_data[options_data['Zone'] == 'ATM']
     if not atm_data.empty:
         atm_row = atm_data.iloc[0]
+        total_volume = atm_row.get('Total_Volume', 0)
+        avg_volume = options_data['Total_Volume'].mean()
         
-        # Real OI change analysis
-        ce_oi_change = atm_row.get('CE_OI_Change', 0)
-        pe_oi_change = atm_row.get('PE_OI_Change', 0)
-        
-        if abs(ce_oi_change) > 10000 or abs(pe_oi_change) > 10000:  # Significant OI change
-            if pe_oi_change > ce_oi_change * 1.5:
-                signals.append({
-                    'type': 'STRONG_PUT_WRITING',
-                    'direction': 'BULLISH',
-                    'strength': 'HIGH',
-                    'message': f'Strong PUT writing at ATM {atm_row["Strike"]}. PE OI change: +{pe_oi_change:,}',
-                    'pe_oi_change': pe_oi_change,
-                    'ce_oi_change': ce_oi_change
-                })
-            elif ce_oi_change > pe_oi_change * 1.5:
-                signals.append({
-                    'type': 'STRONG_CALL_WRITING',
-                    'direction': 'BEARISH',
-                    'strength': 'HIGH',
-                    'message': f'Strong CALL writing at ATM {atm_row["Strike"]}. CE OI change: +{ce_oi_change:,}',
-                    'ce_oi_change': ce_oi_change,
-                    'pe_oi_change': pe_oi_change
-                })
-        
-        # Real PCR analysis
-        pcr_oi = atm_row.get('PCR_OI', 0)
-        if pcr_oi > 2.0:
+        if total_volume > avg_volume * 2:  # High volume at ATM
             signals.append({
-                'type': 'EXTREME_PCR',
-                'direction': 'BULLISH',
+                'type': 'ATM_HIGH_VOLUME',
+                'direction': 'NEUTRAL',
                 'strength': 'MEDIUM',
-                'message': f'Extreme PCR at {pcr_oi:.2f}. High put concentration suggests support.',
-                'pcr_value': pcr_oi
-            })
-        elif pcr_oi < 0.5:
-            signals.append({
-                'type': 'EXTREME_PCR',
-                'direction': 'BEARISH',
-                'strength': 'MEDIUM',
-                'message': f'Extreme PCR at {pcr_oi:.2f}. High call concentration suggests resistance.',
-                'pcr_value': pcr_oi
+                'message': f'Unusually high volume at ATM strike {atm_row["Strike"]}. Volume: {total_volume:,}',
+                'volume': total_volume
             })
     
-    # Real volume surge analysis
-    if len(df) >= 20:
-        current_volume = df['volume'].iloc[-1]
-        avg_volume = df['volume'].rolling(20).mean().iloc[-1]
-        
-        if current_volume > avg_volume * 2.5:  # Significant volume surge
+    # 6. Volatility Surface Signals
+    volatility_surface = summary_analytics.get('volatility_surface', [])
+    if volatility_surface:
+        avg_iv = np.mean([v['ce_iv'] + v['pe_iv'] for v in volatility_surface]) / 2
+        if avg_iv > 25:
             signals.append({
-                'type': 'VOLUME_SURGE',
+                'type': 'HIGH_VOLATILITY_REGIME',
                 'direction': 'NEUTRAL',
-                'strength': 'HIGH',
-                'message': f'Volume surge detected: {current_volume:,} vs avg {avg_volume:,.0f} ({current_volume/avg_volume:.1f}x)',
-                'current_volume': current_volume,
-                'avg_volume': avg_volume,
-                'volume_ratio': current_volume / avg_volume
+                'strength': 'MEDIUM',
+                'message': f'High IV environment: {avg_iv:.1f}%. Consider volatility selling strategies.',
+                'avg_iv': avg_iv
+            })
+        elif avg_iv < 12:
+            signals.append({
+                'type': 'LOW_VOLATILITY_REGIME',
+                'direction': 'NEUTRAL',
+                'strength': 'MEDIUM',
+                'message': f'Low IV environment: {avg_iv:.1f}%. Consider volatility buying strategies.',
+                'avg_iv': avg_iv
             })
     
     return signals
 
-def send_real_signals(signals, current_price):
-    """Send only real signals via Telegram"""
+def send_institutional_signals(signals, current_price):
+    """Send institutional signals via Telegram"""
     if not signals:
         return
     
@@ -763,203 +890,231 @@ Current Price: ₹{current_price:.2f}
 Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
 """
         
-        send_alert(message, priority)
+        send_institutional_alert(message, priority)
+
+def calculate_portfolio_metrics(options_data):
+    """Calculate real-time portfolio metrics"""
+    if options_data is None or options_data.empty:
+        return {}
+    
+    # Aggregate portfolio Greeks
+    total_delta_exposure = options_data['CE_Delta_Exposure'].sum() - options_data['PE_Delta_Exposure'].sum()
+    total_gamma_exposure = options_data['Net_GEX'].abs().sum()
+    total_vega_exposure = options_data['Net_VEX'].abs().sum()
+    
+    # Risk metrics
+    max_gamma_strike = options_data.loc[options_data['Net_GEX'].abs().idxmax(), 'Strike'] if not options_data.empty else 0
+    dominant_flow = "PUT" if options_data['PE_Volume_Delta'].sum() > options_data['CE_Volume_Delta'].sum() else "CALL"
+    
+    return {
+        'portfolio_delta': total_delta_exposure,
+        'portfolio_gamma': total_gamma_exposure,
+        'portfolio_vega': total_vega_exposure,
+        'max_gamma_strike': max_gamma_strike,
+        'dominant_flow': dominant_flow,
+        'total_volume': options_data['Total_Volume'].sum(),
+        'avg_pcr': options_data['PCR'].mean()
+    }
 
 def main():
-    st.title("🏛️ Real Institutional Nifty Analyzer")
-    st.markdown("*Using only real market data - No dummy calculations*")
+    st.title("🏛️ Institutional-Level Nifty Trading Analyzer")
+    st.markdown("*Advanced order flow, options analytics, and risk management for institutional trading*")
     
     # Show market status
     ist = pytz.timezone('Asia/Kolkata')
     current_time = datetime.now(ist)
     
     if not is_market_hours():
-        st.warning(f"Market closed. Current time: {current_time.strftime('%H:%M:%S IST')}")
-        st.info("Analysis using latest available real data")
+        st.warning(f"🏛️ Market closed. Current time: {current_time.strftime('%H:%M:%S IST')}")
+        st.info("Institutional analysis available in preview mode with latest data")
     
-    # Sidebar settings
-    st.sidebar.header("📊 Real Data Settings")
-    timeframe = st.sidebar.selectbox("Timeframe", ["1", "3", "5", "15"], index=2)
-    enable_alerts = st.sidebar.checkbox("Real Signal Alerts", value=True)
-    enable_depth = st.sidebar.checkbox("Market Depth Analysis", value=True)
+    # Enhanced sidebar
+    st.sidebar.header("📊 Institutional Settings")
     
-    # Analysis options
-    st.sidebar.subheader("🎯 Analysis Options")
-    show_options = st.sidebar.checkbox("Options Analysis", value=True)
-    show_depth_chart = st.sidebar.checkbox("Depth Visualization", value=True)
+    # Analysis parameters
+    timeframe = st.sidebar.selectbox("Analysis Timeframe", ["1", "3", "5", "15"], index=2)
+    depth_levels = st.sidebar.selectbox("Market Depth Analysis", ["Standard (5-level)", "Advanced (20-level)"], index=1)
+    risk_scenario = st.sidebar.slider("Risk Scenario Range (%)", 1, 10, 5)
+    enable_alerts = st.sidebar.checkbox("Institutional Alerts", value=True)
+    
+    # Advanced filters
+    st.sidebar.subheader("🎯 Focus Areas")
+    analyze_flow = st.sidebar.checkbox("Order Flow Analysis", value=True)
+    analyze_volatility = st.sidebar.checkbox("Volatility Surface", value=True)
+    analyze_gamma = st.sidebar.checkbox("Gamma Exposure", value=True)
+    portfolio_mode = st.sidebar.checkbox("Portfolio Mode", value=False)
     
     # Initialize API
-    api = RealInstitutionalAPI()
+    api = InstitutionalDhanAPI()
     
-    # Main layout
-    col1, col2 = st.columns([2.5, 1.5])
+    # Create main layout
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        st.header("📈 Real Price Analysis")
+        st.header("📈 Institutional Price Action")
         
-        # Get real data
-        data = api.get_intraday_data(timeframe)
+        # Get and process data
+        data = api.get_intraday_data(timeframe, days_back=2)
         df = process_candle_data(data) if data else pd.DataFrame()
         
-        # Get current price from LTP API
-        ltp_data = api.get_ltp_data()
-        current_price = None
-        if ltp_data and 'data' in ltp_data:
-            for exchange, instruments in ltp_data['data'].items():
-                for scrip_id, price_data in instruments.items():
-                    current_price = price_data.get('last_price', 0)
-                    break
+        # Get current price
+        current_price = df['close'].iloc[-1] if not df.empty else 0
         
-        if current_price is None and not df.empty:
-            current_price = df['close'].iloc[-1]
-        
-        # Display real metrics
-        if not df.empty and current_price:
-            # Get OHLC data
-            ohlc_data = api.get_ohlc_data({NIFTY_SEG: [NIFTY_SCRIP]})
-            day_high = day_low = day_open = 0
+        if not df.empty and len(df) > 1:
+            prev_close = df['close'].iloc[-2]
+            change = current_price - prev_close
+            change_pct = (change / prev_close) * 100
             
-            if ohlc_data and 'data' in ohlc_data:
-                for exchange, instruments in ohlc_data['data'].items():
-                    for scrip_id, ohlc_info in instruments.items():
-                        ohlc = ohlc_info.get('ohlc', {})
-                        day_high = ohlc.get('high', 0)
-                        day_low = ohlc.get('low', 0)
-                        day_open = ohlc.get('open', 0)
-                        break
-            
-            # Calculate real indicators
-            df_enhanced = calculate_real_technical_indicators(df)
+            # Calculate institutional indicators
+            df_enhanced = calculate_institutional_indicators(df)
             current_vwap = df_enhanced['vwap'].iloc[-1] if 'vwap' in df_enhanced.columns else current_price
-            current_rsi = df_enhanced['rsi'].iloc[-1] if 'rsi' in df_enhanced.columns else 50
-            current_atr = df_enhanced['atr'].iloc[-1] if 'atr' in df_enhanced.columns else 0
+            vwap_deviation = ((current_price - current_vwap) / current_vwap) * 100
             
-            # Real metrics display
+            # Display key metrics
             col1_m, col2_m, col3_m, col4_m = st.columns(4)
             with col1_m:
-                change = current_price - day_open if day_open > 0 else 0
-                change_pct = (change / day_open * 100) if day_open > 0 else 0
                 st.metric("Nifty", f"₹{current_price:,.2f}", f"{change:+.2f} ({change_pct:+.2f}%)")
-            
             with col2_m:
-                st.metric("Day High", f"₹{day_high:.2f}" if day_high > 0 else "N/A")
-            
+                st.metric("VWAP", f"₹{current_vwap:.2f}", f"{vwap_deviation:+.3f}%")
             with col3_m:
-                st.metric("Day Low", f"₹{day_low:.2f}" if day_low > 0 else "N/A")
-            
+                current_atr = df_enhanced.get('atr_14', pd.Series([0])).iloc[-1]
+                atr_pct = (current_atr / current_price) * 100 if current_price > 0 else 0
+                st.metric("ATR %", f"{atr_pct:.2f}%", f"₹{current_atr:.2f}")
             with col4_m:
-                vwap_dev = ((current_price - current_vwap) / current_vwap * 100) if current_vwap > 0 else 0
-                st.metric("VWAP Dev", f"{vwap_dev:+.2f}%")
-            
-            # Additional real metrics
-            col5_m, col6_m, col7_m, col8_m = st.columns(4)
-            with col5_m:
-                st.metric("RSI", f"{current_rsi:.1f}")
-            with col6_m:
-                st.metric("ATR", f"₹{current_atr:.2f}")
-            with col7_m:
-                volume_latest = df['volume'].iloc[-1] if not df.empty else 0
-                st.metric("Latest Vol", f"{volume_latest:,}")
-            with col8_m:
-                avg_vol = df['volume'].rolling(20).mean().iloc[-1] if len(df) >= 20 else volume_latest
-                vol_ratio = volume_latest / avg_vol if avg_vol > 0 else 1
-                st.metric("Vol Ratio", f"{vol_ratio:.1f}x")
+                volume_strength = df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1] if len(df) >= 20 else 1
+                st.metric("Vol Strength", f"{volume_strength:.2f}x")
         
-        # Create real price chart
+        # Create institutional dashboard
         if not df.empty:
-            fig = create_real_price_chart(df, f"Real Price Analysis - {timeframe}min")
+            fig = create_institutional_dashboard_chart(df, f"Institutional Analysis - {timeframe}min")
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.error("No price data available")
+            st.error("📊 No chart data available")
     
     with col2:
-        st.header("📊 Real Market Data")
+        st.header("📋 Options Analytics")
         
-        # Market depth analysis
-        if enable_depth and current_price:
-            st.subheader("Real Market Depth")
+        # Get expiry data
+        expiry_data = get_expiry_list()
+        if expiry_data and 'data' in expiry_data:
+            expiry_dates = expiry_data['data']
+            selected_expiry = st.selectbox("Expiry Date", expiry_dates)
             
-            depth_instruments = {NIFTY_SEG: [NIFTY_SCRIP]}
-            depth_data = api.get_market_depth(depth_instruments)
+            # Analyze options with institutional metrics
+            underlying_price, options_summary, summary_analytics, risk_metrics = analyze_institutional_options(selected_expiry, current_price)
             
-            if depth_data:
-                processed_depth = process_real_market_depth(depth_data)
-                if processed_depth and show_depth_chart:
-                    depth_fig = create_real_market_depth_chart(processed_depth)
-                    st.plotly_chart(depth_fig, use_container_width=True)
+            if underlying_price and options_summary is not None:
+                st.info(f"**Underlying**: ₹{underlying_price:.2f}")
                 
-                # Display real depth metrics
-                if processed_depth:
-                    first_key = list(processed_depth.keys())[0]
-                    depth_info = processed_depth[first_key]
-                    
-                    st.write("**Real Depth Metrics:**")
-                    st.write(f"Depth Imbalance: {depth_info.get('depth_imbalance', 0):.1f}%")
-                    st.write(f"Bid-Ask Spread: ₹{depth_info.get('bid_ask_spread', 0):.2f}")
-                    st.write(f"Total Bid Qty: {depth_info.get('total_bid_qty', 0):,}")
-                    st.write(f"Total Ask Qty: {depth_info.get('total_ask_qty', 0):,}")
+                # Key institutional metrics
+                institutional_sentiment = summary_analytics.get('institutional_sentiment', 'NEUTRAL')
+                days_to_expiry = summary_analytics.get('days_to_expiry', 0)
+                net_gex = summary_analytics.get('net_gamma_exposure', 0)
+                
+                st.markdown(f"""
+                **Institutional Sentiment**: {institutional_sentiment}  
+                **Days to Expiry**: {days_to_expiry}  
+                **Net Gamma Exposure**: ₹{net_gex:.1f}M  
+                **Volume Ratio (P/C)**: {summary_analytics.get('total_volume_ratio', 0):.2f}
+                """)
+                
+                # Enhanced options data display
+                display_columns = ['Strike', 'Zone', 'Level', 'PCR', 'CE_IV', 'PE_IV', 'IV_Skew', 'Net_GEX', 'Total_Volume']
+                st.dataframe(
+                    options_summary[display_columns].style.format({
+                        'PCR': '{:.3f}',
+                        'CE_IV': '{:.1f}%',
+                        'PE_IV': '{:.1f}%',
+                        'IV_Skew': '{:.1f}%',
+                        'Net_GEX': '₹{:.1f}M',
+                        'Total_Volume': '{:,.0f}'
+                    }),
+                    use_container_width=True,
+                    height=400
+                )
+                
+                # Generate and send institutional signals
+                if enable_alerts and is_market_hours():
+                    signals = detect_institutional_signals(df, options_summary, summary_analytics, current_price)
+                    if signals:
+                        send_institutional_signals(signals, current_price)
+                        for signal in signals[-3:]:  # Show last 3 signals
+                            signal_color = "🔴" if signal['strength'] == 'HIGH' else "🟡"
+                            st.success(f"{signal_color} {signal['type']}: {signal['message']}")
+            
             else:
-                st.info("Market depth data not available")
+                st.error("📊 Options data unavailable")
+        else:
+            st.error("📅 Expiry data unavailable")
+    
+    with col3:
+        st.header("⚖️ Risk Management")
         
-        # Real options analysis
-        if show_options:
-            st.subheader("Real Options Data")
+        if 'options_summary' in locals() and options_summary is not None:
+            # Portfolio metrics
+            portfolio_metrics = calculate_portfolio_metrics(options_summary)
             
-            expiry_data = get_expiry_list()
-            if expiry_data and 'data' in expiry_data:
-                expiry_dates = expiry_data['data']
-                selected_expiry = st.selectbox("Expiry", expiry_dates)
+            st.subheader("Portfolio Greeks")
+            st.metric("Net Delta", f"₹{portfolio_metrics.get('portfolio_delta', 0):,.0f}")
+            st.metric("Total Gamma", f"₹{portfolio_metrics.get('portfolio_gamma', 0):.1f}M")
+            st.metric("Total Vega", f"₹{portfolio_metrics.get('portfolio_vega', 0):,.0f}")
+            
+            # Risk scenarios
+            if 'risk_metrics' in locals() and risk_metrics:
+                st.subheader("Risk Scenarios")
+                max_loss = risk_metrics.get('max_loss_5pct', 0)
+                max_gain = risk_metrics.get('max_gain_5pct', 0)
                 
-                underlying_price, options_summary, summary_metrics = analyze_real_options(selected_expiry, current_price)
-                
-                if underlying_price and options_summary is not None:
-                    st.write(f"**Underlying**: ₹{underlying_price:.2f}")
-                    st.write(f"**Days to Expiry**: {summary_metrics.get('days_to_expiry', 0)}")
-                    st.write(f"**PCR (OI)**: {summary_metrics.get('pcr_oi', 0):.3f}")
-                    st.write(f"**PCR (Volume)**: {summary_metrics.get('pcr_volume', 0):.3f}")
-                    
-                    # Display key options data
-                    display_cols = ['Strike', 'Zone', 'Level', 'CE_OI', 'PE_OI', 'PCR_OI', 'CE_IV', 'PE_IV']
-                    st.dataframe(options_summary[display_cols], use_container_width=True, height=300)
-                    
-                    # Generate real signals
-                    if enable_alerts and is_market_hours():
-                        depth_data_for_signals = None
-                        if enable_depth:
-                            depth_instruments = {NIFTY_SEG: [NIFTY_SCRIP]}
-                            depth_raw = api.get_market_depth(depth_instruments)
-                            if depth_raw:
-                                depth_data_for_signals = process_real_market_depth(depth_raw)
-                        
-                        signals = detect_real_signals(df, options_summary, summary_metrics, current_price, depth_data_for_signals)
-                        if signals:
-                            send_real_signals(signals, current_price)
-                            st.success(f"🔔 {len(signals)} real signal(s) detected and sent!")
-                            
-                            # Show recent signals
-                            for signal in signals[-2:]:
-                                signal_color = "🔴" if signal['strength'] == 'HIGH' else "🟡"
-                                st.info(f"{signal_color} {signal['type']}: {signal['message'][:80]}...")
-                else:
-                    st.error("Options data not available")
-            else:
-                st.error("Expiry data not available")
+                st.metric("Max Loss (5%)", f"₹{max_loss:,.0f}", delta_color="inverse")
+                st.metric("Max Gain (5%)", f"₹{max_gain:,.0f}")
+            
+            # Key levels
+            st.subheader("Key Levels")
+            if not df.empty and 'vwap_upper_2' in df.columns:
+                vwap_upper = df['vwap_upper_2'].iloc[-1]
+                vwap_lower = df['vwap_lower_2'].iloc[-1]
+                st.write(f"**VWAP +2σ**: ₹{vwap_upper:.2f}")
+                st.write(f"**VWAP -2σ**: ₹{vwap_lower:.2f}")
+            
+            max_gamma_strike = portfolio_metrics.get('max_gamma_strike', 0)
+            if max_gamma_strike > 0:
+                st.write(f"**Max Gamma Strike**: {max_gamma_strike}")
+        
+        # Institutional flow summary
+        st.subheader("Flow Summary")
+        if 'portfolio_metrics' in locals():
+            dominant_flow = portfolio_metrics.get('dominant_flow', 'NEUTRAL')
+            avg_pcr = portfolio_metrics.get('avg_pcr', 0)
+            
+            flow_color = "🔴" if dominant_flow == "PUT" else "🟢" if dominant_flow == "CALL" else "🟡"
+            st.write(f"{flow_color} **Dominant Flow**: {dominant_flow}")
+            st.write(f"📊 **Average PCR**: {avg_pcr:.3f}")
     
-    # Real options chart
-    if show_options and 'options_summary' in locals() and options_summary is not None:
-        st.header("📊 Real Options Analysis")
-        options_fig = create_real_options_chart(options_summary)
-        st.plotly_chart(options_fig, use_container_width=True)
+    # Additional analysis sections
+    if analyze_volatility and 'summary_analytics' in locals():
+        st.header("📊 Volatility Surface Analysis")
+        volatility_surface = summary_analytics.get('volatility_surface', [])
+        if volatility_surface:
+            vol_fig = create_volatility_surface_chart(volatility_surface)
+            st.plotly_chart(vol_fig, use_container_width=True)
     
-    # Footer
+    if analyze_gamma and 'options_summary' in locals() and options_summary is not None:
+        st.header("🎯 Gamma Exposure Analysis")
+        gamma_fig = create_gamma_exposure_chart(options_summary)
+        st.plotly_chart(gamma_fig, use_container_width=True)
+    
+    if analyze_flow and 'options_summary' in locals() and options_summary is not None:
+        st.header("🌊 Options Flow Analysis")
+        flow_fig = create_options_flow_chart(options_summary)
+        st.plotly_chart(flow_fig, use_container_width=True)
+    
+    # Footer with update time
     current_time_str = datetime.now(ist).strftime("%H:%M:%S IST")
     st.sidebar.info(f"🔄 Updated: {current_time_str}")
-    st.sidebar.write("**Data Sources**: All real-time from Dhan API")
-    st.sidebar.write("**No Dummy Data**: All calculations use actual market data")
     
-    if st.sidebar.button("📨 Test Alert"):
-        send_alert("Test message from Real Institutional Analyzer", "NORMAL")
-        st.sidebar.success("Test sent!")
+    if st.sidebar.button("📨 Test Institutional Alert"):
+        send_institutional_alert("🏛️ Test message from Institutional Nifty Analyzer", "NORMAL")
+        st.sidebar.success("Alert sent!")
 
 if __name__ == "__main__":
     main()
