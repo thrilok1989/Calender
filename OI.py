@@ -1,4 +1,3 @@
-# PART 1: Imports and Configuration
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import requests
