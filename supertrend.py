@@ -132,6 +132,9 @@ def process_candle_data(data):
 
 def calculate_rsi(data, period=14):
     """Calculate RSI indicator"""
+    if len(data) < period:
+        return pd.Series([np.nan] * len(data))
+    
     delta = data['close'].diff()
     
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -312,9 +315,11 @@ def check_signals(df, option_data, current_price, proximity=5):
     if df.empty or option_data is None or not current_price:
         return
     
-    # Calculate RSI
-    df['rsi'] = calculate_rsi(df)
-    current_rsi = df['rsi'].iloc[-1] if not df.empty else None
+    # Calculate RSI if not already calculated
+    if 'rsi' not in df.columns:
+        df['rsi'] = calculate_rsi(df)
+    
+    current_rsi = df['rsi'].iloc[-1] if not df.empty and not pd.isna(df['rsi'].iloc[-1]) else None
     
     atm_data = option_data[option_data['Zone'] == 'ATM']
     if atm_data.empty:
@@ -358,13 +363,15 @@ def check_signals(df, option_data, current_price, proximity=5):
             signal_type = "CALL" if primary_bullish_signal else "PUT"
             price_diff = current_price - pivot_level['value']
             
+            rsi_info = f"📊 RSI: {current_rsi:.2f}" if current_rsi is not None else "📊 RSI: N/A"
+            
             message = f"""
 🚨 PRIMARY NIFTY {signal_type} SIGNAL 🚨
 
 📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
 📌 Pivot: {pivot_level['timeframe']}M at ₹{pivot_level['value']:.2f}
 🎯 ATM: {row['Strike']}
-📊 RSI: {current_rsi:.2f}
+{rsi_info}
 
 Conditions: {row['Level']}, All Bias Aligned
 ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
@@ -385,12 +392,14 @@ ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}
         signal_type = "CALL" if secondary_bullish_signal else "PUT"
         dominance_ratio = pe_chg_oi / ce_chg_oi if secondary_bullish_signal and ce_chg_oi > 0 else ce_chg_oi / pe_chg_oi if ce_chg_oi > 0 else 0
         
+        rsi_info = f"📊 RSI: {current_rsi:.2f}" if current_rsi is not None else "📊 RSI: N/A"
+        
         message = f"""
 ⚡ SECONDARY NIFTY {signal_type} SIGNAL - OI DOMINANCE ⚡
 
 📍 Spot: ₹{current_price:.2f}
 🎯 ATM: {row['Strike']}
-📊 RSI: {current_rsi:.2f}
+{rsi_info}
 
 🔥 OI Dominance: {'PUT' if secondary_bullish_signal else 'CALL'} ChgOI {dominance_ratio:.1f}x higher
 📊 All Bias Aligned: {row['ChgOI_Bias']}, {row['Volume_Bias']}, {row['Ask_Bias']}, {row['Bid_Bias']}
@@ -406,12 +415,14 @@ ChgOI: CE {ce_chg_oi:,} | PE {pe_chg_oi:,}
     if bias_aligned_bullish or bias_aligned_bearish:
         signal_type = "CALL" if bias_aligned_bullish else "PUT"
         
+        rsi_info = f"📊 RSI: {current_rsi:.2f}" if current_rsi is not None else "📊 RSI: N/A"
+        
         message = f"""
 🎯 FOURTH SIGNAL - ALL BIAS ALIGNED {signal_type} 🎯
 
 📍 Spot: ₹{current_price:.2f}
 🎯 ATM: {row['Strike']}
-📊 RSI: {current_rsi:.2f}
+{rsi_info}
 
 All ATM Biases Aligned: {signal_type}
 ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
@@ -500,7 +511,7 @@ def main():
             current_rsi = None
             if not df.empty:
                 df['rsi'] = calculate_rsi(df)
-                current_rsi = df['rsi'].iloc[-1]
+                current_rsi = df['rsi'].iloc[-1] if not pd.isna(df['rsi'].iloc[-1]) else None
             
             col1_m, col2_m, col3_m, col4_m = st.columns(4)
             with col1_m:
