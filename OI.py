@@ -425,8 +425,9 @@ def create_enhanced_chart(df, usd_inr_df=None, title="Nifty Analysis"):
     if df_filtered.empty:
         return go.Figure()
     
-    # Create subplots
-    rows = 4 if usd_inr_df is not None and not usd_inr_df.empty else 3
+    # Create subplots - fix the None check
+    has_usd_inr = usd_inr_df is not None and len(usd_inr_df) > 0 if isinstance(usd_inr_df, pd.DataFrame) else False
+    rows = 4 if has_usd_inr else 3
     fig = make_subplots(
         rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.02,
         row_heights=[0.5, 0.15, 0.15, 0.2] if rows == 4 else [0.6, 0.2, 0.2],
@@ -489,7 +490,7 @@ def create_enhanced_chart(df, usd_inr_df=None, title="Nifty Analysis"):
         fig.update_yaxes(range=[0, 100], row=3, col=1)
     
     # USD/INR chart
-    if rows == 4 and usd_inr_df is not None and not usd_inr_df.empty:
+    if rows == 4 and has_usd_inr:
         fig.add_trace(go.Candlestick(
             x=usd_inr_df['datetime'], 
             open=usd_inr_df['open'], 
