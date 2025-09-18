@@ -130,6 +130,18 @@ def process_candle_data(data):
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
     return df
 
+def calculate_rsi(data, period=14):
+    """Calculate RSI indicator"""
+    delta = data['close'].diff()
+    
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    return rsi
+
 def get_pivots(df, timeframe="5", length=4):
     if df.empty:
         return []
@@ -164,20 +176,43 @@ def create_chart(df, title):
     if df.empty:
         return go.Figure()
     
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+    # Calculate RSI
+    df['rsi'] = calculate_rsi(df)
     
+    # Create subplots with 3 rows (price, volume, RSI)
+    fig = make_subplots(
+        rows=3, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.05, 
+        row_heights=[0.6, 0.2, 0.2],
+        subplot_titles=('Price', 'Volume', 'RSI')
+    )
+    
+    # Price chart
     fig.add_trace(go.Candlestick(
         x=df['datetime'], open=df['open'], high=df['high'], 
         low=df['low'], close=df['close'], name='Nifty',
         increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
     ), row=1, col=1)
     
+    # Volume chart
     volume_colors = ['#00ff88' if close >= open else '#ff4444' 
                     for close, open in zip(df['close'], df['open'])]
     fig.add_trace(go.Bar(
         x=df['datetime'], y=df['volume'], name='Volume',
         marker_color=volume_colors, opacity=0.7
     ), row=2, col=1)
+    
+    # RSI chart
+    fig.add_trace(go.Scatter(
+        x=df['datetime'], y=df['rsi'], name='RSI',
+        line=dict(color='#ff9900', width=2)
+    ), row=3, col=1)
+    
+    # Add RSI reference lines
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    fig.add_hline(y=50, line_dash="dot", line_color="gray", row=3, col=1)
     
     if len(df) > 50:
         timeframes = ["5", "10", "15"]
@@ -192,8 +227,12 @@ def create_chart(df, title):
                             y0=pivot['value'], y1=pivot['value'],
                             line=dict(color=color, width=1, dash="dash"), row=1, col=1)
     
-    fig.update_layout(title=title, template='plotly_dark', height=600,
+    fig.update_layout(title=title, template='plotly_dark', height=800,
                      xaxis_rangeslider_visible=False, showlegend=False)
+    
+    # Update y-axis for RSI
+    fig.update_yaxes(title_text="RSI", range=[0, 100], row=3, col=1)
+    
     return fig
 
 def analyze_options(expiry):
@@ -273,6 +312,10 @@ def check_signals(df, option_data, current_price, proximity=5):
     if df.empty or option_data is None or not current_price:
         return
     
+    # Calculate RSI
+    df['rsi'] = calculate_rsi(df)
+    current_rsi = df['rsi'].iloc[-1] if not df.empty else None
+    
     atm_data = option_data[option_data['Zone'] == 'ATM']
     if atm_data.empty:
         return
@@ -321,6 +364,7 @@ def check_signals(df, option_data, current_price, proximity=5):
 📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
 📌 Pivot: {pivot_level['timeframe']}M at ₹{pivot_level['value']:.2f}
 🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.2f}
 
 Conditions: {row['Level']}, All Bias Aligned
 ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
@@ -346,6 +390,7 @@ ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}
 
 📍 Spot: ₹{current_price:.2f}
 🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.2f}
 
 🔥 OI Dominance: {'PUT' if secondary_bullish_signal else 'CALL'} ChgOI {dominance_ratio:.1f}x higher
 📊 All Bias Aligned: {row['ChgOI_Bias']}, {row['Volume_Bias']}, {row['Ask_Bias']}, {row['Bid_Bias']}
@@ -366,6 +411,7 @@ ChgOI: CE {ce_chg_oi:,} | PE {pe_chg_oi:,}
 
 📍 Spot: ₹{current_price:.2f}
 🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.2f}
 
 All ATM Biases Aligned: {signal_type}
 ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
@@ -377,6 +423,36 @@ PCR: {row['PCR']}
 """
         send_telegram(message)
         st.success(f"🎯 FOURTH {signal_type} signal sent!")
+    
+    # RSI EXTREME SIGNALS
+    if current_rsi is not None:
+        if current_rsi > 70:
+            message = f"""
+⚠️ RSI OVERBOUGHT SIGNAL ⚠️
+
+📍 Spot: ₹{current_price:.2f}
+📊 RSI: {current_rsi:.2f} (Above 70)
+
+RSI indicates overbought conditions. Consider potential reversal or pullback.
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+"""
+            send_telegram(message)
+            st.success("⚠️ RSI Overbought signal sent!")
+        
+        elif current_rsi < 30:
+            message = f"""
+⚠️ RSI OVERSOLD SIGNAL ⚠️
+
+📍 Spot: ₹{current_price:.2f}
+📊 RSI: {current_rsi:.2f} (Below 30)
+
+RSI indicates oversold conditions. Consider potential bounce or reversal.
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+"""
+            send_telegram(message)
+            st.success("⚠️ RSI Oversold signal sent!")
 
 def main():
     st.title("📈 Nifty Trading Analyzer")
@@ -420,13 +496,21 @@ def main():
             change = current_price - prev_close
             change_pct = (change / prev_close) * 100
             
-            col1_m, col2_m, col3_m = st.columns(3)
+            # Calculate RSI if we have data
+            current_rsi = None
+            if not df.empty:
+                df['rsi'] = calculate_rsi(df)
+                current_rsi = df['rsi'].iloc[-1]
+            
+            col1_m, col2_m, col3_m, col4_m = st.columns(4)
             with col1_m:
                 st.metric("Price", f"₹{current_price:,.2f}", f"{change:+.2f} ({change_pct:+.2f}%)")
             with col2_m:
                 st.metric("High", f"₹{df['high'].max():,.2f}")
             with col3_m:
                 st.metric("Low", f"₹{df['low'].min():,.2f}")
+            with col4_m:
+                st.metric("RSI", f"{current_rsi:.2f}" if current_rsi is not None else "N/A")
         
         if not df.empty:
             fig = create_chart(df, f"Nifty {interval}min")
