@@ -50,7 +50,15 @@ supabase
 # Sentiment Analysis
 textblob>=0.17.1
 vaderSentiment>=3.3.2
-
+streamlit
+streamlit-autorefresh
+requests
+pandas
+plotly
+numpy
+scipy
+pytz
+websocket-client
 # Utilities & Environment
 streamlit-autorefresh>=0.0.1
 python-dotenv
