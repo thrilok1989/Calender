@@ -326,8 +326,19 @@ def calculate_rsi(df, periods=14):
     return rsi_values
 
 def create_chart(df, title):
-    """Create enhanced chart with pivots and RSI"""
+    """Create enhanced chart with pivots and RSI - filtered to market hours only"""
     if df.empty:
+        return go.Figure()
+    
+    # Filter data to market hours only (9:15 AM to 3:30 PM IST on weekdays)
+    df_filtered = df.copy()
+    df_filtered = df_filtered[
+        (df_filtered['datetime'].dt.weekday < 5) &  # Monday to Friday
+        (df_filtered['datetime'].dt.time >= pd.Timestamp('09:15').time()) &  # After 9:15 AM
+        (df_filtered['datetime'].dt.time <= pd.Timestamp('15:30').time())    # Before 3:30 PM
+    ]
+    
+    if df_filtered.empty:
         return go.Figure()
     
     fig = make_subplots(
@@ -335,26 +346,26 @@ def create_chart(df, title):
         row_heights=[0.6, 0.2, 0.2], subplot_titles=("Price Chart", "Volume", "RSI (14)")
     )
     
-    # Candlestick chart
+    # Candlestick chart with filtered data
     fig.add_trace(go.Candlestick(
-        x=df['datetime'], open=df['open'], high=df['high'], 
-        low=df['low'], close=df['close'], name='Nifty',
+        x=df_filtered['datetime'], open=df_filtered['open'], high=df_filtered['high'], 
+        low=df_filtered['low'], close=df_filtered['close'], name='Nifty',
         increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
     ), row=1, col=1)
     
-    # Volume
+    # Volume with filtered data
     volume_colors = ['#00ff88' if close >= open else '#ff4444' 
-                    for close, open in zip(df['close'], df['open'])]
+                    for close, open in zip(df_filtered['close'], df_filtered['open'])]
     fig.add_trace(go.Bar(
-        x=df['datetime'], y=df['volume'], name='Volume',
+        x=df_filtered['datetime'], y=df_filtered['volume'], name='Volume',
         marker_color=volume_colors, opacity=0.7
     ), row=2, col=1)
     
-    # RSI
-    if len(df) > 14:
-        rsi_values = calculate_rsi(df)
+    # RSI with filtered data
+    if len(df_filtered) > 14:
+        rsi_values = calculate_rsi(df_filtered)
         fig.add_trace(go.Scatter(
-            x=df['datetime'], y=rsi_values, name='RSI',
+            x=df_filtered['datetime'], y=rsi_values, name='RSI',
             line=dict(color='#ffaa00', width=2), mode='lines'
         ), row=3, col=1)
         
@@ -365,51 +376,96 @@ def create_chart(df, title):
         
         fig.update_yaxes(range=[0, 100], row=3, col=1)
     
-    # Add pivot levels
+    # Add pivot levels using original df for calculation but filtered x-axis range
     if len(df) > 50:
         timeframes = ["5", "10", "15"]
         colors = ["#ff9900", "#ff44ff", '#4444ff']
-        x_start, x_end = df['datetime'].min(), df['datetime'].max()
+        
+        # Use filtered data range for line display
+        x_start, x_end = df_filtered['datetime'].min(), df_filtered['datetime'].max()
         
         for tf, color in zip(timeframes, colors):
-            pivots = get_pivots(df, tf)
+            pivots = get_pivots(df, tf)  # Use full dataset for pivot calculation
             recent_highs = [p for p in pivots if p['type'] == 'high'][-5:]
             recent_lows = [p for p in pivots if p['type'] == 'low'][-5:]
             
             for pivot_list, label_prefix in [(recent_highs, "H"), (recent_lows, "L")]:
                 for pivot in pivot_list:
-                    line_style = "solid" if pivot.get('confirmed', True) else "dash"
-                    line_width = 2 if pivot.get('confirmed', True) else 1
-                    
-                    # Main line
-                    fig.add_shape(
-                        type="line", x0=x_start, x1=x_end, y0=pivot['value'], y1=pivot['value'],
-                        line=dict(color=color, width=line_width, dash=line_style), row=1, col=1
-                    )
-                    
-                    # Shadow
-                    fig.add_shape(
-                        type="line", x0=x_start, x1=x_end, y0=pivot['value'], y1=pivot['value'],
-                        line=dict(color=color, width=5),
-                        opacity=0.15 if pivot.get('confirmed', True) else 0.08, row=1, col=1
-                    )
-                    
-                    # Label
-                    status = "✓" if pivot.get('confirmed', True) else "?"
-                    fig.add_annotation(
-                        x=x_end, y=pivot['value'], text=f"{tf}M {label_prefix} {status}: {pivot['value']:.1f}",
-                        showarrow=False, xshift=20, font=dict(size=9, color=color), row=1, col=1
-                    )
+                    # Only show pivots that fall within the filtered time range
+                    pivot_time = pivot['timestamp']
+                    if x_start <= pivot_time <= x_end:
+                        line_style = "solid" if pivot.get('confirmed', True) else "dash"
+                        line_width = 2 if pivot.get('confirmed', True) else 1
+                        
+                        # Main line
+                        fig.add_shape(
+                            type="line", x0=x_start, x1=x_end, y0=pivot['value'], y1=pivot['value'],
+                            line=dict(color=color, width=line_width, dash=line_style), row=1, col=1
+                        )
+                        
+                        # Shadow
+                        fig.add_shape(
+                            type="line", x0=x_start, x1=x_end, y0=pivot['value'], y1=pivot['value'],
+                            line=dict(color=color, width=5),
+                            opacity=0.15 if pivot.get('confirmed', True) else 0.08, row=1, col=1
+                        )
+                        
+                        # Label
+                        status = "✓" if pivot.get('confirmed', True) else "?"
+                        fig.add_annotation(
+                            x=x_end, y=pivot['value'], text=f"{tf}M {label_prefix} {status}: {pivot['value']:.1f}",
+                            showarrow=False, xshift=20, font=dict(size=9, color=color), row=1, col=1
+                        )
     
+    # Update layout with custom x-axis formatting
     fig.update_layout(
-        title=title, template='plotly_dark', height=700,
-        xaxis_rangeslider_visible=False, showlegend=False
+        title=title, 
+        template='plotly_dark', 
+        height=700,
+        xaxis_rangeslider_visible=False, 
+        showlegend=False
     )
     
-    # Update x-axis labels
-    fig.update_xaxes(showticklabels=False, row=1, col=1)
-    fig.update_xaxes(showticklabels=False, row=2, col=1)
-    fig.update_xaxes(showticklabels=True, row=3, col=1)
+    # Custom x-axis formatting to show only market hours
+    fig.update_xaxes(
+        tickformat="%H:%M",  # Show time in HH:MM format
+        showticklabels=False, 
+        row=1, col=1
+    )
+    fig.update_xaxes(
+        tickformat="%H:%M",
+        showticklabels=False, 
+        row=2, col=1
+    )
+    fig.update_xaxes(
+        tickformat="%H:%M %d-%b",  # Show time and date on bottom chart
+        showticklabels=True, 
+        row=3, col=1
+    )
+    
+    # Add market session markers
+    if not df_filtered.empty:
+        session_times = [
+            ("09:15", "Opening Bell", "#ffdd44"),
+            ("12:00", "Midday", "#44ddff"), 
+            ("15:30", "Closing Bell", "#ff4444")
+        ]
+        
+        for time_str, label, color in session_times:
+            # Find dates in the filtered data
+            for date in df_filtered['datetime'].dt.date.unique():
+                session_datetime = pd.Timestamp(f"{date} {time_str}").tz_localize('Asia/Kolkata')
+                
+                # Only add marker if it's within our data range
+                if x_start <= session_datetime <= x_end:
+                    fig.add_vline(
+                        x=session_datetime, 
+                        line_dash="dot", 
+                        line_color=color,
+                        annotation_text=label,
+                        annotation_position="top",
+                        row=1, col=1
+                    )
     
     return fig
 
