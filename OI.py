@@ -1,324 +1,1120 @@
-import streamlit as st from streamlit_autorefresh import st_autorefresh import requests import pandas as pd import plotly.graph_objects as go from plotly.subplots import make_subplots import datetime import pytz import numpy as np import math from scipy.stats import norm from datetime import datetime, timedelta
+import streamlit as st
+from streamlit_autorefresh import st_autorefresh
+import requests
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import datetime
+import pytz
+import numpy as np
+import math
+from scipy.stats import norm
+from datetime import datetime, timedelta
+import warnings
+import asyncio
+import websocket
+import json
+import threading
+from collections import defaultdict, deque
+warnings.filterwarnings('ignore')
 
-Page config
+# Page config
+st.set_page_config(page_title="Institutional Nifty Analyzer", page_icon="🏛️", layout="wide")
 
-st.set_page_config(page_title="Nifty Analyzer", page_icon="📈", layout="wide")
+# Enhanced session state management
+if 'market_depth_data' not in st.session_state:
+    st.session_state.market_depth_data = {}
+if 'volume_flow_data' not in st.session_state:
+    st.session_state.volume_flow_data = deque(maxlen=1000)
+if 'option_flow_tracker' not in st.session_state:
+    st.session_state.option_flow_tracker = {}
+if 'portfolio_greeks' not in st.session_state:
+    st.session_state.portfolio_greeks = {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0}
 
----------- CONFIG ----------
+# Function to check if it's market hours
+def is_market_hours():
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    
+    if now.weekday() >= 5:
+        return False
+    
+    market_start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    market_end = now.replace(hour=15, minute=45, second=0, microsecond=0)
+    
+    return market_start <= now <= market_end
 
-CONTRACT_SIZE = 15  # Nifty lot size (adjust if needed) RISK_FREE_RATE = 0.07  # annual risk-free rate for BS (approx). Adjust if you want.
+# Auto-refresh with different intervals for different data
+if is_market_hours():
+    st_autorefresh(interval=15000, key="main_refresh")  # 15 seconds for main data
+else:
+    st.info("🏛️ Market is closed. Institutional analysis in preview mode.")
 
-Function to check if it's market hours
+# Credentials
+DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
+DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", "")
+TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
+NIFTY_SCRIP = 13
+NIFTY_SEG = "IDX_I"
 
-def is_market_hours(): ist = pytz.timezone('Asia/Kolkata') now = datetime.now(ist) if now.weekday() >= 5: return False market_start = now.replace(hour=9, minute=0, second=0, microsecond=0) market_end = now.replace(hour=15, minute=45, second=0, microsecond=0) return market_start <= now <= market_end
+class InstitutionalDhanAPI:
+    def __init__(self):
+        self.headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'access-token': DHAN_ACCESS_TOKEN,
+            'client-id': DHAN_CLIENT_ID
+        }
+        self.depth_cache = {}
+        self.volume_profile = defaultdict(list)
+    
+    def get_market_quote_bulk(self, instruments):
+        """Get market depth for multiple instruments"""
+        url = "https://api.dhan.co/v2/marketfeed/quote"
+        payload = instruments
+        try:
+            response = requests.post(url, headers=self.headers, json=payload)
+            return response.json() if response.status_code == 200 else None
+        except:
+            return None
+    
+    def get_intraday_data(self, interval="5", days_back=1):
+        url = "https://api.dhan.co/v2/charts/intraday"
+        ist = pytz.timezone('Asia/Kolkata')
+        end_date = datetime.now(ist)
+        start_date = end_date - timedelta(days=days_back)
+        
+        payload = {
+            "securityId": str(NIFTY_SCRIP),
+            "exchangeSegment": NIFTY_SEG,
+            "instrument": "INDEX",
+            "interval": interval,
+            "oi": False,
+            "fromDate": start_date.strftime("%Y-%m-%d %H:%M:%S"),
+            "toDate": end_date.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        try:
+            response = requests.post(url, headers=self.headers, json=payload)
+            return response.json() if response.status_code == 200 else None
+        except:
+            return None
 
-Only run autorefresh during market hours
-
-if is_market_hours(): st_autorefresh(interval=35000, key="refresh") else: st.info("Market is closed. Auto-refresh disabled.")
-
-Credentials
-
-DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "") DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", "") TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "") TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", "")) NIFTY_SCRIP = 13 NIFTY_SEG = "IDX_I"
-
-class DhanAPI: def init(self): self.headers = { 'Accept': 'application/json', 'Content-Type': 'application/json', 'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID } def get_intraday_data(self, interval="5", days_back=1): url = "https://api.dhan.co/v2/charts/intraday" ist = pytz.timezone('Asia/Kolkata') end_date = datetime.now(ist) start_date = end_date - timedelta(days=days_back) payload = { "securityId": str(NIFTY_SCRIP), "exchangeSegment": NIFTY_SEG, "instrument": "INDEX", "interval": interval, "oi": False, "fromDate": start_date.strftime("%Y-%m-%d %H:%M:%S"), "toDate": end_date.strftime("%Y-%m-%d %H:%M:%S") } try: response = requests.post(url, headers=self.headers, json=payload, timeout=10) return response.json() if response.status_code == 200 else None except: return None def get_ltp_data(self): url = "https://api.dhan.co/v2/marketfeed/ltp" payload = {NIFTY_SEG: [NIFTY_SCRIP]} try: response = requests.post(url, headers=self.headers, json=payload, timeout=10) return response.json() if response.status_code == 200 else None except: return None
-
-Option chain helpers
-
-def get_option_chain(expiry): url = "https://api.dhan.co/v2/optionchain" headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'} payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG, "Expiry": expiry} try: response = requests.post(url, headers=headers, json=payload, timeout=10) return response.json() if response.status_code == 200 else None except: return None
-
-def get_expiry_list(): url = "https://api.dhan.co/v2/optionchain/expirylist" headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'} payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG} try: response = requests.post(url, headers=headers, json=payload, timeout=10) return response.json() if response.status_code == 200 else None except: return None
-
-def send_telegram(message): if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage" payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"} try: requests.post(url, json=payload, timeout=10) except: pass
-
-Candle processing
-
-def process_candle_data(data): if not data or 'open' not in data: return pd.DataFrame() df = pd.DataFrame({ 'timestamp': data['timestamp'], 'open': data['open'], 'high': data['high'], 'low': data['low'], 'close': data['close'], 'volume': data['volume'] }) ist = pytz.timezone('Asia/Kolkata') df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist) return df
-
-Indicators
-
-def calculate_rsi(data, period=14): delta = data['close'].diff() gain = (delta.where(delta > 0, 0)).rolling(window=period).mean() loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean() rs = gain / loss rsi = 100 - (100 / (1 + rs)) return rsi
-
-def calculate_vwap(df): # VWAP on underlying using candle typical price * volume if df.empty: return pd.Series() tp = (df['high'] + df['low'] + df['close']) / 3 cum_turnover = (tp * df['volume']).cumsum() cum_volume = df['volume'].cumsum() vwap = (cum_turnover / cum_volume).fillna(method='ffill') return vwap
-
-def calculate_atr(df, period=14): if df.empty: return pd.Series() high_low = df['high'] - df['low'] high_close = (df['high'] - df['close'].shift()).abs() low_close = (df['low'] - df['close'].shift()).abs() tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1) atr = tr.rolling(window=period).mean() return atr
-
-Black-Scholes (European) price for option - used for IV
-
-def bs_price(S, K, T, r, sigma, option_type='call'): if T <= 0: if option_type == 'call': return max(0.0, S - K) else: return max(0.0, K - S) d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T)) d2 = d1 - sigma * math.sqrt(T) if option_type == 'call': return S * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2) else: return K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
-
-Implied volatility via bisection
-
-def implied_volatility(market_price, S, K, T, r, option_type='call', tol=1e-4, max_iter=100): if market_price <= 0: return 0.0 low, high = 1e-6, 5.0 for i in range(max_iter): mid = (low + high) / 2 p = bs_price(S, K, T, r, mid, option_type) if abs(p - market_price) < tol: return mid if p > market_price: high = mid else: low = mid return mid
-
-Option gamma (BS formula)
-
-def option_gamma(S, K, T, r, sigma): if T <= 0 or sigma <= 0: return 0.0 d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T)) return norm.pdf(d1) / (S * sigma * math.sqrt(T))
-
-Calculate IV, GEX and Volume Spread (approx) from option chain
-
-def enrich_option_chain(raw_data, underlying_price, expiry_date): # raw_data: oc dict from DHAN calls, puts = [], [] for strike, strike_data in raw_data.items(): strike_f = float(strike) if 'ce' in strike_data: ce = strike_data['ce'].copy() ce['strikePrice'] = strike_f ce['type'] = 'CE' calls.append(ce) if 'pe' in strike_data: pe = strike_data['pe'].copy() pe['strikePrice'] = strike_f pe['type'] = 'PE' puts.append(pe) df_ce = pd.DataFrame(calls) df_pe = pd.DataFrame(puts) if df_ce.empty and df_pe.empty: return pd.DataFrame() # merge safely on strike df = pd.merge(df_ce, df_pe, on='strikePrice', how='outer', suffixes=('_CE', '_PE'))
-
-# time to expiry in years (approx)
-try:
-    exp_dt = pd.to_datetime(expiry_date)
-except:
-    exp_dt = datetime.now(pytz.timezone('Asia/Kolkata'))
-now = datetime.now(pytz.timezone('Asia/Kolkata'))
-T = max((exp_dt - now).total_seconds(), 0) / (365 * 24 * 3600)
-
-iv_list = []
-gex_list = []
-delta_buy = []
-delta_sell = []
-
-for _, row in df.iterrows():
-    # CE
+def get_option_chain_detailed(expiry):
+    """Enhanced option chain with full data"""
+    url = "https://api.dhan.co/v2/optionchain"
+    headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
+    payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG, "Expiry": expiry}
     try:
-        ce_ltp = float(row.get('last_price_CE', 0) or 0)
-        ce_bid = float(row.get('top_bid_price_CE', 0) or 0)
-        ce_ask = float(row.get('top_ask_price_CE', 0) or 0)
-        ce_oi = float(row.get('oi_CE', 0) or 0)
-        ce_vol = float(row.get('totalTradedVolume_CE', 0) or 0)
+        response = requests.post(url, headers=headers, json=payload)
+        return response.json() if response.status_code == 200 else None
     except:
-        ce_ltp = ce_bid = ce_ask = ce_oi = ce_vol = 0
-    # PE
+        return None
+
+def get_expiry_list():
+    url = "https://api.dhan.co/v2/optionchain/expirylist"
+    headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
+    payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG}
     try:
-        pe_ltp = float(row.get('last_price_PE', 0) or 0)
-        pe_bid = float(row.get('top_bid_price_PE', 0) or 0)
-        pe_ask = float(row.get('top_ask_price_PE', 0) or 0)
-        pe_oi = float(row.get('oi_PE', 0) or 0)
-        pe_vol = float(row.get('totalTradedVolume_PE', 0) or 0)
+        response = requests.post(url, headers=headers, json=payload)
+        return response.json() if response.status_code == 200 else None
     except:
-        pe_ltp = pe_bid = pe_ask = pe_oi = pe_vol = 0
+        return None
 
-    K = float(row['strikePrice'])
-    # IV (approx) - use last traded price classification
-    ce_iv = implied_volatility(ce_ltp, underlying_price, K, T, RISK_FREE_RATE, 'call') if ce_ltp > 0 else 0
-    pe_iv = implied_volatility(pe_ltp, underlying_price, K, T, RISK_FREE_RATE, 'put') if pe_ltp > 0 else 0
+def send_institutional_alert(message, priority="NORMAL"):
+    """Enhanced alert system for institutional signals"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    
+    priority_emojis = {
+        "LOW": "📊",
+        "NORMAL": "🏛️", 
+        "HIGH": "🚨",
+        "CRITICAL": "🔴"
+    }
+    
+    formatted_message = f"{priority_emojis.get(priority, '📊')} INSTITUTIONAL ALERT - {priority}\n\n{message}"
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": formatted_message, "parse_mode": "HTML"}
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except:
+        pass
 
-    # gamma per option
-    ce_gamma = option_gamma(underlying_price, K, T, RISK_FREE_RATE, ce_iv) if ce_iv > 0 else 0
-    pe_gamma = option_gamma(underlying_price, K, T, RISK_FREE_RATE, pe_iv) if pe_iv > 0 else 0
+def process_candle_data(data):
+    if not data or 'open' not in data:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame({
+        'timestamp': data['timestamp'],
+        'open': data['open'],
+        'high': data['high'],
+        'low': data['low'],
+        'close': data['close'],
+        'volume': data['volume']
+    })
+    
+    ist = pytz.timezone('Asia/Kolkata')
+    df['datetime'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist)
+    return df
 
-    # approximate GEX contribution: gamma * OI * contract_size * underlying^2 (relative scale)
-    ce_gex = ce_gamma * ce_oi * CONTRACT_SIZE * (underlying_price ** 2)
-    pe_gex = pe_gamma * pe_oi * CONTRACT_SIZE * (underlying_price ** 2)
+# Advanced Technical Indicators
+def calculate_institutional_indicators(df):
+    """Calculate institutional-grade technical indicators"""
+    if df.empty:
+        return df
+    
+    # Enhanced VWAP with multiple timeframes
+    typical_price = (df['high'] + df['low'] + df['close']) / 3
+    cumulative_pv = (typical_price * df['volume']).cumsum()
+    cumulative_volume = df['volume'].cumsum()
+    
+    df['vwap'] = cumulative_pv / cumulative_volume
+    
+    # VWAP bands (institutional levels)
+    price_variance = ((typical_price - df['vwap']) ** 2 * df['volume']).cumsum() / cumulative_volume
+    std_dev = np.sqrt(price_variance)
+    
+    df['vwap_upper_1'] = df['vwap'] + std_dev
+    df['vwap_lower_1'] = df['vwap'] - std_dev
+    df['vwap_upper_2'] = df['vwap'] + 2 * std_dev
+    df['vwap_lower_2'] = df['vwap'] - 2 * std_dev
+    df['vwap_upper_3'] = df['vwap'] + 3 * std_dev  # Extreme levels
+    df['vwap_lower_3'] = df['vwap'] - 3 * std_dev
+    
+    # Volume-weighted RSI
+    df['rsi'] = calculate_rsi(df)
+    df['volume_rsi'] = calculate_volume_weighted_rsi(df)
+    
+    # True Range and ATR variants
+    df['prev_close'] = df['close'].shift(1)
+    df['tr1'] = df['high'] - df['low']
+    df['tr2'] = abs(df['high'] - df['prev_close'])
+    df['tr3'] = abs(df['low'] - df['prev_close'])
+    df['true_range'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+    
+    # Multiple ATR periods for different strategies
+    df['atr_14'] = df['true_range'].rolling(window=14).mean()
+    df['atr_21'] = df['true_range'].rolling(window=21).mean()
+    df['atr_50'] = df['true_range'].rolling(window=50).mean()
+    
+    # Volume Profile Analysis
+    df['volume_profile'] = calculate_volume_profile(df)
+    
+    # Price Action Strength
+    df['price_momentum'] = calculate_price_momentum(df)
+    
+    return df
 
-    # Volume spread approx: classify last traded volume as buy or sell depending on LTP vs bid/ask
-    # Note: this is an approximation unless tick data is available
-    ce_buy = ce_sell = 0
-    if ce_ltp and ce_ask and ce_bid:
-        if abs(ce_ltp - ce_ask) < 1e-9 or ce_ltp >= ce_ask:
-            ce_buy = ce_vol
-        elif abs(ce_ltp - ce_bid) < 1e-9 or ce_ltp <= ce_bid:
-            ce_sell = ce_vol
-        else:
-            # ambiguous trade between bid and ask -> split
-            ce_buy = ce_vol / 2
-            ce_sell = ce_vol / 2
-    pe_buy = pe_sell = 0
-    if pe_ltp and pe_ask and pe_bid:
-        if abs(pe_ltp - pe_ask) < 1e-9 or pe_ltp >= pe_ask:
-            pe_buy = pe_vol
-        elif abs(pe_ltp - pe_bid) < 1e-9 or pe_ltp <= pe_bid:
-            pe_sell = pe_vol
-        else:
-            pe_buy = pe_vol / 2
-            pe_sell = pe_vol / 2
+def calculate_rsi(data, period=14):
+    """Enhanced RSI calculation"""
+    delta = data['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-    iv_list.append({'strike': K, 'ce_iv': ce_iv, 'pe_iv': pe_iv})
-    gex_list.append({'strike': K, 'ce_gex': ce_gex, 'pe_gex': pe_gex})
-    delta_buy.append({'strike': K, 'ce_buy': ce_buy, 'pe_buy': pe_buy})
-    delta_sell.append({'strike': K, 'ce_sell': ce_sell, 'pe_sell': pe_sell})
+def calculate_volume_weighted_rsi(df, period=14):
+    """Volume-weighted RSI for institutional flow analysis"""
+    if len(df) < period + 1:
+        return pd.Series([np.nan] * len(df), index=df.index)
+    
+    price_change = df['close'].diff()
+    volume_weighted_change = price_change * df['volume']
+    
+    gains = volume_weighted_change.where(volume_weighted_change > 0, 0)
+    losses = -volume_weighted_change.where(volume_weighted_change < 0, 0)
+    
+    avg_gains = gains.rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
+    avg_losses = losses.rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
+    
+    rs = avg_gains / avg_losses
+    volume_rsi = 100 - (100 / (1 + rs))
+    
+    return volume_rsi
 
-iv_df = pd.DataFrame(iv_list)
-gex_df = pd.DataFrame(gex_list)
-buy_df = pd.DataFrame(delta_buy)
-sell_df = pd.DataFrame(delta_sell)
+def calculate_volume_profile(df, bins=20):
+    """Calculate volume profile for institutional accumulation/distribution"""
+    if df.empty:
+        return pd.Series([np.nan] * len(df), index=df.index)
+    
+    price_range = df['high'].max() - df['low'].min()
+    bin_size = price_range / bins
+    
+    volume_at_price = []
+    for _, row in df.iterrows():
+        price_bin = int((row['close'] - df['low'].min()) / bin_size)
+        price_bin = min(price_bin, bins - 1)
+        volume_at_price.append(price_bin)
+    
+    return pd.Series(volume_at_price, index=df.index)
 
-merged = df.merge(iv_df, left_on='strikePrice', right_on='strike', how='left')
-merged = merged.merge(gex_df, left_on='strikePrice', right_on='strike', how='left', suffixes=('', '_gex'))
-merged = merged.merge(buy_df, left_on='strikePrice', right_on='strike', how='left')
-merged = merged.merge(sell_df, left_on='strikePrice', right_on='strike', how='left', suffixes=('', '_sell'))
+def calculate_price_momentum(df, period=10):
+    """Calculate price momentum for trend strength"""
+    if len(df) < period:
+        return pd.Series([0] * len(df), index=df.index)
+    
+    momentum = ((df['close'] / df['close'].shift(period)) - 1) * 100
+    return momentum
 
-# fillna
-merged.fillna(0, inplace=True)
+# Advanced Options Analysis
+def analyze_institutional_options(expiry, spot_price):
+    """Comprehensive institutional options analysis"""
+    option_data = get_option_chain_detailed(expiry)
+    if not option_data or 'data' not in option_data:
+        return None, None, None, None
+    
+    data = option_data['data']
+    underlying = data['last_price']
+    oc_data = data['oc']
+    
+    # Calculate days to expiry
+    expiry_date = datetime.strptime(expiry, "%Y-%m-%d")
+    current_date = datetime.now()
+    days_to_expiry = max((expiry_date - current_date).days, 1)
+    time_to_expiry = days_to_expiry / 365.0
+    
+    calls, puts = [], []
+    for strike, strike_data in oc_data.items():
+        if 'ce' in strike_data:
+            ce_data = strike_data['ce'].copy()
+            ce_data['strikePrice'] = float(strike)
+            calls.append(ce_data)
+        if 'pe' in strike_data:
+            pe_data = strike_data['pe'].copy()
+            pe_data['strikePrice'] = float(strike)
+            puts.append(pe_data)
+    
+    df_ce = pd.DataFrame(calls)
+    df_pe = pd.DataFrame(puts)
+    df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
+    
+    # Filter for institutional analysis (ATM ±5 strikes)
+    atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
+    df_filtered = df[abs(df['strikePrice'] - atm_strike) <= 250]  # ±5 strikes
+    
+    # Enhanced institutional metrics
+    institutional_metrics = []
+    total_ce_volume = total_pe_volume = 0
+    total_ce_oi = total_pe_oi = 0
+    gamma_exposure = 0
+    vega_exposure = 0
+    
+    # Volatility surface data
+    volatility_surface = []
+    
+    for _, row in df_filtered.iterrows():
+        strike = row['strikePrice']
+        
+        # Get all available data
+        ce_last_price = row.get('last_price_CE', 0)
+        pe_last_price = row.get('last_price_PE', 0)
+        ce_volume = row.get('volume_CE', 0)
+        pe_volume = row.get('volume_PE', 0)
+        ce_oi = row.get('oi_CE', 0)
+        pe_oi = row.get('oi_PE', 0)
+        ce_prev_oi = row.get('previous_oi_CE', 0)
+        pe_prev_oi = row.get('previous_oi_PE', 0)
+        
+        # Greeks from API
+        ce_greeks = row.get('greeks_CE', {})
+        pe_greeks = row.get('greeks_PE', {})
+        
+        ce_delta = ce_greeks.get('delta', 0)
+        pe_delta = pe_greeks.get('delta', 0)
+        ce_gamma = ce_greeks.get('gamma', 0)
+        pe_gamma = pe_greeks.get('gamma', 0)
+        ce_theta = ce_greeks.get('theta', 0)
+        pe_theta = pe_greeks.get('theta', 0)
+        ce_vega = ce_greeks.get('vega', 0)
+        pe_vega = pe_greeks.get('vega', 0)
+        
+        # IV from API
+        ce_iv = row.get('implied_volatility_CE', 0) * 100 if row.get('implied_volatility_CE') else 0
+        pe_iv = row.get('implied_volatility_PE', 0) * 100 if row.get('implied_volatility_PE') else 0
+        
+        # Advanced order flow analysis
+        ce_bid_qty = row.get('top_bid_quantity_CE', 0)
+        ce_ask_qty = row.get('top_ask_quantity_CE', 0)
+        pe_bid_qty = row.get('top_bid_quantity_PE', 0)
+        pe_ask_qty = row.get('top_ask_quantity_PE', 0)
+        
+        # Institutional flow classification
+        ce_aggressive_buy = ce_ask_qty * 0.6 if ce_ask_qty > 0 else ce_volume * 0.3
+        ce_aggressive_sell = ce_bid_qty * 0.6 if ce_bid_qty > 0 else ce_volume * 0.3
+        pe_aggressive_buy = pe_ask_qty * 0.6 if pe_ask_qty > 0 else pe_volume * 0.3
+        pe_aggressive_sell = pe_bid_qty * 0.6 if pe_bid_qty > 0 else pe_volume * 0.3
+        
+        # Volume spread delta
+        ce_volume_delta = ce_aggressive_buy - ce_aggressive_sell
+        pe_volume_delta = pe_aggressive_buy - pe_aggressive_sell
+        
+        # Gamma exposure calculation (institutional focus)
+        ce_gex = ce_oi * ce_gamma * underlying * underlying * 0.01
+        pe_gex = pe_oi * pe_gamma * underlying * underlying * 0.01 * (-1)
+        net_gex = ce_gex + pe_gex
+        
+        # Vega exposure
+        ce_vex = ce_oi * ce_vega
+        pe_vex = pe_oi * pe_vega
+        net_vex = ce_vex + pe_vex
+        
+        # Accumulate totals
+        total_ce_volume += ce_volume
+        total_pe_volume += pe_volume
+        total_ce_oi += ce_oi
+        total_pe_oi += pe_oi
+        gamma_exposure += abs(net_gex)
+        vega_exposure += abs(net_vex)
+        
+        # Volatility surface point
+        volatility_surface.append({
+            'strike': strike,
+            'moneyness': strike / underlying,
+            'ce_iv': ce_iv,
+            'pe_iv': pe_iv,
+            'days_to_expiry': days_to_expiry
+        })
+        
+        # Institutional bias analysis
+        volume_bias = "Bullish" if pe_volume > ce_volume * 1.1 else "Bearish" if ce_volume > pe_volume * 1.1 else "Neutral"
+        oi_bias = "Bullish" if (pe_oi - pe_prev_oi) > (ce_oi - ce_prev_oi) else "Bearish" if (ce_oi - ce_prev_oi) > (pe_oi - pe_prev_oi) else "Neutral"
+        flow_bias = "Bullish" if pe_volume_delta > ce_volume_delta else "Bearish" if ce_volume_delta > pe_volume_delta else "Neutral"
+        
+        # Support/Resistance levels
+        level = "Strong Support" if pe_oi > ce_oi * 1.5 else "Support" if pe_oi > ce_oi * 1.2 else "Strong Resistance" if ce_oi > pe_oi * 1.5 else "Resistance" if ce_oi > pe_oi * 1.2 else "Neutral"
+        
+        institutional_metrics.append({
+            "Strike": strike,
+            "Zone": 'ATM' if strike == atm_strike else 'ITM' if strike < underlying else 'OTM',
+            "Level": level,
+            "Volume_Bias": volume_bias,
+            "OI_Bias": oi_bias,
+            "Flow_Bias": flow_bias,
+            "PCR": round(pe_oi / ce_oi if ce_oi > 0 else 0, 3),
+            "CE_IV": round(ce_iv, 1),
+            "PE_IV": round(pe_iv, 1),
+            "IV_Skew": round(pe_iv - ce_iv, 1),
+            "CE_Volume_Delta": round(ce_volume_delta, 0),
+            "PE_Volume_Delta": round(pe_volume_delta, 0),
+            "Net_GEX": round(net_gex / 1000000, 2),  # In millions
+            "Net_VEX": round(net_vex / 1000, 2),     # In thousands
+            "CE_Delta_Exposure": round(ce_oi * ce_delta / 1000, 2),  # In thousands
+            "PE_Delta_Exposure": round(pe_oi * abs(pe_delta) / 1000, 2),
+            "Total_Volume": ce_volume + pe_volume,
+            "OI_Change": (ce_oi - ce_prev_oi) + (pe_oi - pe_prev_oi)
+        })
+    
+    # Summary analytics
+    summary_analytics = {
+        'total_volume_ratio': total_pe_volume / total_ce_volume if total_ce_volume > 0 else 0,
+        'total_oi_ratio': total_pe_oi / total_ce_oi if total_ce_oi > 0 else 0,
+        'net_gamma_exposure': gamma_exposure / 1000000,  # In millions
+        'net_vega_exposure': vega_exposure / 1000,       # In thousands
+        'volatility_surface': volatility_surface,
+        'days_to_expiry': days_to_expiry,
+        'institutional_sentiment': determine_institutional_sentiment(institutional_metrics)
+    }
+    
+    # Risk metrics
+    risk_metrics = calculate_portfolio_risk_metrics(institutional_metrics, underlying)
+    
+    return underlying, pd.DataFrame(institutional_metrics), summary_analytics, risk_metrics
 
-# compute deltas and cumulative across strikes
-merged['ce_delta'] = merged['ce_buy'] - merged['ce_sell']
-merged['pe_delta'] = merged['pe_buy'] - merged['pe_sell']
+def determine_institutional_sentiment(metrics_data):
+    """Determine overall institutional sentiment"""
+    bullish_signals = bearish_signals = neutral_signals = 0
+    
+    for metric in metrics_data:
+        volume_bias = metric.get('Volume_Bias', 'Neutral')
+        oi_bias = metric.get('OI_Bias', 'Neutral')
+        flow_bias = metric.get('Flow_Bias', 'Neutral')
+        
+        biases = [volume_bias, oi_bias, flow_bias]
+        bullish_signals += biases.count('Bullish')
+        bearish_signals += biases.count('Bearish')
+        neutral_signals += biases.count('Neutral')
+    
+    if bullish_signals > bearish_signals * 1.2:
+        return "INSTITUTIONAL BULLISH"
+    elif bearish_signals > bullish_signals * 1.2:
+        return "INSTITUTIONAL BEARISH"
+    else:
+        return "INSTITUTIONAL NEUTRAL"
 
-# net GEX across chain (positive means net long gamma from market perspective)
-merged['net_gex'] = merged['ce_gex'] - merged['pe_gex']
+def calculate_portfolio_risk_metrics(metrics_data, spot_price):
+    """Calculate portfolio-level risk metrics"""
+    total_delta = sum(m.get('CE_Delta_Exposure', 0) - m.get('PE_Delta_Exposure', 0) for m in metrics_data)
+    total_gamma = sum(abs(m.get('Net_GEX', 0)) for m in metrics_data)
+    total_vega = sum(abs(m.get('Net_VEX', 0)) for m in metrics_data)
+    
+    # Risk scenarios
+    price_scenarios = [0.95, 0.97, 0.99, 1.00, 1.01, 1.03, 1.05]  # ±5% range
+    scenario_pnl = []
+    
+    for scenario in price_scenarios:
+        new_price = spot_price * scenario
+        price_change = new_price - spot_price
+        # Simplified PnL calculation
+        pnl = total_delta * price_change + 0.5 * total_gamma * (price_change ** 2)
+        scenario_pnl.append(pnl)
+    
+    return {
+        'portfolio_delta': total_delta,
+        'portfolio_gamma': total_gamma,
+        'portfolio_vega': total_vega,
+        'max_loss_5pct': min(scenario_pnl),
+        'max_gain_5pct': max(scenario_pnl),
+        'scenarios': list(zip(price_scenarios, scenario_pnl))
+    }
 
-return merged
+def create_institutional_dashboard_chart(df, title):
+    """Create comprehensive institutional dashboard"""
+    if df.empty:
+        return go.Figure()
+    
+    # Calculate all institutional indicators
+    df = calculate_institutional_indicators(df)
+    
+    # Create multi-panel chart
+    fig = make_subplots(
+        rows=5, cols=2,
+        shared_xaxes=True,
+        vertical_spacing=0.02,
+        row_heights=[0.35, 0.15, 0.15, 0.15, 0.2],
+        column_widths=[0.7, 0.3],
+        subplot_titles=[
+            'Price Action with Institutional Levels', 'Volume Profile',
+            'Volume Analysis', 'RSI Comparison',
+            'ATR Multi-Timeframe', 'Price Momentum',
+            'Order Flow Strength', 'VWAP Deviation'
+        ],
+        specs=[
+            [{"secondary_y": False}, {"secondary_y": False}],
+            [{"secondary_y": False}, {"secondary_y": False}],
+            [{"secondary_y": False}, {"secondary_y": False}],
+            [{"secondary_y": False}, {"secondary_y": False}],
+            [{"colspan": 2}, None]
+        ]
+    )
+    
+    # Main price chart with institutional levels
+    fig.add_trace(go.Candlestick(
+        x=df['datetime'], open=df['open'], high=df['high'],
+        low=df['low'], close=df['close'], name='Nifty',
+        increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
+    ), row=1, col=1)
+    
+    # VWAP and institutional bands
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap'], name='VWAP',
+                            line=dict(color='orange', width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap_upper_2'], name='VWAP +2σ',
+                            line=dict(color='red', width=1, dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap_lower_2'], name='VWAP -2σ',
+                            line=dict(color='green', width=1, dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap_upper_3'], name='VWAP +3σ',
+                            line=dict(color='darkred', width=1, dash='dot'), opacity=0.7), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap_lower_3'], name='VWAP -3σ',
+                            line=dict(color='darkgreen', width=1, dash='dot'), opacity=0.7), row=1, col=1)
+    
+    # Volume profile (simplified histogram)
+    if 'volume_profile' in df.columns:
+        fig.add_trace(go.Histogram(y=df['close'], nbinsy=20, name='Volume Profile',
+                                  marker_color='rgba(55, 128, 191, 0.7)'), row=1, col=2)
+    
+    # Volume analysis
+    volume_colors = ['#26a69a' if close >= open else '#ef5350'
+                    for close, open in zip(df['close'], df['open'])]
+    fig.add_trace(go.Bar(x=df['datetime'], y=df['volume'], name='Volume',
+                        marker_color=volume_colors, opacity=0.7), row=2, col=1)
+    
+    # Average volume line
+    avg_volume = df['volume'].rolling(20).mean()
+    fig.add_trace(go.Scatter(x=df['datetime'], y=avg_volume, name='Avg Volume',
+                            line=dict(color='purple', width=1)), row=2, col=1)
+    
+    # Volume strength indicator
+    volume_strength = df['volume'] / avg_volume
+    fig.add_trace(go.Scatter(x=df['datetime'], y=volume_strength, name='Volume Strength',
+                            line=dict(color='blue', width=2)), row=2, col=2)
+    fig.add_hline(y=1.5, line_dash="dash", line_color="red", row=2, col=2)
+    fig.add_hline(y=0.5, line_dash="dash", line_color="green", row=2, col=2)
+    
+    # RSI comparison
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['rsi'], name='Traditional RSI',
+                            line=dict(color='orange', width=2)), row=3, col=1)
+    if 'volume_rsi' in df.columns:
+        fig.add_trace(go.Scatter(x=df['datetime'], y=df['volume_rsi'], name='Volume RSI',
+                                line=dict(color='red', width=2)), row=3, col=1)
+    
+    # RSI levels
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    fig.add_hline(y=50, line_dash="dot", line_color="gray", row=3, col=1)
+    
+    # RSI divergence
+    rsi_divergence = df['rsi'] - df.get('volume_rsi', df['rsi'])
+    fig.add_trace(go.Scatter(x=df['datetime'], y=rsi_divergence, name='RSI Divergence',
+                            line=dict(color='purple', width=1), fill='tonexty'), row=3, col=2)
+    
+    # Multi-timeframe ATR
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['atr_14'], name='ATR 14',
+                            line=dict(color='blue', width=2)), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['atr_21'], name='ATR 21',
+                            line=dict(color='green', width=2)), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=df['atr_50'], name='ATR 50',
+                            line=dict(color='red', width=1)), row=4, col=1)
+    
+    # Price momentum
+    if 'price_momentum' in df.columns:
+        fig.add_trace(go.Scatter(x=df['datetime'], y=df['price_momentum'], name='Price Momentum',
+                                line=dict(color='purple', width=2), fill='tonexty'), row=4, col=2)
+        fig.add_hline(y=0, line_dash="solid", line_color="gray", row=4, col=2)
+    
+    # Order flow strength (bottom panel)
+    current_price = df['close'].iloc[-1] if not df.empty else 0
+    vwap_current = df['vwap'].iloc[-1] if 'vwap' in df.columns else 0
+    vwap_deviation = ((current_price - vwap_current) / vwap_current * 100) if vwap_current > 0 else 0
+    
+    # Create order flow strength indicator
+    order_flow_strength = calculate_order_flow_strength(df)
+    fig.add_trace(go.Scatter(x=df['datetime'], y=order_flow_strength, name='Order Flow Strength',
+                            line=dict(color='gold', width=3), fill='tonexty'), row=5, col=1)
+    
+    fig.add_hline(y=0, line_dash="solid", line_color="white", row=5, col=1)
+    fig.add_hline(y=50, line_dash="dash", line_color="red", row=5, col=1)
+    fig.add_hline(y=-50, line_dash="dash", line_color="green", row=5, col=1)
+    
+    fig.update_layout(
+        title=title,
+        template='plotly_dark',
+        height=1200,
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    # Update y-axis ranges
+    fig.update_yaxes(title_text="RSI", range=[0, 100], row=3, col=1)
+    fig.update_yaxes(title_text="Order Flow", range=[-100, 100], row=5, col=1)
+    
+    return fig
 
-Pivot code (unchanged)
+def calculate_order_flow_strength(df, window=20):
+    """Calculate institutional order flow strength"""
+    if len(df) < window:
+        return pd.Series([0] * len(df), index=df.index)
+    
+    # Volume-weighted price change
+    price_change = df['close'].pct_change()
+    volume_norm = df['volume'] / df['volume'].rolling(window).mean()
+    
+    # Order flow strength combines price momentum with volume
+    flow_strength = (price_change * volume_norm * 100).rolling(window).mean()
+    
+    return flow_strength.fillna(0)
 
-def get_pivots(df, timeframe="5", length=4): if df.empty: return [] rule_map = {"3": "3min", "5": "5min", "10": "10min", "15": "15min"} rule = rule_map.get(timeframe, "5min") df_temp = df.set_index('datetime') try: resampled = df_temp.resample(rule).agg({ "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum" }).dropna() if len(resampled) < length * 2 + 1: return [] max_vals = resampled['high'].rolling(window=length2+1, center=True).max() min_vals = resampled['low'].rolling(window=length2+1, center=True).min() pivots = [] for timestamp, value in resampled['high'][resampled['high'] == max_vals].items(): pivots.append({'type': 'high', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value}) for timestamp, value in resampled['low'][resampled['low'] == min_vals].items(): pivots.append({'type': 'low', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value}) return pivots except: return []
+def create_volatility_surface_chart(volatility_data):
+    """Create 3D volatility surface visualization"""
+    if not volatility_data:
+        return go.Figure()
+    
+    df_vol = pd.DataFrame(volatility_data)
+    
+    fig = go.Figure(data=[go.Surface(
+        z=df_vol.pivot_table(values='ce_iv', index='days_to_expiry', columns='moneyness').values,
+        x=df_vol['moneyness'].unique(),
+        y=df_vol['days_to_expiry'].unique(),
+        colorscale='RdYlBu_r',
+        name='Call IV Surface'
+    )])
+    
+    fig.update_layout(
+        title='Implied Volatility Surface - Calls',
+        scene=dict(
+            xaxis_title='Moneyness (Strike/Spot)',
+            yaxis_title='Days to Expiry',
+            zaxis_title='Implied Volatility (%)'
+        ),
+        template='plotly_dark',
+        height=500
+    )
+    
+    return fig
 
-Chart creation with VWAP band plotting
+def create_gamma_exposure_chart(options_data):
+    """Create gamma exposure visualization"""
+    if options_data is None or options_data.empty:
+        return go.Figure()
+    
+    fig = go.Figure()
+    
+    # Positive and negative GEX
+    pos_gex = options_data[options_data['Net_GEX'] > 0]
+    neg_gex = options_data[options_data['Net_GEX'] < 0]
+    
+    fig.add_trace(go.Bar(
+        x=pos_gex['Strike'],
+        y=pos_gex['Net_GEX'],
+        name='Positive GEX',
+        marker_color='green',
+        opacity=0.7
+    ))
+    
+    fig.add_trace(go.Bar(
+        x=neg_gex['Strike'],
+        y=neg_gex['Net_GEX'],
+        name='Negative GEX',
+        marker_color='red',
+        opacity=0.7
+    ))
+    
+    fig.update_layout(
+        title='Gamma Exposure by Strike',
+        xaxis_title='Strike Price',
+        yaxis_title='Net Gamma Exposure (₹ Millions)',
+        template='plotly_dark',
+        height=400
+    )
+    
+    return fig
 
-def create_chart(df, title): if df.empty: return go.Figure() df['rsi'] = calculate_rsi(df) df['vwap'] = calculate_vwap(df) df['atr'] = calculate_atr(df) fig = make_subplots( rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.6, 0.2, 0.2], subplot_titles=('Price', 'Volume', 'RSI') ) fig.add_trace(go.Candlestick( x=df['datetime'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Nifty', increasing_line_color='#00ff88', decreasing_line_color='#ff4444' ), row=1, col=1) # VWAP line fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap'], name='VWAP', line=dict(width=2)), row=1, col=1) # VWAP bands (1sigma and 2sigma) computed on typical price deviations tp = (df['high'] + df['low'] + df['close']) / 3 rolling_std = tp.rolling(window=20).std() fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap'] + rolling_std, name='VWAP+1σ', line=dict(width=1, dash='dash')), row=1, col=1) fig.add_trace(go.Scatter(x=df['datetime'], y=df['vwap'] - rolling_std, name='VWAP-1σ', line=dict(width=1, dash='dash')), row=1, col=1) # Volume volume_colors = ['#00ff88' if c >= o else '#ff4444' for c,o in zip(df['close'], df['open'])] fig.add_trace(go.Bar(x=df['datetime'], y=df['volume'], name='Volume', marker_color=volume_colors, opacity=0.7), row=2, col=1) # RSI fig.add_trace(go.Scatter(x=df['datetime'], y=df['rsi'], name='RSI', line=dict(color='#ff9900', width=2)), row=3, col=1) fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1) fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1) fig.add_hline(y=50, line_dash="dot", line_color="gray", row=3, col=1) if len(df) > 50: timeframes = ["5", "10", "15"] colors = ["#ff9900", "#ff44ff", '#4444ff'] for tf, color in zip(timeframes, colors): pivots = get_pivots(df, tf) x_start, x_end = df['datetime'].min(), df['datetime'].max() for pivot in pivots[-5:]: fig.add_shape(type="line", x0=x_start, x1=x_end, y0=pivot['value'], y1=pivot['value'], line=dict(color=color, width=1, dash="dash"), row=1, col=1) fig.update_layout(title=title, template='plotly_dark', height=900, xaxis_rangeslider_visible=False, showlegend=False) fig.update_yaxes(title_text="RSI", range=[0, 100], row=3, col=1) return fig
+def create_options_flow_chart(options_data):
+    """Create options flow analysis chart"""
+    if options_data is None or options_data.empty:
+        return go.Figure()
+    
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=('Volume Delta Flow', 'OI vs Volume', 'IV Skew', 'PCR Analysis'),
+        specs=[[{"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"secondary_y": False}]]
+    )
+    
+    # Volume Delta Flow
+    fig.add_trace(go.Bar(
+        x=options_data['Strike'],
+        y=options_data['CE_Volume_Delta'],
+        name='CE Volume Delta',
+        marker_color='blue',
+        opacity=0.7
+    ), row=1, col=1)
+    
+    fig.add_trace(go.Bar(
+        x=options_data['Strike'],
+        y=options_data['PE_Volume_Delta'],
+        name='PE Volume Delta',
+        marker_color='red',
+        opacity=0.7
+    ), row=1, col=1)
+    
+    # OI vs Volume scatter
+    fig.add_trace(go.Scatter(
+        x=options_data['Total_Volume'],
+        y=options_data['OI_Change'],
+        mode='markers+text',
+        text=options_data['Strike'],
+        name='OI Change vs Volume',
+        marker=dict(size=8, color=options_data['PCR'], colorscale='RdYlGn', showscale=True)
+    ), row=1, col=2)
+    
+    # IV Skew
+    fig.add_trace(go.Scatter(
+        x=options_data['Strike'],
+        y=options_data['CE_IV'],
+        name='Call IV',
+        line=dict(color='blue', width=2)
+    ), row=2, col=1)
+    
+    fig.add_trace(go.Scatter(
+        x=options_data['Strike'],
+        y=options_data['PE_IV'],
+        name='Put IV',
+        line=dict(color='red', width=2)
+    ), row=2, col=1)
+    
+    # PCR Analysis
+    fig.add_trace(go.Bar(
+        x=options_data['Strike'],
+        y=options_data['PCR'],
+        name='PCR',
+        marker_color='purple',
+        opacity=0.7
+    ), row=2, col=2)
+    
+    fig.add_hline(y=1, line_dash="dash", line_color="white", row=2, col=2)
+    
+    fig.update_layout(
+        title='Institutional Options Flow Analysis',
+        template='plotly_dark',
+        height=800,
+        showlegend=True
+    )
+    
+    return fig
 
-Analyze options with enrichment
+def detect_institutional_signals(df, options_data, summary_analytics, current_price):
+    """Detect institutional-level trading signals"""
+    signals = []
+    
+    if df.empty or options_data is None:
+        return signals
+    
+    # Calculate current indicators
+    df = calculate_institutional_indicators(df)
+    current_vwap = df['vwap'].iloc[-1] if 'vwap' in df.columns else current_price
+    current_rsi = df['rsi'].iloc[-1] if 'rsi' in df.columns else 50
+    current_volume_rsi = df.get('volume_rsi', pd.Series([50])).iloc[-1]
+    
+    # 1. VWAP Institutional Levels Signal
+    vwap_deviation = ((current_price - current_vwap) / current_vwap) * 100
+    
+    if abs(vwap_deviation) > 0.5:  # 0.5% deviation from VWAP
+        if 'vwap_upper_2' in df.columns and current_price > df['vwap_upper_2'].iloc[-1]:
+            signals.append({
+                'type': 'INSTITUTIONAL_BREAKOUT',
+                'direction': 'BULLISH',
+                'strength': 'HIGH',
+                'message': f'Price above VWAP +2σ band. Institutional breakout likely. Deviation: {vwap_deviation:.2f}%',
+                'level': df['vwap_upper_2'].iloc[-1]
+            })
+        elif 'vwap_lower_2' in df.columns and current_price < df['vwap_lower_2'].iloc[-1]:
+            signals.append({
+                'type': 'INSTITUTIONAL_BREAKDOWN',
+                'direction': 'BEARISH',
+                'strength': 'HIGH',
+                'message': f'Price below VWAP -2σ band. Institutional selling pressure. Deviation: {vwap_deviation:.2f}%',
+                'level': df['vwap_lower_2'].iloc[-1]
+            })
+    
+    # 2. Volume RSI Divergence Signal
+    rsi_divergence = current_rsi - current_volume_rsi
+    if abs(rsi_divergence) > 15:  # Significant divergence
+        direction = "BEARISH" if rsi_divergence > 0 else "BULLISH"
+        signals.append({
+            'type': 'VOLUME_RSI_DIVERGENCE',
+            'direction': direction,
+            'strength': 'MEDIUM',
+            'message': f'RSI-Volume RSI divergence: {rsi_divergence:.1f}. Institutional flow contrary to price.',
+            'rsi': current_rsi,
+            'volume_rsi': current_volume_rsi
+        })
+    
+    # 3. Gamma Exposure Signals
+    net_gex = summary_analytics.get('net_gamma_exposure', 0)
+    if net_gex > 100:  # High gamma environment
+        signals.append({
+            'type': 'HIGH_GAMMA_ENVIRONMENT',
+            'direction': 'NEUTRAL',
+            'strength': 'HIGH',
+            'message': f'High Gamma Exposure: ₹{net_gex:.0f}M. Expect low volatility/pinning near strikes.',
+            'gamma_exposure': net_gex
+        })
+    elif net_gex < 20:  # Low gamma environment
+        signals.append({
+            'type': 'LOW_GAMMA_ENVIRONMENT',
+            'direction': 'NEUTRAL',
+            'strength': 'HIGH',
+            'message': f'Low Gamma Exposure: ₹{net_gex:.0f}M. Higher volatility expected.',
+            'gamma_exposure': net_gex
+        })
+    
+    # 4. Institutional Sentiment Signal
+    institutional_sentiment = summary_analytics.get('institutional_sentiment', 'NEUTRAL')
+    if 'BULLISH' in institutional_sentiment or 'BEARISH' in institutional_sentiment:
+        direction = 'BULLISH' if 'BULLISH' in institutional_sentiment else 'BEARISH'
+        signals.append({
+            'type': 'INSTITUTIONAL_SENTIMENT',
+            'direction': direction,
+            'strength': 'HIGH',
+            'message': f'Institutional sentiment: {institutional_sentiment}',
+            'sentiment': institutional_sentiment
+        })
+    
+    # 5. Volume Profile Signals
+    atm_data = options_data[options_data['Zone'] == 'ATM']
+    if not atm_data.empty:
+        atm_row = atm_data.iloc[0]
+        total_volume = atm_row.get('Total_Volume', 0)
+        avg_volume = options_data['Total_Volume'].mean()
+        
+        if total_volume > avg_volume * 2:  # High volume at ATM
+            signals.append({
+                'type': 'ATM_HIGH_VOLUME',
+                'direction': 'NEUTRAL',
+                'strength': 'MEDIUM',
+                'message': f'Unusually high volume at ATM strike {atm_row["Strike"]}. Volume: {total_volume:,}',
+                'volume': total_volume
+            })
+    
+    # 6. Volatility Surface Signals
+    volatility_surface = summary_analytics.get('volatility_surface', [])
+    if volatility_surface:
+        avg_iv = np.mean([v['ce_iv'] + v['pe_iv'] for v in volatility_surface]) / 2
+        if avg_iv > 25:
+            signals.append({
+                'type': 'HIGH_VOLATILITY_REGIME',
+                'direction': 'NEUTRAL',
+                'strength': 'MEDIUM',
+                'message': f'High IV environment: {avg_iv:.1f}%. Consider volatility selling strategies.',
+                'avg_iv': avg_iv
+            })
+        elif avg_iv < 12:
+            signals.append({
+                'type': 'LOW_VOLATILITY_REGIME',
+                'direction': 'NEUTRAL',
+                'strength': 'MEDIUM',
+                'message': f'Low IV environment: {avg_iv:.1f}%. Consider volatility buying strategies.',
+                'avg_iv': avg_iv
+            })
+    
+    return signals
 
-def analyze_options(expiry): option_data = get_option_chain(expiry) if not option_data or 'data' not in option_data: return None, None data = option_data['data'] underlying = data['last_price'] oc_data = data['oc'] enriched = enrich_option_chain(oc_data, underlying, expiry) if enriched.empty: return underlying, None # Find ATM and filter ±2 strikes atm_strike = min(enriched['strikePrice'], key=lambda x: abs(x - underlying)) strikes_range = enriched[(abs(enriched['strikePrice'] - atm_strike) <= 200)]  # approx ±2 strikes (adjust step) strikes_range['Zone'] = strikes_range['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
+def send_institutional_signals(signals, current_price):
+    """Send institutional signals via Telegram"""
+    if not signals:
+        return
+    
+    for signal in signals:
+        priority = "HIGH" if signal['strength'] == 'HIGH' else "NORMAL"
+        
+        message = f"""
+<b>{signal['type']}</b> - {signal['direction']}
+Strength: {signal['strength']}
 
-# Aggregate CE vs PE delta and GEX on the filtered range
-total_ce_delta = strikes_range['ce_delta'].sum()
-total_pe_delta = strikes_range['pe_delta'].sum()
-total_ce_gex = strikes_range['ce_gex'].sum()
-total_pe_gex = strikes_range['pe_gex'].sum()
+{signal['message']}
 
-# cumulative delta series (for display)
-strikes_sorted = strikes_range.sort_values('strikePrice')
-strikes_sorted['cum_ce_delta'] = strikes_sorted['ce_delta'].cumsum()
-strikes_sorted['cum_pe_delta'] = strikes_sorted['pe_delta'].cumsum()
+Current Price: ₹{current_price:.2f}
+Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+"""
+        
+        send_institutional_alert(message, priority)
 
-# Add IV avg
-strikes_sorted['iv_mid'] = (strikes_sorted['ce_iv'] + strikes_sorted['pe_iv']) / 2
+def calculate_portfolio_metrics(options_data):
+    """Calculate real-time portfolio metrics"""
+    if options_data is None or options_data.empty:
+        return {}
+    
+    # Aggregate portfolio Greeks
+    total_delta_exposure = options_data['CE_Delta_Exposure'].sum() - options_data['PE_Delta_Exposure'].sum()
+    total_gamma_exposure = options_data['Net_GEX'].abs().sum()
+    total_vega_exposure = options_data['Net_VEX'].abs().sum()
+    
+    # Risk metrics
+    max_gamma_strike = options_data.loc[options_data['Net_GEX'].abs().idxmax(), 'Strike'] if not options_data.empty else 0
+    dominant_flow = "PUT" if options_data['PE_Volume_Delta'].sum() > options_data['CE_Volume_Delta'].sum() else "CALL"
+    
+    return {
+        'portfolio_delta': total_delta_exposure,
+        'portfolio_gamma': total_gamma_exposure,
+        'portfolio_vega': total_vega_exposure,
+        'max_gamma_strike': max_gamma_strike,
+        'dominant_flow': dominant_flow,
+        'total_volume': options_data['Total_Volume'].sum(),
+        'avg_pcr': options_data['PCR'].mean()
+    }
 
-# Build summary
-summary = strikes_sorted[['strikePrice', 'Zone', 'ce_iv', 'pe_iv', 'iv_mid', 'ce_delta', 'pe_delta', 'cum_ce_delta', 'cum_pe_delta', 'ce_gex', 'pe_gex']].copy()
-summary.rename(columns={'strikePrice': 'Strike', 'ce_iv':'IV_CE', 'pe_iv':'IV_PE', 'iv_mid':'IV_Mid', 'ce_delta':'CE_Delta','pe_delta':'PE_Delta','cum_ce_delta':'CE_CumDelta','cum_pe_delta':'PE_CumDelta','ce_gex':'CE_GEX','pe_gex':'PE_GEX'}, inplace=True)
-
-# Bias score (simple weighted combination) - tweak weights as needed
-# Weights: CE vs PE delta 30%, IV skew 20%, GEX net 25%, PCR/OI bias 15%, VWAP position 10% (VWAP will be applied later at main())
-summary['delta_score'] = (summary['CE_CumDelta'] - summary['PE_CumDelta'])
-summary['gex_score'] = (summary['CE_GEX'] - summary['PE_GEX'])
-summary['iv_skew'] = (summary['IV_CE'] - summary['IV_PE'])
-
-# Normalize scores to comparable ranges
-def zscore(s):
-    if s.std() == 0:
-        return s * 0
-    return (s - s.mean()) / (s.std() + 1e-9)
-summary['delta_z'] = zscore(summary['delta_score'])
-summary['gex_z'] = zscore(summary['gex_score'])
-summary['iv_z'] = zscore(summary['iv_skew'])
-
-summary['bias_score'] = 0.4 * summary['delta_z'] + 0.35 * summary['gex_z'] + 0.25 * summary['iv_z']
-# positive bias_score -> bullish (calls dominate), negative -> bearish
-summary['Bias'] = summary['bias_score'].apply(lambda x: 'Bullish' if x > 0.3 else ('Bearish' if x < -0.3 else 'Neutral'))
-
-return underlying, summary
-
-Signals - updated to use enriched data
-
-def check_signals(df, option_data, current_price, proximity=5): if df.empty or option_data is None or not current_price: return df['rsi'] = calculate_rsi(df) current_rsi = df['rsi'].iloc[-1] if not df.empty else None
-
-atm_data = option_data[option_data['Zone'] == 'ATM'] if 'Zone' in option_data.columns else option_data[option_data['Strike'] == option_data['Strike'].iloc[0]]
-if atm_data.empty:
-    return
-row = atm_data.iloc[0]
-
-# Use bias_score for signal confirmation
-bias_label = row.get('Bias', 'Neutral')
-ce_cum = row.get('CE_CumDelta', 0)
-pe_cum = row.get('PE_CumDelta', 0)
-
-# Pivot proximity
-pivots = get_pivots(df, "5") + get_pivots(df, "10") + get_pivots(df, "15")
-near_pivot = False
-pivot_level = None
-for pivot in pivots:
-    if abs(current_price - pivot['value']) <= proximity:
-        near_pivot = True
-        pivot_level = pivot
-        break
-
-# Primary signal based on Bias and pivot
-if near_pivot and pivot_level is not None:
-    if bias_label == 'Bullish' and row.get('IV_Mid', 0) < 1:  # IV_Mid small placeholder - keep for demonstration
-        send_telegram(f"📈 PRIMARY CALL SIGNAL - Spot {current_price} | ATM {row['Strike']} | RSI {current_rsi:.2f}")
-        st.success("🔔 PRIMARY CALL signal sent!")
-    elif bias_label == 'Bearish' and row.get('IV_Mid', 0) < 1:
-        send_telegram(f"📉 PRIMARY PUT SIGNAL - Spot {current_price} | ATM {row['Strike']} | RSI {current_rsi:.2f}")
-        st.success("🔔 PRIMARY PUT signal sent!")
-
-# RSI extremes (unchanged)
-if current_rsi is not None:
-    if current_rsi > 70:
-        send_telegram(f"⚠️ RSI Overbought - Spot {current_price} | RSI {current_rsi:.2f}")
-        st.success("⚠️ RSI Overbought signal sent!")
-    elif current_rsi < 30:
-        send_telegram(f"⚠️ RSI Oversold - Spot {current_price} | RSI {current_rsi:.2f}")
-        st.success("⚠️ RSI Oversold signal sent!")
-
-Main app
-
-def main(): st.title("📈 Nifty Trading Analyzer - Upgraded") ist = pytz.timezone('Asia/Kolkata') current_time = datetime.now(ist) if not is_market_hours(): st.warning(f"⚠️ Market is closed. Current time: {current_time.strftime('%H:%M:%S IST')}") st.info("Market hours: Monday-Friday, 9:00 AM to 3:45 PM IST")
-
-st.sidebar.header("Settings")
-interval = st.sidebar.selectbox("Timeframe", ["1", "3", "5", "10", "15"], index=2)
-proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
-enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
-
-api = DhanAPI()
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.header("Chart")
-    data = api.get_intraday_data(interval)
-    df = process_candle_data(data) if data else pd.DataFrame()
-    ltp_data = api.get_ltp_data()
-    current_price = None
-    if ltp_data and 'data' in ltp_data:
-        for exchange, data2 in ltp_data['data'].items():
-            for security_id, price_data in data2.items():
-                current_price = price_data.get('last_price', 0)
-                break
-    if current_price is None and not df.empty:
-        current_price = df['close'].iloc[-1]
-    if not df.empty and len(df) > 1:
-        prev_close = df['close'].iloc[-2]
-        change = current_price - prev_close
-        change_pct = (change / prev_close) * 100
-        current_rsi = None
+def main():
+    st.title("🏛️ Institutional-Level Nifty Trading Analyzer")
+    st.markdown("*Advanced order flow, options analytics, and risk management for institutional trading*")
+    
+    # Show market status
+    ist = pytz.timezone('Asia/Kolkata')
+    current_time = datetime.now(ist)
+    
+    if not is_market_hours():
+        st.warning(f"🏛️ Market closed. Current time: {current_time.strftime('%H:%M:%S IST')}")
+        st.info("Institutional analysis available in preview mode with latest data")
+    
+    # Enhanced sidebar
+    st.sidebar.header("📊 Institutional Settings")
+    
+    # Analysis parameters
+    timeframe = st.sidebar.selectbox("Analysis Timeframe", ["1", "3", "5", "15"], index=2)
+    depth_levels = st.sidebar.selectbox("Market Depth Analysis", ["Standard (5-level)", "Advanced (20-level)"], index=1)
+    risk_scenario = st.sidebar.slider("Risk Scenario Range (%)", 1, 10, 5)
+    enable_alerts = st.sidebar.checkbox("Institutional Alerts", value=True)
+    
+    # Advanced filters
+    st.sidebar.subheader("🎯 Focus Areas")
+    analyze_flow = st.sidebar.checkbox("Order Flow Analysis", value=True)
+    analyze_volatility = st.sidebar.checkbox("Volatility Surface", value=True)
+    analyze_gamma = st.sidebar.checkbox("Gamma Exposure", value=True)
+    portfolio_mode = st.sidebar.checkbox("Portfolio Mode", value=False)
+    
+    # Initialize API
+    api = InstitutionalDhanAPI()
+    
+    # Create main layout
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        st.header("📈 Institutional Price Action")
+        
+        # Get and process data
+        data = api.get_intraday_data(timeframe, days_back=2)
+        df = process_candle_data(data) if data else pd.DataFrame()
+        
+        # Get current price
+        current_price = df['close'].iloc[-1] if not df.empty else 0
+        
+        if not df.empty and len(df) > 1:
+            prev_close = df['close'].iloc[-2]
+            change = current_price - prev_close
+            change_pct = (change / prev_close) * 100
+            
+            # Calculate institutional indicators
+            df_enhanced = calculate_institutional_indicators(df)
+            current_vwap = df_enhanced['vwap'].iloc[-1] if 'vwap' in df_enhanced.columns else current_price
+            vwap_deviation = ((current_price - current_vwap) / current_vwap) * 100
+            
+            # Display key metrics
+            col1_m, col2_m, col3_m, col4_m = st.columns(4)
+            with col1_m:
+                st.metric("Nifty", f"₹{current_price:,.2f}", f"{change:+.2f} ({change_pct:+.2f}%)")
+            with col2_m:
+                st.metric("VWAP", f"₹{current_vwap:.2f}", f"{vwap_deviation:+.3f}%")
+            with col3_m:
+                current_atr = df_enhanced.get('atr_14', pd.Series([0])).iloc[-1]
+                atr_pct = (current_atr / current_price) * 100 if current_price > 0 else 0
+                st.metric("ATR %", f"{atr_pct:.2f}%", f"₹{current_atr:.2f}")
+            with col4_m:
+                volume_strength = df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1] if len(df) >= 20 else 1
+                st.metric("Vol Strength", f"{volume_strength:.2f}x")
+        
+        # Create institutional dashboard
         if not df.empty:
-            df['rsi'] = calculate_rsi(df)
-            current_rsi = df['rsi'].iloc[-1]
-        col1_m, col2_m, col3_m, col4_m = st.columns(4)
-        with col1_m:
-            st.metric("Price", f"₹{current_price:,.2f}", f"{change:+.2f} ({change_pct:+.2f}%)")
-        with col2_m:
-            st.metric("High", f"₹{df['high'].max():,.2f}")
-        with col3_m:
-            st.metric("Low", f"₹{df['low'].min():,.2f}")
-        with col4_m:
-            st.metric("RSI", f"{current_rsi:.2f}" if current_rsi is not None else "N/A")
-    if not df.empty:
-        # compute VWAP & ATR for display
-        df['vwap'] = calculate_vwap(df)
-        df['atr'] = calculate_atr(df)
-        fig = create_chart(df, f"Nifty {interval}min")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.error("No chart data available")
-
-with col2:
-    st.header("Options")
-    expiry_data = get_expiry_list()
-    if expiry_data and 'data' in expiry_data:
-        expiry_dates = expiry_data['data']
-        selected_expiry = st.selectbox("Expiry", expiry_dates)
-        underlying_price, option_summary = analyze_options(selected_expiry)
-        if underlying_price and option_summary is not None:
-            st.info(f"Spot: ₹{underlying_price:.2f}")
-            st.dataframe(option_summary, use_container_width=True)
-            if enable_signals and not df.empty and is_market_hours():
-                check_signals(df, option_summary, underlying_price, proximity)
+            fig = create_institutional_dashboard_chart(df, f"Institutional Analysis - {timeframe}min")
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.error("Options data unavailable")
-    else:
-        st.error("Expiry data unavailable")
+            st.error("📊 No chart data available")
+    
+    with col2:
+        st.header("📋 Options Analytics")
+        
+        # Get expiry data
+        expiry_data = get_expiry_list()
+        if expiry_data and 'data' in expiry_data:
+            expiry_dates = expiry_data['data']
+            selected_expiry = st.selectbox("Expiry Date", expiry_dates)
+            
+            # Analyze options with institutional metrics
+            underlying_price, options_summary, summary_analytics, risk_metrics = analyze_institutional_options(selected_expiry, current_price)
+            
+            if underlying_price and options_summary is not None:
+                st.info(f"**Underlying**: ₹{underlying_price:.2f}")
+                
+                # Key institutional metrics
+                institutional_sentiment = summary_analytics.get('institutional_sentiment', 'NEUTRAL')
+                days_to_expiry = summary_analytics.get('days_to_expiry', 0)
+                net_gex = summary_analytics.get('net_gamma_exposure', 0)
+                
+                st.markdown(f"""
+                **Institutional Sentiment**: {institutional_sentiment}  
+                **Days to Expiry**: {days_to_expiry}  
+                **Net Gamma Exposure**: ₹{net_gex:.1f}M  
+                **Volume Ratio (P/C)**: {summary_analytics.get('total_volume_ratio', 0):.2f}
+                """)
+                
+                # Enhanced options data display
+                display_columns = ['Strike', 'Zone', 'Level', 'PCR', 'CE_IV', 'PE_IV', 'IV_Skew', 'Net_GEX', 'Total_Volume']
+                st.dataframe(
+                    options_summary[display_columns].style.format({
+                        'PCR': '{:.3f}',
+                        'CE_IV': '{:.1f}%',
+                        'PE_IV': '{:.1f}%',
+                        'IV_Skew': '{:.1f}%',
+                        'Net_GEX': '₹{:.1f}M',
+                        'Total_Volume': '{:,.0f}'
+                    }),
+                    use_container_width=True,
+                    height=400
+                )
+                
+                # Generate and send institutional signals
+                if enable_alerts and is_market_hours():
+                    signals = detect_institutional_signals(df, options_summary, summary_analytics, current_price)
+                    if signals:
+                        send_institutional_signals(signals, current_price)
+                        for signal in signals[-3:]:  # Show last 3 signals
+                            signal_color = "🔴" if signal['strength'] == 'HIGH' else "🟡"
+                            st.success(f"{signal_color} {signal['type']}: {signal['message']}")
+            
+            else:
+                st.error("📊 Options data unavailable")
+        else:
+            st.error("📅 Expiry data unavailable")
+    
+    with col3:
+        st.header("⚖️ Risk Management")
+        
+        if 'options_summary' in locals() and options_summary is not None:
+            # Portfolio metrics
+            portfolio_metrics = calculate_portfolio_metrics(options_summary)
+            
+            st.subheader("Portfolio Greeks")
+            st.metric("Net Delta", f"₹{portfolio_metrics.get('portfolio_delta', 0):,.0f}")
+            st.metric("Total Gamma", f"₹{portfolio_metrics.get('portfolio_gamma', 0):.1f}M")
+            st.metric("Total Vega", f"₹{portfolio_metrics.get('portfolio_vega', 0):,.0f}")
+            
+            # Risk scenarios
+            if 'risk_metrics' in locals() and risk_metrics:
+                st.subheader("Risk Scenarios")
+                max_loss = risk_metrics.get('max_loss_5pct', 0)
+                max_gain = risk_metrics.get('max_gain_5pct', 0)
+                
+                st.metric("Max Loss (5%)", f"₹{max_loss:,.0f}", delta_color="inverse")
+                st.metric("Max Gain (5%)", f"₹{max_gain:,.0f}")
+            
+            # Key levels
+            st.subheader("Key Levels")
+            if not df.empty and 'vwap_upper_2' in df.columns:
+                vwap_upper = df['vwap_upper_2'].iloc[-1]
+                vwap_lower = df['vwap_lower_2'].iloc[-1]
+                st.write(f"**VWAP +2σ**: ₹{vwap_upper:.2f}")
+                st.write(f"**VWAP -2σ**: ₹{vwap_lower:.2f}")
+            
+            max_gamma_strike = portfolio_metrics.get('max_gamma_strike', 0)
+            if max_gamma_strike > 0:
+                st.write(f"**Max Gamma Strike**: {max_gamma_strike}")
+        
+        # Institutional flow summary
+        st.subheader("Flow Summary")
+        if 'portfolio_metrics' in locals():
+            dominant_flow = portfolio_metrics.get('dominant_flow', 'NEUTRAL')
+            avg_pcr = portfolio_metrics.get('avg_pcr', 0)
+            
+            flow_color = "🔴" if dominant_flow == "PUT" else "🟢" if dominant_flow == "CALL" else "🟡"
+            st.write(f"{flow_color} **Dominant Flow**: {dominant_flow}")
+            st.write(f"📊 **Average PCR**: {avg_pcr:.3f}")
+    
+    # Additional analysis sections
+    if analyze_volatility and 'summary_analytics' in locals():
+        st.header("📊 Volatility Surface Analysis")
+        volatility_surface = summary_analytics.get('volatility_surface', [])
+        if volatility_surface:
+            vol_fig = create_volatility_surface_chart(volatility_surface)
+            st.plotly_chart(vol_fig, use_container_width=True)
+    
+    if analyze_gamma and 'options_summary' in locals() and options_summary is not None:
+        st.header("🎯 Gamma Exposure Analysis")
+        gamma_fig = create_gamma_exposure_chart(options_summary)
+        st.plotly_chart(gamma_fig, use_container_width=True)
+    
+    if analyze_flow and 'options_summary' in locals() and options_summary is not None:
+        st.header("🌊 Options Flow Analysis")
+        flow_fig = create_options_flow_chart(options_summary)
+        st.plotly_chart(flow_fig, use_container_width=True)
+    
+    # Footer with update time
+    current_time_str = datetime.now(ist).strftime("%H:%M:%S IST")
+    st.sidebar.info(f"🔄 Updated: {current_time_str}")
+    
+    if st.sidebar.button("📨 Test Institutional Alert"):
+        send_institutional_alert("🏛️ Test message from Institutional Nifty Analyzer", "NORMAL")
+        st.sidebar.success("Alert sent!")
 
-current_time = datetime.now(ist).strftime("%H:%M:%S IST")
-st.sidebar.info(f"Updated: {current_time}")
-if st.sidebar.button("Test Telegram"):
-    send_telegram("🔔 Test message from Nifty Analyzer")
-    st.sidebar.success("Test sent!")
-
-if name == "main": main()
-
+if __name__ == "__main__":
+    main()
