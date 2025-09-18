@@ -281,117 +281,152 @@ def analyze_real_options(expiry, current_price):
     current_date = datetime.now()
     days_to_expiry = max((expiry_date - current_date).days, 1)
     
-    # Process real option data
+    # Process real option data - handle strikes more carefully
     options_analysis = []
     total_ce_volume = total_pe_volume = 0
     total_ce_oi = total_pe_oi = 0
     total_ce_oi_change = total_pe_oi_change = 0
     
-    # Find ATM strike
-    strikes = [float(strike) for strike in oc_data.keys()]
-    atm_strike = min(strikes, key=lambda x: abs(x - underlying))
+    # Get available strikes from the actual API response
+    available_strikes = []
+    for strike_key, strike_data in oc_data.items():
+        try:
+            strike_value = float(strike_key)
+            available_strikes.append(strike_value)
+        except (ValueError, TypeError):
+            continue
+    
+    if not available_strikes:
+        return None, None, None
+    
+    # Find ATM strike from available strikes
+    atm_strike = min(available_strikes, key=lambda x: abs(x - underlying))
     
     # Filter ATM ±3 strikes for focused analysis
-    relevant_strikes = [s for s in strikes if abs(s - atm_strike) <= 150]
+    relevant_strikes = [s for s in available_strikes if abs(s - atm_strike) <= 150]
     
     for strike in relevant_strikes:
-        strike_data = oc_data[str(int(strike))]
+        # Use the exact string key from the API response
+        strike_key = None
+        for key in oc_data.keys():
+            try:
+                if abs(float(key) - strike) < 0.1:  # Handle floating point precision
+                    strike_key = key
+                    break
+            except (ValueError, TypeError):
+                continue
         
-        if 'ce' in strike_data and 'pe' in strike_data:
-            ce_data = strike_data['ce']
-            pe_data = strike_data['pe']
+        if not strike_key:
+            continue
             
-            # Extract real data from API
-            ce_ltp = ce_data.get('last_price', 0)
-            pe_ltp = pe_data.get('last_price', 0)
-            ce_volume = ce_data.get('volume', 0)
-            pe_volume = pe_data.get('volume', 0)
-            ce_oi = ce_data.get('oi', 0)
-            pe_oi = pe_data.get('oi', 0)
-            ce_prev_oi = ce_data.get('previous_oi', 0)
-            pe_prev_oi = pe_data.get('previous_oi', 0)
+        strike_data = oc_data[strike_key]
+        
+        # Check if both CE and PE data exist
+        if 'ce' not in strike_data or 'pe' not in strike_data:
+            continue
             
-            # Real OI changes
-            ce_oi_change = ce_oi - ce_prev_oi
-            pe_oi_change = pe_oi - pe_prev_oi
-            
-            # Real Greeks from API
-            ce_greeks = ce_data.get('greeks', {})
-            pe_greeks = pe_data.get('greeks', {})
-            
-            ce_delta = ce_greeks.get('delta', 0) if ce_greeks else 0
-            pe_delta = pe_greeks.get('delta', 0) if pe_greeks else 0
-            ce_gamma = ce_greeks.get('gamma', 0) if ce_greeks else 0
-            pe_gamma = pe_greeks.get('gamma', 0) if pe_greeks else 0
-            ce_vega = ce_greeks.get('vega', 0) if ce_greeks else 0
-            pe_vega = pe_greeks.get('vega', 0) if pe_greeks else 0
-            
-            # Real IV from API
-            ce_iv = ce_data.get('implied_volatility', 0) * 100 if ce_data.get('implied_volatility') else 0
-            pe_iv = pe_data.get('implied_volatility', 0) * 100 if pe_data.get('implied_volatility') else 0
-            
-            # Real bid-ask data
-            ce_bid_qty = ce_data.get('top_bid_quantity', 0)
-            ce_ask_qty = ce_data.get('top_ask_quantity', 0)
-            pe_bid_qty = pe_data.get('top_bid_quantity', 0)
-            pe_ask_qty = pe_data.get('top_ask_quantity', 0)
-            
-            # Calculate real metrics
-            pcr_oi = pe_oi / ce_oi if ce_oi > 0 else 0
-            pcr_volume = pe_volume / ce_volume if ce_volume > 0 else 0
-            
-            # Real gamma exposure calculation
+        ce_data = strike_data['ce']
+        pe_data = strike_data['pe']
+        
+        # Extract real data from API with safe defaults
+        ce_ltp = ce_data.get('last_price', 0)
+        pe_ltp = pe_data.get('last_price', 0)
+        ce_volume = ce_data.get('volume', 0)
+        pe_volume = pe_data.get('volume', 0)
+        ce_oi = ce_data.get('oi', 0)
+        pe_oi = pe_data.get('oi', 0)
+        ce_prev_oi = ce_data.get('previous_oi', 0)
+        pe_prev_oi = pe_data.get('previous_oi', 0)
+        
+        # Real OI changes
+        ce_oi_change = ce_oi - ce_prev_oi
+        pe_oi_change = pe_oi - pe_prev_oi
+        
+        # Real Greeks from API with safe handling
+        ce_greeks = ce_data.get('greeks', {}) or {}
+        pe_greeks = pe_data.get('greeks', {}) or {}
+        
+        ce_delta = ce_greeks.get('delta', 0) if ce_greeks else 0
+        pe_delta = pe_greeks.get('delta', 0) if pe_greeks else 0
+        ce_gamma = ce_greeks.get('gamma', 0) if ce_greeks else 0
+        pe_gamma = pe_greeks.get('gamma', 0) if pe_greeks else 0
+        ce_vega = ce_greeks.get('vega', 0) if ce_greeks else 0
+        pe_vega = pe_greeks.get('vega', 0) if pe_greeks else 0
+        
+        # Real IV from API with safe handling
+        ce_iv = ce_data.get('implied_volatility', 0)
+        pe_iv = pe_data.get('implied_volatility', 0)
+        ce_iv = (ce_iv * 100) if ce_iv else 0
+        pe_iv = (pe_iv * 100) if pe_iv else 0
+        
+        # Real bid-ask data
+        ce_bid_qty = ce_data.get('top_bid_quantity', 0)
+        ce_ask_qty = ce_data.get('top_ask_quantity', 0)
+        pe_bid_qty = pe_data.get('top_bid_quantity', 0)
+        pe_ask_qty = pe_data.get('top_ask_quantity', 0)
+        
+        # Calculate real metrics
+        pcr_oi = pe_oi / ce_oi if ce_oi > 0 else 0
+        pcr_volume = pe_volume / ce_volume if ce_volume > 0 else 0
+        
+        # Real gamma exposure calculation
+        if underlying > 0:
             ce_gex = ce_oi * ce_gamma * underlying * underlying * 0.01
             pe_gex = pe_oi * pe_gamma * underlying * underlying * 0.01 * (-1)  # PE GEX is negative
             net_gex = ce_gex + pe_gex
-            
-            # Accumulate totals
-            total_ce_volume += ce_volume
-            total_pe_volume += pe_volume
-            total_ce_oi += ce_oi
-            total_pe_oi += pe_oi
-            total_ce_oi_change += ce_oi_change
-            total_pe_oi_change += pe_oi_change
-            
-            # Determine levels based on real OI
-            if pe_oi > ce_oi * 1.5:
-                level = "Strong Support"
-            elif pe_oi > ce_oi * 1.2:
-                level = "Support"
-            elif ce_oi > pe_oi * 1.5:
-                level = "Strong Resistance"
-            elif ce_oi > pe_oi * 1.2:
-                level = "Resistance"
-            else:
-                level = "Neutral"
-            
-            options_analysis.append({
-                "Strike": strike,
-                "Zone": 'ATM' if strike == atm_strike else 'ITM' if strike < underlying else 'OTM',
-                "Level": level,
-                "CE_LTP": ce_ltp,
-                "PE_LTP": pe_ltp,
-                "CE_Volume": ce_volume,
-                "PE_Volume": pe_volume,
-                "CE_OI": ce_oi,
-                "PE_OI": pe_oi,
-                "CE_OI_Change": ce_oi_change,
-                "PE_OI_Change": pe_oi_change,
-                "PCR_OI": round(pcr_oi, 3),
-                "PCR_Volume": round(pcr_volume, 3),
-                "CE_IV": round(ce_iv, 1),
-                "PE_IV": round(pe_iv, 1),
-                "IV_Skew": round(pe_iv - ce_iv, 1),
-                "CE_Delta": round(ce_delta, 3),
-                "PE_Delta": round(pe_delta, 3),
-                "CE_Gamma": round(ce_gamma, 4),
-                "PE_Gamma": round(pe_gamma, 4),
-                "Net_GEX": round(net_gex / 1000000, 2),  # In millions
-                "CE_Bid_Qty": ce_bid_qty,
-                "CE_Ask_Qty": ce_ask_qty,
-                "PE_Bid_Qty": pe_bid_qty,
-                "PE_Ask_Qty": pe_ask_qty
-            })
+        else:
+            net_gex = 0
+        
+        # Accumulate totals
+        total_ce_volume += ce_volume
+        total_pe_volume += pe_volume
+        total_ce_oi += ce_oi
+        total_pe_oi += pe_oi
+        total_ce_oi_change += ce_oi_change
+        total_pe_oi_change += pe_oi_change
+        
+        # Determine levels based on real OI
+        if pe_oi > ce_oi * 1.5:
+            level = "Strong Support"
+        elif pe_oi > ce_oi * 1.2:
+            level = "Support"
+        elif ce_oi > pe_oi * 1.5:
+            level = "Strong Resistance"
+        elif ce_oi > pe_oi * 1.2:
+            level = "Resistance"
+        else:
+            level = "Neutral"
+        
+        options_analysis.append({
+            "Strike": strike,
+            "Zone": 'ATM' if strike == atm_strike else 'ITM' if strike < underlying else 'OTM',
+            "Level": level,
+            "CE_LTP": ce_ltp,
+            "PE_LTP": pe_ltp,
+            "CE_Volume": ce_volume,
+            "PE_Volume": pe_volume,
+            "CE_OI": ce_oi,
+            "PE_OI": pe_oi,
+            "CE_OI_Change": ce_oi_change,
+            "PE_OI_Change": pe_oi_change,
+            "PCR_OI": round(pcr_oi, 3),
+            "PCR_Volume": round(pcr_volume, 3),
+            "CE_IV": round(ce_iv, 1),
+            "PE_IV": round(pe_iv, 1),
+            "IV_Skew": round(pe_iv - ce_iv, 1),
+            "CE_Delta": round(ce_delta, 3),
+            "PE_Delta": round(pe_delta, 3),
+            "CE_Gamma": round(ce_gamma, 4),
+            "PE_Gamma": round(pe_gamma, 4),
+            "Net_GEX": round(net_gex / 1000000, 2) if net_gex != 0 else 0,  # In millions
+            "CE_Bid_Qty": ce_bid_qty,
+            "CE_Ask_Qty": ce_ask_qty,
+            "PE_Bid_Qty": pe_bid_qty,
+            "PE_Ask_Qty": pe_ask_qty
+        })
+    
+    if not options_analysis:
+        return None, None, None
     
     # Real summary metrics
     summary = {
