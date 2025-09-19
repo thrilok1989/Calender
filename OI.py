@@ -334,6 +334,62 @@ def get_pivots(df, timeframe="5", length=4):
     except:
         return []
 
+def calculate_volume_profile(df, bins=20):
+    """Calculate Volume Profile for price action analysis"""
+    if df.empty or len(df) < 2:
+        return pd.DataFrame()
+    
+    profiles = []
+    
+    # Calculate for each candle
+    for idx, row in df.iterrows():
+        high = row['high']
+        low = row['low']
+        volume = row['volume']
+        close = row['close']
+        
+        if high == low:  # Avoid division by zero
+            continue
+            
+        # Create price bins
+        bins_edges = np.linspace(low, high, bins + 1)
+        bins_center = (bins_edges[:-1] + bins_edges[1:]) / 2
+        vol_bins = np.zeros(bins)
+        
+        # Distribute volume across bins (simplified approach)
+        # In reality, you'd need tick data for accurate distribution
+        close_bin = np.digitize(close, bins_edges) - 1
+        close_bin = max(0, min(bins - 1, close_bin))
+        
+        # Distribute volume: more weight to close price bin
+        for i in range(bins):
+            if i == close_bin:
+                vol_bins[i] = volume * 0.4  # 40% to close bin
+            else:
+                # Distribute remaining volume based on distance from close
+                distance = abs(bins_center[i] - close)
+                max_distance = max(abs(bins_center - close))
+                if max_distance > 0:
+                    weight = 1 - (distance / max_distance)
+                    vol_bins[i] = volume * 0.6 * weight / (bins - 1)
+        
+        # Point of Control (POC) - price level with highest volume
+        poc_idx = np.argmax(vol_bins)
+        poc = bins_center[poc_idx]
+        
+        profiles.append({
+            'datetime': row['datetime'],
+            'high': high,
+            'low': low,
+            'close': close,
+            'poc': poc,
+            'vol_bins': vol_bins,
+            'bins_center': bins_center,
+            'max_vol': np.max(vol_bins)
+        })
+    
+    return pd.DataFrame(profiles)
+
 def create_enhanced_chart(df, title):
     if df.empty:
         return go.Figure()
@@ -343,13 +399,16 @@ def create_enhanced_chart(df, title):
     df = calculate_atr(df)
     df['rsi'] = calculate_rsi(df)
     
-    # Create subplots with 4 rows
+    # Calculate Volume Profile
+    volume_profile_df = calculate_volume_profile(df)
+    
+    # Create subplots with 5 rows (added Volume Profile)
     fig = make_subplots(
-        rows=4, cols=1, 
+        rows=5, cols=1, 
         shared_xaxes=True, 
-        vertical_spacing=0.03, 
-        row_heights=[0.5, 0.2, 0.15, 0.15],
-        subplot_titles=('Price with VWAP Bands', 'Volume', 'RSI', 'ATR')
+        vertical_spacing=0.02, 
+        row_heights=[0.4, 0.15, 0.15, 0.15, 0.15],
+        subplot_titles=('Price with VWAP Bands', 'Volume Profile', 'Volume', 'RSI', 'ATR')
     )
     
     # Price chart with VWAP bands
@@ -400,38 +459,68 @@ def create_enhanced_chart(df, title):
                             y0=pivot['value'], y1=pivot['value'],
                             line=dict(color=color, width=1, dash="dash"), row=1, col=1)
     
-    # Volume chart
+    # Volume Profile
+    if not volume_profile_df.empty:
+        # Add POC lines (Point of Control)
+        fig.add_trace(go.Scatter(
+            x=volume_profile_df['datetime'], 
+            y=volume_profile_df['poc'], 
+            mode='lines',
+            name='POC (Point of Control)',
+            line=dict(color='#0066ff', width=2, dash='dash')
+        ), row=2, col=1)
+        
+        # Add volume profile bars for recent periods
+        for idx, row in volume_profile_df.tail(20).iterrows():  # Last 20 candles
+            if row['max_vol'] > 0:
+                # Normalize volume bins for display
+                normalized_vol = row['vol_bins'] / row['max_vol'] * 0.8  # Scale factor
+                
+                for i, (price, vol_norm) in enumerate(zip(row['bins_center'], normalized_vol)):
+                    if vol_norm > 0.1:  # Only show significant volume
+                        fig.add_trace(go.Bar(
+                            x=[row['datetime']],
+                            y=[vol_norm],
+                            base=[price - (row['bins_center'][1] - row['bins_center'][0])/2],
+                            width=[pd.Timedelta(minutes=int(interval)) * 0.8],
+                            marker_color='lightblue',
+                            opacity=0.6,
+                            showlegend=False
+                        ), row=2, col=1)
+    
+    # Regular Volume chart
     volume_colors = ['#00ff88' if close >= open else '#ff4444' 
                     for close, open in zip(df['close'], df['open'])]
     fig.add_trace(go.Bar(
         x=df['datetime'], y=df['volume'], name='Volume',
         marker_color=volume_colors, opacity=0.7
-    ), row=2, col=1)
+    ), row=3, col=1)
     
     # RSI chart
     fig.add_trace(go.Scatter(
         x=df['datetime'], y=df['rsi'], name='RSI',
         line=dict(color='#ff9900', width=2)
-    ), row=3, col=1)
+    ), row=4, col=1)
     
     # Add RSI reference lines
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-    fig.add_hline(y=50, line_dash="dot", line_color="gray", row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=4, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=4, col=1)
+    fig.add_hline(y=50, line_dash="dot", line_color="gray", row=4, col=1)
     
     # ATR chart
     if 'atr' in df.columns:
         fig.add_trace(go.Scatter(
             x=df['datetime'], y=df['atr'], name='ATR',
             line=dict(color='#00ffff', width=2)
-        ), row=4, col=1)
+        ), row=5, col=1)
     
-    fig.update_layout(title=title, template='plotly_dark', height=1000,
+    fig.update_layout(title=title, template='plotly_dark', height=1200,
                      xaxis_rangeslider_visible=False, showlegend=False)
     
     # Update y-axis ranges
-    fig.update_yaxes(title_text="RSI", range=[0, 100], row=3, col=1)
-    fig.update_yaxes(title_text="ATR", row=4, col=1)
+    fig.update_yaxes(title_text="RSI", range=[0, 100], row=4, col=1)
+    fig.update_yaxes(title_text="ATR", row=5, col=1)
+    fig.update_yaxes(title_text="Volume Profile", row=2, col=1)
     
     return fig
 
@@ -531,13 +620,16 @@ def analyze_advanced_options(expiry, spot_price):
             'Gamma_Bias': gamma_bias
         })
     
-    # Basic options analysis
+    # Basic options analysis with enhanced bias columns
     df_filtered['Zone'] = df_filtered['strikePrice'].apply(
         lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM'
     )
     
     bias_results = []
-    for _, row in df_filtered.iterrows():
+    for i, row in df_filtered.iterrows():
+        strike = row['strikePrice']
+        
+        # Basic OI and volume data
         prev_oi_ce = row.get('previous_oi_CE', 0)
         prev_oi_pe = row.get('previous_oi_PE', 0)
         curr_oi_ce = row.get('oi_CE', 0)
@@ -557,17 +649,64 @@ def analyze_advanced_options(expiry, spot_price):
         ask_bias = "Bearish" if ask_ce > ask_pe else "Bullish"
         bid_bias = "Bullish" if bid_ce > bid_pe else "Bearish"
         
-        level = "Support" if curr_oi_pe > 1.12 * curr_oi_ce else "Resistance" if curr_oi_ce > 1.12 * curr_oi_pe else "Neutral"
+        level = "Support" if curr_oi_pe > 1.12 * curr_oi_ce else "Resistance" if curr_oi_ce > 1.12 * curr_oi_ce else "Neutral"
+        
+        # Calculate additional bias columns
+        
+        # 1. CE Delta Bias & PE Delta Bias (from Greeks)
+        ce_delta = row.get('greeks', {}).get('delta', 0) if 'greeks' in row else 0
+        pe_delta = row.get('greeks', {}).get('delta', 0) if 'greeks' in row else 0
+        
+        # For CE: positive delta is bullish, for PE: negative delta is bearish (normal)
+        ce_delta_bias = "Bullish" if ce_delta > 0.5 else "Bearish" if ce_delta < 0.3 else "Neutral"
+        pe_delta_bias = "Bearish" if pe_delta < -0.5 else "Bullish" if pe_delta > -0.3 else "Neutral"
+        
+        # 2. IV Bias - Compare CE vs PE IV to see which is cheaper
+        ce_price = row.get('last_price_CE', 0)
+        pe_price = row.get('last_price_PE', 0)
+        
+        ce_iv = calculate_implied_volatility(ce_price, underlying, strike, time_to_expiry, 'CE')
+        pe_iv = calculate_implied_volatility(pe_price, underlying, strike, time_to_expiry, 'PE')
+        
+        if ce_iv > 0 and pe_iv > 0:
+            if ce_iv < pe_iv * 0.95:  # CE is significantly cheaper
+                iv_bias = "CE Cheaper"
+            elif pe_iv < ce_iv * 0.95:  # PE is significantly cheaper
+                iv_bias = "PE Cheaper"
+            else:
+                iv_bias = "Fair"
+        else:
+            iv_bias = "N/A"
+        
+        # 3. Gamma Exposure Bias
+        ce_gamma = calculate_gamma(underlying, strike, time_to_expiry, ce_iv)
+        pe_gamma = calculate_gamma(underlying, strike, time_to_expiry, pe_iv)
+        
+        ce_gex = ce_gamma * curr_oi_ce * underlying * 0.01
+        pe_gex = pe_gamma * curr_oi_pe * underlying * 0.01
+        net_gex = ce_gex - pe_gex
+        
+        if abs(net_gex) > 1000:
+            gamma_bias = "High Vol" if abs(net_gex) > 2000 else "Moderate Vol"
+        else:
+            gamma_bias = "Pinned"
         
         bias_results.append({
-            "Strike": row['strikePrice'],
+            "Strike": strike,
             "Zone": row['Zone'],
             "Level": level,
             "ChgOI_Bias": chg_oi_bias,
             "Volume_Bias": volume_bias,
             "Ask_Bias": ask_bias,
             "Bid_Bias": bid_bias,
+            "CE_Delta_Bias": ce_delta_bias,
+            "PE_Delta_Bias": pe_delta_bias,
+            "IV_Bias": iv_bias,
+            "Gamma_Bias": gamma_bias,
             "PCR": round(curr_oi_pe / curr_oi_ce if curr_oi_ce > 0 else 0, 2),
+            "CE_IV": round(ce_iv * 100, 1),
+            "PE_IV": round(pe_iv * 100, 1),
+            "Net_GEX": round(net_gex, 0),
             "changeinOpenInterest_CE": chg_oi_ce,
             "changeinOpenInterest_PE": chg_oi_pe
         })
@@ -599,13 +738,15 @@ def calculate_final_bias_score(df, option_summary, iv_df, gamma_df, volume_sprea
         rsi_score = 0
     scores['RSI'] = rsi_score
     
-    # OI Bias Score (-2 to +2)
+    # OI Bias Score (-2 to +2) - Updated to include new bias columns
     atm_data = option_summary[option_summary['Zone'] == 'ATM']
     if not atm_data.empty:
         atm_row = atm_data.iloc[0]
         oi_bullish = sum([1 for bias in [atm_row['ChgOI_Bias'], atm_row['Volume_Bias'], 
-                         atm_row['Ask_Bias'], atm_row['Bid_Bias']] if bias == 'Bullish'])
-        oi_score = oi_bullish - 2  # Convert 0-4 to -2 to +2
+                         atm_row['Ask_Bias'], atm_row['Bid_Bias'], atm_row['CE_Delta_Bias'], atm_row['PE_Delta_Bias']] 
+                         if bias == 'Bullish'])
+        oi_score = oi_bullish - 3  # Convert 0-6 to -3 to +3, then clamp to -2 to +2
+        oi_score = max(-2, min(2, oi_score))
         scores['OI_Bias'] = oi_score
     else:
         scores['OI_Bias'] = 0
@@ -728,17 +869,21 @@ def check_advanced_signals(df, option_data, iv_df, gamma_df, volume_spread_df, c
     
     row = atm_data.iloc[0]
     
-    # MASTER SIGNAL - All conditions aligned
+    # MASTER SIGNAL - All conditions aligned (Updated with new bias columns)
     strong_bullish = (
         bias == "Strong Bullish" and
         current_rsi is not None and current_rsi < 70 and
-        current_vwap is not None and current_price > current_vwap
+        current_vwap is not None and current_price > current_vwap and
+        row['CE_Delta_Bias'] == 'Bullish' and
+        row['IV_Bias'] in ['CE Cheaper', 'Fair']
     )
     
     strong_bearish = (
         bias == "Strong Bearish" and
         current_rsi is not None and current_rsi > 30 and
-        current_vwap is not None and current_price < current_vwap
+        current_vwap is not None and current_price < current_vwap and
+        row['PE_Delta_Bias'] == 'Bearish' and
+        row['IV_Bias'] in ['PE Cheaper', 'Fair']
     )
     
     if strong_bullish or strong_bearish:
@@ -763,24 +908,6 @@ ATR: {current_atr:.2f} (Stop Loss Guide)
 """
         send_telegram(message)
         st.success(f"🔥 MASTER {signal_type} signal sent!")
-    
-    # GAMMA SQUEEZE SIGNAL
-    if gamma_df is not None and not gamma_df.empty:
-        total_gex = abs(gamma_df['Net_GEX'].sum())
-        if total_gex > 3000:
-            message = f"""
-⚡ GAMMA SQUEEZE ALERT ⚡
-
-📍 Spot: ₹{current_price:.2f}
-🎯 Total GEX: {total_gex:,.0f}
-
-⚠️ HIGH VOLATILITY EXPECTED
-Market likely to see sharp moves in either direction.
-
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-"""
-            send_telegram(message)
-            st.warning("⚡ Gamma Squeeze alert sent!")
     
     # VWAP BREAKOUT SIGNAL
     if current_vwap is not None and 'vwap_upper_1' in df.columns:
@@ -955,7 +1082,7 @@ def main():
                             st.info("Gamma data not available")
                     
                     with tab5:
-                        # Key insights
+                        # Key insights with enhanced bias analysis
                         st.write("**Key Insights:**")
                         
                         if not option_summary.empty:
@@ -963,16 +1090,34 @@ def main():
                             st.write(f"• ATM Strike: {atm_row['Strike']}")
                             st.write(f"• PCR: {atm_row['PCR']}")
                             st.write(f"• Level: {atm_row['Level']}")
+                            st.write(f"• CE Delta Bias: {atm_row['CE_Delta_Bias']}")
+                            st.write(f"• PE Delta Bias: {atm_row['PE_Delta_Bias']}")
+                            st.write(f"• IV Bias: {atm_row['IV_Bias']} (CE: {atm_row['CE_IV']}%, PE: {atm_row['PE_IV']}%)")
+                            st.write(f"• Gamma Bias: {atm_row['Gamma_Bias']} (Net GEX: {atm_row['Net_GEX']:,.0f})")
                         
                         if gamma_df is not None and not gamma_df.empty:
                             avg_gamma_bias = gamma_df['Gamma_Bias'].mode().iloc[0] if not gamma_df['Gamma_Bias'].mode().empty else "Unknown"
-                            st.write(f"• Expected Volatility: {avg_gamma_bias}")
+                            st.write(f"• Overall Volatility Expectation: {avg_gamma_bias}")
                         
                         if iv_df is not None and not iv_df.empty:
                             expensive_count = (iv_df['CE_IV_Bias'] == 'Expensive').sum() + (iv_df['PE_IV_Bias'] == 'Expensive').sum()
                             total_count = len(iv_df) * 2
                             iv_sentiment = "Expensive" if expensive_count > total_count * 0.6 else "Cheap" if expensive_count < total_count * 0.4 else "Fair"
-                            st.write(f"• Options Pricing: {iv_sentiment}")
+                            st.write(f"• Options Pricing Sentiment: {iv_sentiment}")
+                        
+                        # Trading recommendations based on bias
+                        st.write("**Trading Recommendations:**")
+                        if not option_summary.empty:
+                            atm_row = option_summary[option_summary['Zone'] == 'ATM'].iloc[0]
+                            if atm_row['IV_Bias'] == 'CE Cheaper':
+                                st.write("• Consider Call options (cheaper IV)")
+                            elif atm_row['IV_Bias'] == 'PE Cheaper':
+                                st.write("• Consider Put options (cheaper IV)")
+                            
+                            if atm_row['Gamma_Bias'] == 'Pinned':
+                                st.write("• Low volatility expected - consider selling options")
+                            elif atm_row['Gamma_Bias'] == 'High Vol':
+                                st.write("• High volatility expected - consider buying options")
                     
                     # Signal checking
                     if enable_signals and not df.empty and is_market_hours():
