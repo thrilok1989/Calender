@@ -684,18 +684,26 @@ def analyze_advanced_options(expiry, spot_price):
         else:
             iv_bias = "N/A"
         
-        # 3. Gamma Exposure Bias
+        # 3. Gamma Exposure Bias - Compare CE vs PE Gamma (CORRECTED LOGIC)
         ce_gamma = calculate_gamma(underlying, strike, time_to_expiry, ce_iv)
         pe_gamma = calculate_gamma(underlying, strike, time_to_expiry, pe_iv)
         
         ce_gex = ce_gamma * curr_oi_ce * underlying * 0.01
         pe_gex = pe_gamma * curr_oi_pe * underlying * 0.01
-        net_gex = ce_gex - pe_gex
         
-        if abs(net_gex) > 1000:
-            gamma_bias = "High Vol" if abs(net_gex) > 2000 else "Moderate Vol"
+        # Compare CE vs PE Gamma Exposure
+        if abs(ce_gex) > 0 and abs(pe_gex) > 0:
+            gamma_diff_pct = abs(abs(ce_gex) - abs(pe_gex)) / max(abs(ce_gex), abs(pe_gex)) * 100
+            
+            if gamma_diff_pct > 20:  # Significant difference (>20%)
+                if abs(ce_gex) > abs(pe_gex):
+                    gamma_bias = "CE Higher Gamma"
+                else:
+                    gamma_bias = "PE Higher Gamma"
+            else:
+                gamma_bias = "Neutral"
         else:
-            gamma_bias = "Pinned"
+            gamma_bias = "N/A"
         
         bias_results.append({
             "Strike": strike,
