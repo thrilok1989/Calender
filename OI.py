@@ -214,7 +214,47 @@ class DhanAPI:
             st.error(f"Request failed: {e}")
             return None
     
-    def _format_candle_data(self, raw_data):
+    def aggregate_to_weekly(self, df):
+        """Aggregate daily data to weekly candles"""
+        if df is None or df.empty:
+            return None
+        
+        df['week'] = df['datetime'].dt.to_period('W')
+        
+        weekly = df.groupby('week').agg({
+            'open': 'first',
+            'high': 'max', 
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum',
+            'datetime': 'first'
+        }).reset_index()
+        
+        if 'open_interest' in df.columns:
+            weekly['open_interest'] = df.groupby('week')['open_interest'].last().values
+            
+        return weekly
+    
+    def aggregate_to_monthly(self, df):
+        """Aggregate daily data to monthly candles"""
+        if df is None or df.empty:
+            return None
+        
+        df['month'] = df['datetime'].dt.to_period('M')
+        
+        monthly = df.groupby('month').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min', 
+            'close': 'last',
+            'volume': 'sum',
+            'datetime': 'first'
+        }).reset_index()
+        
+        if 'open_interest' in df.columns:
+            monthly['open_interest'] = df.groupby('month')['open_interest'].last().values
+            
+        return monthly
         """Convert raw API response to DataFrame"""
         if not raw_data or not isinstance(raw_data, dict):
             st.error("Invalid API response format")
@@ -369,22 +409,52 @@ def main():
     else:
         symbol = symbol_option
     
-    # Data type selection
-    data_type = st.sidebar.radio("Data Type", ["Historical Daily", "Intraday"])
+    # Timeframe selection with more options
+    timeframe_option = st.sidebar.selectbox(
+        "Select Timeframe",
+        [
+            "1 Minute",
+            "5 Minutes", 
+            "15 Minutes",
+            "25 Minutes",
+            "1 Hour",
+            "Daily",
+            "Weekly",
+            "Monthly"
+        ]
+    )
     
-    if data_type == "Intraday":
-        interval = st.sidebar.selectbox("Interval (minutes)", ["1", "5", "15", "25", "60"])
-        max_days = 30  # Limit for intraday
-        st.sidebar.info("⚠️ Intraday data limited to 90 days")
+    # Map timeframe to API parameters
+    timeframe_mapping = {
+        "1 Minute": {"type": "intraday", "interval": "1", "max_days": 5},
+        "5 Minutes": {"type": "intraday", "interval": "5", "max_days": 30},
+        "15 Minutes": {"type": "intraday", "interval": "15", "max_days": 90},
+        "25 Minutes": {"type": "intraday", "interval": "25", "max_days": 90},
+        "1 Hour": {"type": "intraday", "interval": "60", "max_days": 90},
+        "Daily": {"type": "historical", "interval": None, "max_days": 365},
+        "Weekly": {"type": "historical", "interval": None, "max_days": 365*2},
+        "Monthly": {"type": "historical", "interval": None, "max_days": 365*5}
+    }
+    
+    timeframe_config = timeframe_mapping[timeframe_option]
+    data_type = timeframe_config["type"]
+    interval = timeframe_config["interval"]
+    max_days = timeframe_config["max_days"]
+    
+    # Show timeframe info
+    if data_type == "intraday":
+        st.sidebar.info(f"Intraday data - Max {max_days} days")
     else:
-        max_days = 365  # Limit for daily data
+        st.sidebar.info(f"Historical data - Max {max_days//365} years")
     
-    # Date selection
+    # Date selection with smart defaults based on timeframe
+    default_days = min(max_days, 30) if data_type == "intraday" else min(max_days, 90)
+    
     col1, col2 = st.sidebar.columns(2)
     with col1:
         from_date = st.date_input(
             "From Date", 
-            value=datetime.now() - timedelta(days=30),
+            value=datetime.now() - timedelta(days=default_days),
             max_value=datetime.now()
         )
     with col2:
@@ -393,6 +463,12 @@ def main():
             value=datetime.now(),
             max_value=datetime.now()
         )
+    
+    # Validate date range for selected timeframe
+    date_diff = (to_date - from_date).days
+    if date_diff > max_days:
+        st.sidebar.warning(f"Date range exceeds {max_days} days limit for {timeframe_option}")
+        from_date = to_date - timedelta(days=max_days)
     
     # Additional options
     include_oi = st.sidebar.checkbox("Include Open Interest", value=False)
@@ -417,8 +493,8 @@ def main():
             with col3:
                 st.info(f"**Instrument:** {instrument}")
             
-            # Fetch candle data
-            if data_type == "Historical Daily":
+            # Fetch candle data based on timeframe
+            if data_type == "historical":
                 df = dhan.get_historical_candles(
                     security_id=security_id,
                     exchange_segment=exchange_segment,
@@ -427,7 +503,14 @@ def main():
                     to_date=to_date,
                     include_oi=include_oi
                 )
-            else:
+                
+                # Aggregate to weekly or monthly if needed
+                if timeframe_option == "Weekly" and df is not None:
+                    df = dhan.aggregate_to_weekly(df)
+                elif timeframe_option == "Monthly" and df is not None:
+                    df = dhan.aggregate_to_monthly(df)
+                    
+            else:  # intraday
                 df = dhan.get_intraday_candles(
                     security_id=security_id,
                     exchange_segment=exchange_segment,
@@ -442,11 +525,11 @@ def main():
                 # Store in session state
                 st.session_state['df'] = df
                 st.session_state['symbol'] = symbol
-                st.session_state['data_type'] = data_type
+                st.session_state['timeframe'] = timeframe_option
                 st.session_state['exchange_segment'] = exchange_segment
                 st.session_state['instrument'] = instrument
                 
-                st.success(f"✅ Fetched {len(df)} candles for {symbol}")
+                st.success(f"✅ Fetched {len(df)} {timeframe_option.lower()} candles for {symbol}")
             else:
                 st.error("❌ No data received. Please check parameters and try again.")
     
@@ -454,7 +537,7 @@ def main():
     if 'df' in st.session_state and st.session_state['df'] is not None:
         df = st.session_state['df']
         symbol = st.session_state['symbol']
-        data_type = st.session_state['data_type']
+        timeframe = st.session_state['timeframe']
         
         # Statistics
         st.subheader("📊 Market Statistics")
@@ -488,8 +571,8 @@ def main():
             st.metric("Current Price", f"₹{current_price:.2f}")
         
         # Chart
-        st.subheader(f"📈 {symbol} - {data_type} Chart")
-        chart_title = f"{symbol} - {data_type} Candles"
+        st.subheader(f"📈 {symbol} - {timeframe} Chart")
+        chart_title = f"{symbol} - {timeframe} Candles"
         fig = create_candlestick_chart(df, chart_title, symbol)
         
         if fig is not None:
@@ -525,7 +608,7 @@ def main():
             st.download_button(
                 label="📥 Download CSV",
                 data=csv,
-                file_name=f"{symbol}_{data_type.replace(' ', '_')}_candles.csv",
+                file_name=f"{symbol}_{timeframe.replace(' ', '_')}_candles.csv",
                 mime="text/csv"
             )
         
@@ -534,7 +617,7 @@ def main():
             st.download_button(
                 label="📥 Download JSON",
                 data=json_data,
-                file_name=f"{symbol}_{data_type.replace(' ', '_')}_candles.json",
+                file_name=f"{symbol}_{timeframe.replace(' ', '_')}_candles.json",
                 mime="application/json"
             )
     
