@@ -264,7 +264,7 @@ def calculate_gamma(spot_price, strike_price, time_to_expiry, iv, risk_free_rate
         return 0
 
 def analyze_volume_spread(df_options, spot_price):
-    """Analyze volume spread and cumulative delta"""
+    """Analyze volume spread and cumulative delta with correct bias logic"""
     results = []
     
     for _, row in df_options.iterrows():
@@ -286,9 +286,12 @@ def analyze_volume_spread(df_options, spot_price):
         ce_delta = ce_buy_vol - ce_sell_vol
         pe_delta = pe_buy_vol - pe_sell_vol
         
-        # Determine bias based on net delta
+        # CORRECTED BIAS LOGIC:
+        # CE: Buy Vol > Sell Vol = Bullish, Sell Vol > Buy Vol = Bearish
         ce_delta_bias = "Bullish" if ce_delta > 0 else "Bearish" if ce_delta < 0 else "Neutral"
-        pe_delta_bias = "Bullish" if pe_delta > 0 else "Bearish" if pe_delta < 0 else "Neutral"
+        
+        # PE: Sell Vol > Buy Vol = Bullish (selling puts = bullish), Buy Vol > Sell Vol = Bearish (buying puts = bearish)
+        pe_delta_bias = "Bullish" if pe_delta < 0 else "Bearish" if pe_delta > 0 else "Neutral"
         
         results.append({
             'Strike': row['strikePrice'],
