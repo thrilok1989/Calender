@@ -214,6 +214,60 @@ class DhanAPI:
             st.error(f"Request failed: {e}")
             return None
     
+    def _format_candle_data(self, raw_data):
+        """Convert raw API response to DataFrame"""
+        if not raw_data or not isinstance(raw_data, dict):
+            st.error("Invalid API response format")
+            return None
+        
+        required_fields = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
+        if not all(field in raw_data for field in required_fields):
+            st.error("Missing required fields in API response")
+            return None
+        
+        # Check if arrays have data
+        if not raw_data['open'] or len(raw_data['open']) == 0:
+            st.error("No data returned from API")
+            return None
+        
+        # Verify all arrays have same length
+        arrays = [raw_data[field] for field in required_fields]
+        lengths = [len(arr) for arr in arrays]
+        
+        if len(set(lengths)) > 1:
+            st.error("Inconsistent data array lengths in API response")
+            return None
+        
+        try:
+            df = pd.DataFrame({
+                'timestamp': raw_data['timestamp'],
+                'open': raw_data['open'],
+                'high': raw_data['high'],
+                'low': raw_data['low'],
+                'close': raw_data['close'],
+                'volume': raw_data['volume']
+            })
+            
+            # Add Open Interest if available
+            if 'open_interest' in raw_data and raw_data['open_interest']:
+                df['open_interest'] = raw_data['open_interest']
+            
+            # Convert timestamp to datetime
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s', errors='coerce')
+            
+            # Remove any rows with invalid timestamps
+            df = df.dropna(subset=['datetime'])
+            
+            if df.empty:
+                st.error("No valid data after processing")
+                return None
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"Error processing data: {e}")
+            return None
+    
     def aggregate_to_weekly(self, df):
         """Aggregate daily data to weekly candles"""
         if df is None or df.empty:
