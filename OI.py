@@ -664,7 +664,7 @@ def analyze_advanced_options(expiry, spot_price):
         ce_delta_bias = "Bullish" if ce_delta > 0.5 else "Bearish" if ce_delta < 0.3 else "Neutral"
         pe_delta_bias = "Bearish" if pe_delta < -0.5 else "Bullish" if pe_delta > -0.3 else "Neutral"
         
-        # 2. IV Bias - Compare CE vs PE IV to see which is cheaper
+        # 2. IV Bias - Compare CE vs PE IV to see which is cheaper (CORRECTED LOGIC)
         ce_price = row.get('last_price_CE', 0)
         pe_price = row.get('last_price_PE', 0)
         
@@ -672,12 +672,15 @@ def analyze_advanced_options(expiry, spot_price):
         pe_iv = calculate_implied_volatility(pe_price, underlying, strike, time_to_expiry, 'PE')
         
         if ce_iv > 0 and pe_iv > 0:
-            if ce_iv < pe_iv * 0.95:  # CE is significantly cheaper
-                iv_bias = "CE Cheaper"
-            elif pe_iv < ce_iv * 0.95:  # PE is significantly cheaper
-                iv_bias = "PE Cheaper"
+            iv_diff_pct = abs(ce_iv - pe_iv) / max(ce_iv, pe_iv) * 100
+            
+            if iv_diff_pct > 5:  # Significant difference (>5%)
+                if ce_iv < pe_iv:
+                    iv_bias = "CE Cheaper"
+                else:
+                    iv_bias = "PE Cheaper"
             else:
-                iv_bias = "Fair"
+                iv_bias = "Neutral"  # IVs are similar
         else:
             iv_bias = "N/A"
         
