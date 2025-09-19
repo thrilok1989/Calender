@@ -615,23 +615,15 @@ def calculate_final_bias_score(df, option_summary, iv_df, gamma_df, volume_sprea
     volume_score = 1 if atm_row['Volume_Bias'] == 'Bullish' else -1 if atm_row['Volume_Bias'] == 'Bearish' else 0
     scores['Volume'] = volume_score
     
-    # 4. ATM Bid Score (-1 to +1)
-    bid_score = 1 if atm_row['Bid_Bias'] == 'Bullish' else -1 if atm_row['Bid_Bias'] == 'Bearish' else 0
-    scores['Bid'] = bid_score
-    
-    # 5. ATM Ask Score (-1 to +1)
-    ask_score = 1 if atm_row['Ask_Bias'] == 'Bullish' else -1 if atm_row['Ask_Bias'] == 'Bearish' else 0
-    scores['Ask'] = ask_score
-    
-    # 6. ATM CE Delta Score (-1 to +1)
+    # 4. ATM CE Delta Score (-1 to +1)
     ce_delta_score = 1 if atm_row['CE_Delta_Bias'] == 'Bullish' else -1 if atm_row['CE_Delta_Bias'] == 'Bearish' else 0
     scores['CE_Delta'] = ce_delta_score
     
-    # 7. ATM PE Delta Score (-1 to +1)
+    # 5. ATM PE Delta Score (-1 to +1)
     pe_delta_score = 1 if atm_row['PE_Delta_Bias'] == 'Bullish' else -1 if atm_row['PE_Delta_Bias'] == 'Bearish' else 0
     scores['PE_Delta'] = pe_delta_score
     
-    # 8. ATM IV Score (-1 to +1)
+    # 6. ATM IV Score (-1 to +1)
     if atm_row['IV_Bias'] == 'CE Cheaper':
         iv_score = 1  # Calls cheaper = Bullish
     elif atm_row['IV_Bias'] == 'PE Cheaper':
@@ -640,21 +632,21 @@ def calculate_final_bias_score(df, option_summary, iv_df, gamma_df, volume_sprea
         iv_score = 0
     scores['IV'] = iv_score
     
-    # 9. ATM Gamma Score (-1 to +1)
+    # 7. ATM Gamma Score (-1 to +1)
     # PE High Gamma = Bullish, CE High Gamma = Bearish
     gamma_score = 1 if atm_row['Gamma_Bias'] == 'Bullish' else -1 if atm_row['Gamma_Bias'] == 'Bearish' else 0
     scores['Gamma'] = gamma_score
     
     # Calculate total score
     total_score = sum(scores.values())
-    max_possible = 11  # RSI(2) + 8 other components(1 each)
+    max_possible = 9  # RSI(2) + 6 other components(1 each)
     
     # Determine bias
-    if total_score >= 5:
+    if total_score >= 4:
         bias = "Strong Bullish"
     elif total_score >= 2:
         bias = "Bullish"
-    elif total_score <= -5:
+    elif total_score <= -4:
         bias = "Strong Bearish"
     elif total_score <= -2:
         bias = "Bearish"
@@ -715,7 +707,7 @@ def check_advanced_signals(df, option_data, iv_df, gamma_df, volume_spread_df, c
 
 📍 Spot: ₹{current_price:.2f}
 🎯 ATM: {row['Strike']}
-📊 Bias Score: {score}/11 ({bias})
+📊 Bias Score: {score}/9 ({bias})
 
 📈 Technical Confluence:
 RSI: {current_rsi:.2f}
@@ -854,7 +846,7 @@ def main():
                     with bias_col1:
                         bias_color = "green" if "Bullish" in bias else "red" if "Bearish" in bias else "gray"
                         st.markdown(f"**Market Bias:** <span style='color:{bias_color}'>{bias}</span>", unsafe_allow_html=True)
-                        st.markdown(f"**Score:** {score}/11")
+                        st.markdown(f"**Score:** {score}/9")
                     
                     with bias_col2:
                         st.markdown(f"**Dynamics:** {dynamics}")
