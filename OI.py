@@ -30,6 +30,10 @@ if 'option_flow_tracker' not in st.session_state:
     st.session_state.option_flow_tracker = {}
 if 'portfolio_greeks' not in st.session_state:
     st.session_state.portfolio_greeks = {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0}
+if 'last_signals' not in st.session_state:
+    st.session_state.last_signals = {}
+if 'signal_cooldown' not in st.session_state:
+    st.session_state.signal_cooldown = {}
 
 # Function to check if it's market hours
 def is_market_hours():
@@ -46,7 +50,7 @@ def is_market_hours():
 
 # Auto-refresh with different intervals for different data
 if is_market_hours():
-    st_autorefresh(interval=150000, key="main_refresh")  # 15 seconds for main data
+    st_autorefresh(interval=15000, key="main_refresh")  # 15 seconds for main data
 else:
     st.info("🏛️ Market is closed. Institutional analysis in preview mode.")
 
@@ -122,6 +126,14 @@ def get_expiry_list():
     except:
         return None
 
+def should_send_signal(signal_type, current_time, cooldown_minutes=5):
+    """Prevent duplicate signals within cooldown period"""
+    last_sent = st.session_state.signal_cooldown.get(signal_type)
+    if last_sent:
+        time_diff = (current_time - last_sent).total_seconds() / 60
+        return time_diff >= cooldown_minutes
+    return True
+
 def send_institutional_alert(message, priority="NORMAL"):
     """Enhanced alert system for institutional signals"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -142,6 +154,10 @@ def send_institutional_alert(message, priority="NORMAL"):
         requests.post(url, json=payload, timeout=10)
     except:
         pass
+
+def send_critical_alert_override(message):
+    """Send critical alerts regardless of market hours"""
+    send_institutional_alert(f"🔴 CRITICAL OVERRIDE: {message}", "CRITICAL")
 
 def process_candle_data(data):
     if not data or 'open' not in data:
@@ -755,142 +771,214 @@ def create_options_flow_chart(options_data):
     
     return fig
 
-def detect_institutional_signals(df, options_data, summary_analytics, current_price):
-    """Detect institutional-level trading signals"""
+def detect_institutional_signals_improved(df, options_data, summary_analytics, current_price):
+    """Improved signal detection with lower thresholds and better filters"""
     signals = []
     
-    if df.empty or options_data is None:
+    if df.empty:
         return signals
     
-    # Calculate current indicators
     df = calculate_institutional_indicators(df)
     current_vwap = df['vwap'].iloc[-1] if 'vwap' in df.columns else current_price
     current_rsi = df['rsi'].iloc[-1] if 'rsi' in df.columns else 50
     current_volume_rsi = df.get('volume_rsi', pd.Series([50])).iloc[-1]
     
-    # 1. VWAP Institutional Levels Signal
+    # 1. REDUCED THRESHOLD VWAP Signals (0.3% instead of 0.5%)
     vwap_deviation = ((current_price - current_vwap) / current_vwap) * 100
     
-    if abs(vwap_deviation) > 0.5:  # 0.5% deviation from VWAP
-        if 'vwap_upper_2' in df.columns and current_price > df['vwap_upper_2'].iloc[-1]:
+    if abs(vwap_deviation) > 0.3:  # More sensitive
+        if 'vwap_upper_1' in df.columns and current_price > df['vwap_upper_1'].iloc[-1]:
             signals.append({
-                'type': 'INSTITUTIONAL_BREAKOUT',
+                'type': 'VWAP_BREAKOUT_EARLY',
                 'direction': 'BULLISH',
-                'strength': 'HIGH',
-                'message': f'Price above VWAP +2σ band. Institutional breakout likely. Deviation: {vwap_deviation:.2f}%',
-                'level': df['vwap_upper_2'].iloc[-1]
+                'strength': 'MEDIUM',
+                'message': f'Price above VWAP +1σ. Early bullish signal. Deviation: {vwap_deviation:.2f}%',
+                'level': df['vwap_upper_1'].iloc[-1]
             })
-        elif 'vwap_lower_2' in df.columns and current_price < df['vwap_lower_2'].iloc[-1]:
+        elif 'vwap_lower_1' in df.columns and current_price < df['vwap_lower_1'].iloc[-1]:
             signals.append({
-                'type': 'INSTITUTIONAL_BREAKDOWN',
-                'direction': 'BEARISH',
-                'strength': 'HIGH',
-                'message': f'Price below VWAP -2σ band. Institutional selling pressure. Deviation: {vwap_deviation:.2f}%',
-                'level': df['vwap_lower_2'].iloc[-1]
+                'type': 'VWAP_BREAKDOWN_EARLY',
+                'direction': 'BEARISH', 
+                'strength': 'MEDIUM',
+                'message': f'Price below VWAP -1σ. Early bearish signal. Deviation: {vwap_deviation:.2f}%',
+                'level': df['vwap_lower_1'].iloc[-1]
             })
     
-    # 2. Volume RSI Divergence Signal
+    # Strong VWAP signals (original logic but clearer)
+    if 'vwap_upper_2' in df.columns and current_price > df['vwap_upper_2'].iloc[-1]:
+        signals.append({
+            'type': 'INSTITUTIONAL_BREAKOUT',
+            'direction': 'BULLISH',
+            'strength': 'HIGH',
+            'message': f'Price above VWAP +2σ band. Strong institutional breakout. Deviation: {vwap_deviation:.2f}%',
+            'level': df['vwap_upper_2'].iloc[-1]
+        })
+    elif 'vwap_lower_2' in df.columns and current_price < df['vwap_lower_2'].iloc[-1]:
+        signals.append({
+            'type': 'INSTITUTIONAL_BREAKDOWN',
+            'direction': 'BEARISH',
+            'strength': 'HIGH',
+            'message': f'Price below VWAP -2σ band. Strong institutional selling. Deviation: {vwap_deviation:.2f}%',
+            'level': df['vwap_lower_2'].iloc[-1]
+        })
+    
+    # 2. Volume Surge Detection (NEW)
+    if len(df) >= 20:
+        recent_volume = df['volume'].iloc[-3:].mean()  # Last 3 candles
+        avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+        
+        if recent_volume > avg_volume * 1.8:  # 80% above average
+            price_direction = 'BULLISH' if current_price > df['open'].iloc[-1] else 'BEARISH'
+            signals.append({
+                'type': 'VOLUME_SURGE',
+                'direction': price_direction,
+                'strength': 'HIGH',
+                'message': f'Volume surge detected. Recent: {recent_volume:,.0f} vs Avg: {avg_volume:,.0f} ({(recent_volume/avg_volume-1)*100:.0f}% above)',
+                'volume_ratio': recent_volume / avg_volume
+            })
+    
+    # 3. REDUCED RSI Divergence (10 points instead of 15)
     rsi_divergence = current_rsi - current_volume_rsi
-    if abs(rsi_divergence) > 15:  # Significant divergence
+    if abs(rsi_divergence) > 10:  # More sensitive
         direction = "BEARISH" if rsi_divergence > 0 else "BULLISH"
         signals.append({
             'type': 'VOLUME_RSI_DIVERGENCE',
             'direction': direction,
             'strength': 'MEDIUM',
-            'message': f'RSI-Volume RSI divergence: {rsi_divergence:.1f}. Institutional flow contrary to price.',
+            'message': f'RSI-Volume RSI divergence: {rsi_divergence:.1f}. Institutional flow contrary to price movement.',
             'rsi': current_rsi,
             'volume_rsi': current_volume_rsi
         })
     
-    # 3. Gamma Exposure Signals
-    net_gex = summary_analytics.get('net_gamma_exposure', 0)
-    if net_gex > 100:  # High gamma environment
-        signals.append({
-            'type': 'HIGH_GAMMA_ENVIRONMENT',
-            'direction': 'NEUTRAL',
-            'strength': 'HIGH',
-            'message': f'High Gamma Exposure: ₹{net_gex:.0f}M. Expect low volatility/pinning near strikes.',
-            'gamma_exposure': net_gex
-        })
-    elif net_gex < 20:  # Low gamma environment
-        signals.append({
-            'type': 'LOW_GAMMA_ENVIRONMENT',
-            'direction': 'NEUTRAL',
-            'strength': 'HIGH',
-            'message': f'Low Gamma Exposure: ₹{net_gex:.0f}M. Higher volatility expected.',
-            'gamma_exposure': net_gex
-        })
+    # 4. Price Momentum Signals (NEW)
+    if 'price_momentum' in df.columns and len(df) >= 10:
+        current_momentum = df['price_momentum'].iloc[-1]
+        if abs(current_momentum) > 1.5:  # 1.5% momentum
+            direction = 'BULLISH' if current_momentum > 0 else 'BEARISH'
+            signals.append({
+                'type': 'MOMENTUM_SIGNAL',
+                'direction': direction,
+                'strength': 'MEDIUM',
+                'message': f'Strong price momentum: {current_momentum:.2f}%. Institutional trend continuation likely.',
+                'momentum': current_momentum
+            })
     
-    # 4. Institutional Sentiment Signal
-    institutional_sentiment = summary_analytics.get('institutional_sentiment', 'NEUTRAL')
-    if 'BULLISH' in institutional_sentiment or 'BEARISH' in institutional_sentiment:
-        direction = 'BULLISH' if 'BULLISH' in institutional_sentiment else 'BEARISH'
-        signals.append({
-            'type': 'INSTITUTIONAL_SENTIMENT',
-            'direction': direction,
-            'strength': 'HIGH',
-            'message': f'Institutional sentiment: {institutional_sentiment}',
-            'sentiment': institutional_sentiment
-        })
+    # 5. Enhanced Gamma Exposure Signals
+    if summary_analytics:
+        net_gex = summary_analytics.get('net_gamma_exposure', 0)
+        if net_gex > 50:  # Lowered from 100
+            signals.append({
+                'type': 'HIGH_GAMMA_ENVIRONMENT',
+                'direction': 'BULLISH',  # Changed from NEUTRAL
+                'strength': 'HIGH',
+                'message': f'High Gamma Exposure: ₹{net_gex:.0f}M. Expect support/resistance at key strikes.',
+                'gamma_exposure': net_gex
+            })
+        elif net_gex < 10:  # Lowered from 20
+            signals.append({
+                'type': 'LOW_GAMMA_ENVIRONMENT',
+                'direction': 'BEARISH',  # Changed from NEUTRAL
+                'strength': 'HIGH',
+                'message': f'Low Gamma Exposure: ₹{net_gex:.0f}M. Higher volatility/breakout potential.',
+                'gamma_exposure': net_gex
+            })
     
-    # 5. Volume Profile Signals
-    atm_data = options_data[options_data['Zone'] == 'ATM']
-    if not atm_data.empty:
-        atm_row = atm_data.iloc[0]
-        total_volume = atm_row.get('Total_Volume', 0)
-        avg_volume = options_data['Total_Volume'].mean()
+    # 6. Enhanced Options Flow Signals
+    if options_data is not None and not options_data.empty:
+        # ATM volume analysis
+        atm_data = options_data[options_data['Zone'] == 'ATM']
+        if not atm_data.empty:
+            atm_row = atm_data.iloc[0]
+            total_volume = atm_row.get('Total_Volume', 0)
+            avg_volume = options_data['Total_Volume'].mean()
+            
+            if total_volume > avg_volume * 1.5:  # Lowered from 2x
+                pcr = atm_row.get('PCR', 1)
+                bias = 'BULLISH' if pcr > 1.2 else 'BEARISH' if pcr < 0.8 else 'NEUTRAL'
+                if bias != 'NEUTRAL':
+                    signals.append({
+                        'type': 'ATM_VOLUME_SPIKE',
+                        'direction': bias,
+                        'strength': 'HIGH',
+                        'message': f'High ATM volume at {atm_row["Strike"]}. Volume: {total_volume:,}, PCR: {pcr:.2f}',
+                        'strike': atm_row['Strike'],
+                        'volume': total_volume,
+                        'pcr': pcr
+                    })
         
-        if total_volume > avg_volume * 2:  # High volume at ATM
+        # OI Change signals
+        significant_oi_changes = options_data[abs(options_data['OI_Change']) > 5000]
+        if not significant_oi_changes.empty:
+            max_oi_change = significant_oi_changes.loc[significant_oi_changes['OI_Change'].abs().idxmax()]
+            direction = 'BULLISH' if max_oi_change['OI_Change'] > 0 else 'BEARISH'
             signals.append({
-                'type': 'ATM_HIGH_VOLUME',
-                'direction': 'NEUTRAL',
+                'type': 'SIGNIFICANT_OI_CHANGE',
+                'direction': direction,
                 'strength': 'MEDIUM',
-                'message': f'Unusually high volume at ATM strike {atm_row["Strike"]}. Volume: {total_volume:,}',
-                'volume': total_volume
+                'message': f'Major OI change at {max_oi_change["Strike"]}: {max_oi_change["OI_Change"]:+,} contracts',
+                'strike': max_oi_change['Strike'],
+                'oi_change': max_oi_change['OI_Change']
             })
     
-    # 6. Volatility Surface Signals
-    volatility_surface = summary_analytics.get('volatility_surface', [])
-    if volatility_surface:
-        avg_iv = np.mean([v['ce_iv'] + v['pe_iv'] for v in volatility_surface]) / 2
-        if avg_iv > 25:
+    # 7. Institutional Sentiment (only if strong)
+    if summary_analytics:
+        institutional_sentiment = summary_analytics.get('institutional_sentiment', 'NEUTRAL')
+        if 'BULLISH' in institutional_sentiment or 'BEARISH' in institutional_sentiment:
+            direction = 'BULLISH' if 'BULLISH' in institutional_sentiment else 'BEARISH'
             signals.append({
-                'type': 'HIGH_VOLATILITY_REGIME',
-                'direction': 'NEUTRAL',
-                'strength': 'MEDIUM',
-                'message': f'High IV environment: {avg_iv:.1f}%. Consider volatility selling strategies.',
-                'avg_iv': avg_iv
-            })
-        elif avg_iv < 12:
-            signals.append({
-                'type': 'LOW_VOLATILITY_REGIME',
-                'direction': 'NEUTRAL',
-                'strength': 'MEDIUM',
-                'message': f'Low IV environment: {avg_iv:.1f}%. Consider volatility buying strategies.',
-                'avg_iv': avg_iv
+                'type': 'INSTITUTIONAL_SENTIMENT',
+                'direction': direction,
+                'strength': 'HIGH',
+                'message': f'Strong institutional sentiment: {institutional_sentiment}',
+                'sentiment': institutional_sentiment
             })
     
     return signals
 
-def send_institutional_signals(signals, current_price):
-    """Send institutional signals via Telegram"""
+def send_institutional_signals_improved(signals, current_price):
+    """Enhanced signal sending with deduplication and filtering"""
     if not signals:
         return
     
+    current_time = datetime.now(pytz.timezone('Asia/Kolkata'))
+    
+    # Filter out low-value signals and prioritize actionable ones
+    actionable_signals = []
     for signal in signals:
-        priority = "HIGH" if signal['strength'] == 'HIGH' else "NORMAL"
+        # Skip neutral signals unless they're HIGH strength
+        if signal['direction'] == 'NEUTRAL' and signal['strength'] != 'HIGH':
+            continue
         
-        message = f"""
+        # Prioritize HIGH strength signals
+        if signal['strength'] == 'HIGH':
+            actionable_signals.insert(0, signal)  # Add to front
+        else:
+            actionable_signals.append(signal)
+    
+    # Limit to top 3 signals to avoid spam
+    actionable_signals = actionable_signals[:3]
+    
+    for signal in actionable_signals:
+        signal_key = f"{signal['type']}_{signal['direction']}"
+        
+        # Check cooldown (5 minutes for HIGH, 10 minutes for others)
+        cooldown_minutes = 5 if signal['strength'] == 'HIGH' else 10
+        
+        if should_send_signal(signal_key, current_time, cooldown_minutes):
+            priority = "HIGH" if signal['strength'] == 'HIGH' else "NORMAL"
+            
+            message = f"""
 <b>{signal['type']}</b> - {signal['direction']}
 Strength: {signal['strength']}
 
 {signal['message']}
 
 Current Price: ₹{current_price:.2f}
-Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+Time: {current_time.strftime('%H:%M:%S IST')}
 """
-        
-        send_institutional_alert(message, priority)
+            
+            send_institutional_alert(message, priority)
+            st.session_state.signal_cooldown[signal_key] = current_time
 
 def calculate_portfolio_metrics(options_data):
     """Calculate real-time portfolio metrics"""
@@ -936,6 +1024,11 @@ def main():
     depth_levels = st.sidebar.selectbox("Market Depth Analysis", ["Standard (5-level)", "Advanced (20-level)"], index=1)
     risk_scenario = st.sidebar.slider("Risk Scenario Range (%)", 1, 10, 5)
     enable_alerts = st.sidebar.checkbox("Institutional Alerts", value=True)
+    
+    # Alert sensitivity
+    st.sidebar.subheader("🔔 Alert Settings")
+    alert_sensitivity = st.sidebar.selectbox("Alert Sensitivity", ["Conservative", "Balanced", "Aggressive"], index=1)
+    send_neutral_alerts = st.sidebar.checkbox("Send Neutral Signals", value=False)
     
     # Advanced filters
     st.sidebar.subheader("🎯 Focus Areas")
@@ -1033,14 +1126,28 @@ def main():
                     height=400
                 )
                 
-                # Generate and send institutional signals
-                if enable_alerts and is_market_hours():
-                    signals = detect_institutional_signals(df, options_summary, summary_analytics, current_price)
+                # Generate and send institutional signals with improved logic
+                if enable_alerts:
+                    signals = detect_institutional_signals_improved(df, options_summary, summary_analytics, current_price)
                     if signals:
-                        send_institutional_signals(signals, current_price)
+                        # Send alerts regardless of market hours for critical signals
+                        critical_signals = [s for s in signals if s['strength'] == 'HIGH']
+                        if critical_signals and not is_market_hours():
+                            for signal in critical_signals[:2]:  # Max 2 critical after-hours
+                                send_critical_alert_override(f"{signal['type']}: {signal['message']}")
+                        
+                        # Regular alert sending
+                        if is_market_hours():
+                            send_institutional_signals_improved(signals, current_price)
+                        
+                        # Display recent signals in UI
+                        st.subheader("🚨 Recent Signals")
                         for signal in signals[-3:]:  # Show last 3 signals
-                            signal_color = "🔴" if signal['strength'] == 'HIGH' else "🟡"
-                            st.success(f"{signal_color} {signal['type']}: {signal['message']}")
+                            signal_color = "🔴" if signal['strength'] == 'HIGH' else "🟡" if signal['strength'] == 'MEDIUM' else "🔵"
+                            direction_color = "success" if signal['direction'] == 'BULLISH' else "error" if signal['direction'] == 'BEARISH' else "info"
+                            st.markdown(f"**{signal_color} {signal['type']}** - {signal['direction']}")
+                            st.markdown(f"*{signal['message']}*")
+                            st.markdown("---")
             
             else:
                 st.error("📊 Options data unavailable")
@@ -1089,6 +1196,18 @@ def main():
             flow_color = "🔴" if dominant_flow == "PUT" else "🟢" if dominant_flow == "CALL" else "🟡"
             st.write(f"{flow_color} **Dominant Flow**: {dominant_flow}")
             st.write(f"📊 **Average PCR**: {avg_pcr:.3f}")
+        
+        # Signal Status
+        st.subheader("🔔 Alert Status")
+        if 'st.session_state.signal_cooldown' in globals():
+            active_cooldowns = len([k for k, v in st.session_state.signal_cooldown.items() 
+                                  if (datetime.now(pytz.timezone('Asia/Kolkata')) - v).total_seconds() < 600])
+            st.write(f"Active cooldowns: {active_cooldowns}")
+        
+        alert_status = "🟢 Active" if enable_alerts else "🔴 Disabled"
+        market_status = "🟢 Open" if is_market_hours() else "🔴 Closed"
+        st.write(f"**Alerts**: {alert_status}")
+        st.write(f"**Market**: {market_status}")
     
     # Additional analysis sections
     if analyze_volatility and 'summary_analytics' in locals():
@@ -1108,13 +1227,82 @@ def main():
         flow_fig = create_options_flow_chart(options_summary)
         st.plotly_chart(flow_fig, use_container_width=True)
     
-    # Footer with update time
-    current_time_str = datetime.now(ist).strftime("%H:%M:%S IST")
-    st.sidebar.info(f"🔄 Updated: {current_time_str}")
+    # Performance Statistics
+    st.header("📈 Session Performance")
+    col_perf1, col_perf2, col_perf3, col_perf4 = st.columns(4)
     
-    if st.sidebar.button("📨 Test Institutional Alert"):
-        send_institutional_alert("🏛️ Test message from Institutional Nifty Analyzer", "NORMAL")
-        st.sidebar.success("Alert sent!")
+    with col_perf1:
+        signals_sent = len(st.session_state.signal_cooldown)
+        st.metric("Signals Sent", signals_sent)
+    
+    with col_perf2:
+        if not df.empty:
+            session_range = df['high'].max() - df['low'].min()
+            st.metric("Session Range", f"₹{session_range:.2f}")
+    
+    with col_perf3:
+        if not df.empty:
+            total_volume = df['volume'].sum()
+            st.metric("Total Volume", f"{total_volume:,.0f}")
+    
+    with col_perf4:
+        if 'options_summary' in locals() and options_summary is not None:
+            total_oi = (options_summary['CE_Delta_Exposure'] + options_summary['PE_Delta_Exposure']).sum()
+            st.metric("Total OI Exposure", f"₹{total_oi:,.0f}")
+    
+    # Footer with update time and system status
+    st.markdown("---")
+    footer_col1, footer_col2, footer_col3 = st.columns(3)
+    
+    with footer_col1:
+        current_time_str = datetime.now(ist).strftime("%H:%M:%S IST")
+        st.info(f"🔄 Updated: {current_time_str}")
+    
+    with footer_col2:
+        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            st.success("📱 Telegram Connected")
+        else:
+            st.error("📱 Telegram Not Connected")
+    
+    with footer_col3:
+        if DHAN_ACCESS_TOKEN and DHAN_CLIENT_ID:
+            st.success("🔗 DHAN API Connected")
+        else:
+            st.error("🔗 DHAN API Not Connected")
+    
+    # Test and debug section
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🧪 Testing & Debug")
+    
+    if st.sidebar.button("📨 Test Alert"):
+        test_message = f"""
+<b>TEST SIGNAL</b> - BULLISH
+Strength: HIGH
+
+Test message from Institutional Nifty Analyzer.
+Current Price: ₹{current_price:.2f}
+Time: {datetime.now(ist).strftime('%H:%M:%S IST')}
+        """
+        send_institutional_alert(test_message, "NORMAL")
+        st.sidebar.success("Test alert sent!")
+    
+    if st.sidebar.button("🔄 Clear Signal Cache"):
+        st.session_state.signal_cooldown = {}
+        st.sidebar.success("Signal cache cleared!")
+    
+    if st.sidebar.button("🚨 Test Critical Alert"):
+        send_critical_alert_override("This is a test critical alert that bypasses market hours restriction.")
+        st.sidebar.success("Critical alert sent!")
+    
+    # Debug info
+    if st.sidebar.checkbox("Show Debug Info"):
+        st.sidebar.write("**Session State Keys:**")
+        st.sidebar.write(list(st.session_state.keys()))
+        
+        st.sidebar.write("**Active Cooldowns:**")
+        for signal_type, last_sent in st.session_state.signal_cooldown.items():
+            time_since = (datetime.now(ist) - last_sent).total_seconds() / 60
+            st.sidebar.write(f"{signal_type}: {time_since:.1f}m ago")
 
 if __name__ == "__main__":
     main()
