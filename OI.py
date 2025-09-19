@@ -154,19 +154,6 @@ class DhanAPI:
         with st.expander("Debug - API Request"):
             st.json(payload)
         
-        # Debug response
-        with st.expander("Debug - API Response Sample"):
-            if response.status_code == 200:
-                data = response.json()
-                if data and 'volume' in data:
-                    st.write(f"Volume array length: {len(data['volume'])}")
-                    st.write(f"Sample volumes: {data['volume'][:10]}")
-                    st.write(f"Volume sum: {sum(data['volume'])}")
-                else:
-                    st.write("No volume data in response")
-            else:
-                st.write(f"Response error: {response.text}")
-        
         try:
             response = requests.post(url, headers=self.headers, json=payload, timeout=30)
             
@@ -225,60 +212,6 @@ class DhanAPI:
             return None
         except Exception as e:
             st.error(f"Request failed: {e}")
-            return None
-    
-    def _format_candle_data(self, raw_data):
-        """Convert raw API response to DataFrame"""
-        if not raw_data or not isinstance(raw_data, dict):
-            st.error("Invalid API response format")
-            return None
-        
-        required_fields = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
-        if not all(field in raw_data for field in required_fields):
-            st.error("Missing required fields in API response")
-            return None
-        
-        # Check if arrays have data
-        if not raw_data['open'] or len(raw_data['open']) == 0:
-            st.error("No data returned from API")
-            return None
-        
-        # Verify all arrays have same length
-        arrays = [raw_data[field] for field in required_fields]
-        lengths = [len(arr) for arr in arrays]
-        
-        if len(set(lengths)) > 1:
-            st.error("Inconsistent data array lengths in API response")
-            return None
-        
-        try:
-            df = pd.DataFrame({
-                'timestamp': raw_data['timestamp'],
-                'open': raw_data['open'],
-                'high': raw_data['high'],
-                'low': raw_data['low'],
-                'close': raw_data['close'],
-                'volume': raw_data['volume']
-            })
-            
-            # Add Open Interest if available
-            if 'open_interest' in raw_data and raw_data['open_interest']:
-                df['open_interest'] = raw_data['open_interest']
-            
-            # Convert timestamp to datetime
-            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s', errors='coerce')
-            
-            # Remove any rows with invalid timestamps
-            df = df.dropna(subset=['datetime'])
-            
-            if df.empty:
-                st.error("No valid data after processing")
-                return None
-            
-            return df
-            
-        except Exception as e:
-            st.error(f"Error processing data: {e}")
             return None
     
     def aggregate_to_weekly(self, df):
@@ -405,41 +338,25 @@ def create_candlestick_chart(df, title, symbol):
             row=1, col=1
         )
         
-        # Volume chart (only if volume data exists)
-        total_volume = df['volume'].sum()
-        if total_volume > 0:
-            colors = ['red' if close < open else 'green' 
-                      for close, open in zip(df['close'], df['open'])]
-            
-            fig.add_trace(
-                go.Bar(
-                    x=df['datetime'],
-                    y=df['volume'],
-                    name='Volume',
-                    marker_color=colors,
-                    opacity=0.7
-                ),
-                row=2, col=1
-            )
-            volume_title = 'Volume'
-        else:
-            # Show a placeholder for indices or zero volume data
-            fig.add_trace(
-                go.Scatter(
-                    x=df['datetime'],
-                    y=[0] * len(df),
-                    name='No Volume Data',
-                    line=dict(color='gray', dash='dash'),
-                    text='No volume data available'
-                ),
-                row=2, col=1
-            )
-            volume_title = 'Volume (Not Available)'
+        # Volume chart
+        colors = ['red' if close < open else 'green' 
+                  for close, open in zip(df['close'], df['open'])]
+        
+        fig.add_trace(
+            go.Bar(
+                x=df['datetime'],
+                y=df['volume'],
+                name='Volume',
+                marker_color=colors,
+                opacity=0.7
+            ),
+            row=2, col=1
+        )
         
         fig.update_layout(
             title=title,
             yaxis_title='Price (₹)',
-            yaxis2_title=volume_title,
+            yaxis2_title='Volume',
             xaxis_rangeslider_visible=False,
             height=700,
             showlegend=True,
@@ -631,18 +548,11 @@ def main():
         
         with col2:
             total_volume = df['volume'].sum()
-            if total_volume == 0 and exchange_segment == 'IDX_I':
-                st.metric("Volume", "N/A (Index)")
-                st.caption("Indices don't have trading volume")
-            else:
-                st.metric("Total Volume", f"{total_volume:,.0f}")
+            st.metric("Total Volume", f"{total_volume:,.0f}")
         
         with col3:
             avg_volume = df['volume'].mean()
-            if avg_volume == 0 and exchange_segment == 'IDX_I':
-                st.metric("Avg Volume", "N/A (Index)")
-            else:
-                st.metric("Avg Volume", f"{avg_volume:,.0f}")
+            st.metric("Avg Volume", f"{avg_volume:,.0f}")
         
         with col4:
             if len(df) > 1:
