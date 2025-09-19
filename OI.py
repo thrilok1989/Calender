@@ -11,7 +11,7 @@ from scipy.stats import norm
 from datetime import datetime, timedelta
 
 # Page config
-st.set_page_config(page_title="Advanced Nifty Analyzer", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Advanced Multi-Asset Analyzer", page_icon="📈", layout="wide")
 
 # Market hours check
 def is_market_hours():
@@ -23,7 +23,7 @@ def is_market_hours():
     return market_start <= now <= market_end
 
 if is_market_hours():
-    st_autorefresh(interval=45000, key="refresh")
+    st_autorefresh(interval=35000, key="refresh")
 else:
     st.info("Market is closed. Auto-refresh disabled.")
 
@@ -32,17 +32,33 @@ DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
 DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", "")
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
-NIFTY_SCRIP = 13
-NIFTY_SEG = "IDX_I"
+
+# Asset configurations
+ASSETS = {
+    "NIFTY": {"scrip": 13, "segment": "IDX_I", "instrument": "INDEX"},
+    "BANK NIFTY": {"scrip": 25, "segment": "IDX_I", "instrument": "INDEX"},
+    "FIN NIFTY": {"scrip": 27, "segment": "IDX_I", "instrument": "INDEX"},
+    "MIDCAP NIFTY": {"scrip": 288, "segment": "IDX_I", "instrument": "INDEX"},
+    "SENSEX": {"scrip": 51, "segment": "BSE_IDX", "instrument": "INDEX"},
+    "RELIANCE": {"scrip": 2885, "segment": "NSE_EQ", "instrument": "EQUITY"},
+    "HDFC BANK": {"scrip": 1333, "segment": "NSE_EQ", "instrument": "EQUITY"},
+    "TCS": {"scrip": 11536, "segment": "NSE_EQ", "instrument": "EQUITY"},
+    "INFOSYS": {"scrip": 1594, "segment": "NSE_EQ", "instrument": "EQUITY"},
+    "ITC": {"scrip": 1660, "segment": "NSE_EQ", "instrument": "EQUITY"},
+    "SBI": {"scrip": 3045, "segment": "NSE_EQ", "instrument": "EQUITY"}
+}
 
 class DhanAPI:
-    def __init__(self):
+    def __init__(self, asset_config):
         self.headers = {
             'Accept': 'application/json',
             'Content-Type': 'application/json',
             'access-token': DHAN_ACCESS_TOKEN,
             'client-id': DHAN_CLIENT_ID
         }
+        self.scrip = asset_config['scrip']
+        self.segment = asset_config['segment']
+        self.instrument = asset_config['instrument']
     
     def get_intraday_data(self, interval="5", days_back=1):
         url = "https://api.dhan.co/v2/charts/intraday"
@@ -51,9 +67,9 @@ class DhanAPI:
         start_date = end_date - timedelta(days=days_back)
         
         payload = {
-            "securityId": str(NIFTY_SCRIP),
-            "exchangeSegment": NIFTY_SEG,
-            "instrument": "INDEX",
+            "securityId": str(self.scrip),
+            "exchangeSegment": self.segment,
+            "instrument": self.instrument,
             "interval": interval,
             "oi": False,
             "fromDate": start_date.strftime("%Y-%m-%d %H:%M:%S"),
@@ -68,32 +84,273 @@ class DhanAPI:
     
     def get_ltp_data(self):
         url = "https://api.dhan.co/v2/marketfeed/ltp"
-        payload = {NIFTY_SEG: [NIFTY_SCRIP]}
+        payload = {self.segment: [self.scrip]}
         try:
             response = requests.post(url, headers=self.headers, json=payload)
             return response.json() if response.status_code == 200 else None
         except:
             return None
 
-def get_option_chain(expiry):
+def get_option_chain(scrip, segment, expiry):
     url = "https://api.dhan.co/v2/optionchain"
     headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
-    payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG, "Expiry": expiry}
+    payload = {"UnderlyingScrip": scrip, "UnderlyingSeg": segment, "Expiry": expiry}
     try:
         response = requests.post(url, headers=headers, json=payload)
         return response.json() if response.status_code == 200 else None
     except:
         return None
 
-def get_expiry_list():
+def get_expiry_list(scrip, segment):
     url = "https://api.dhan.co/v2/optionchain/expirylist"
     headers = {'access-token': DHAN_ACCESS_TOKEN, 'client-id': DHAN_CLIENT_ID, 'Content-Type': 'application/json'}
-    payload = {"UnderlyingScrip": NIFTY_SCRIP, "UnderlyingSeg": NIFTY_SEG}
+    payload = {"UnderlyingScrip": scrip, "UnderlyingSeg": segment}
     try:
         response = requests.post(url, headers=headers, json=payload)
         return response.json() if response.status_code == 200 else None
     except:
         return None
+
+def calculate_max_pain(option_data):
+    """Calculate Max Pain level"""
+    if not option_data or 'data' not in option_data:
+        return None, None
+    
+    oc_data = option_data['data']['oc']
+    strikes = []
+    
+    for strike_str, strike_data in oc_data.items():
+        strike = float(strike_str)
+        ce_oi = strike_data.get('ce', {}).get('oi', 0)
+        pe_oi = strike_data.get('pe', {}).get('oi', 0)
+        
+        if ce_oi > 0 or pe_oi > 0:
+            strikes.append({'strike': strike, 'ce_oi': ce_oi, 'pe_oi': pe_oi})
+    
+    if not strikes:
+        return None, None
+    
+    strikes_df = pd.DataFrame(strikes)
+    pain_levels = []
+    
+    for test_strike in strikes_df['strike']:
+        total_pain = 0
+        
+        for _, row in strikes_df.iterrows():
+            strike = row['strike']
+            ce_oi = row['ce_oi']
+            pe_oi = row['pe_oi']
+            
+            # Calculate pain for calls (ITM when test_strike > strike)
+            if test_strike > strike:
+                total_pain += ce_oi * (test_strike - strike)
+            
+            # Calculate pain for puts (ITM when test_strike < strike)
+            if test_strike < strike:
+                total_pain += pe_oi * (strike - test_strike)
+        
+        pain_levels.append({'strike': test_strike, 'pain': total_pain})
+    
+    pain_df = pd.DataFrame(pain_levels)
+    max_pain_strike = pain_df.loc[pain_df['pain'].idxmin(), 'strike']
+    
+    return max_pain_strike, pain_df
+
+def calculate_market_profile(df):
+    """Calculate basic Market Profile"""
+    if df.empty:
+        return None
+    
+    # Time Price Opportunity (TPO) calculation
+    price_levels = {}
+    
+    for _, row in df.iterrows():
+        high = row['high']
+        low = row['low']
+        volume = row['volume']
+        
+        # Create price levels (simplified)
+        price_range = np.arange(low, high + 0.5, 0.5)
+        volume_per_level = volume / len(price_range) if len(price_range) > 0 else 0
+        
+        for price in price_range:
+            price_key = round(price, 1)
+            if price_key not in price_levels:
+                price_levels[price_key] = 0
+            price_levels[price_key] += volume_per_level
+    
+    if not price_levels:
+        return None
+    
+    # Find POC (Point of Control) and Value Area
+    sorted_levels = sorted(price_levels.items(), key=lambda x: x[1], reverse=True)
+    poc_price = sorted_levels[0][0]
+    
+    # Value Area (70% of volume)
+    total_volume = sum(price_levels.values())
+    value_area_volume = total_volume * 0.7
+    cumulative_volume = 0
+    value_area_prices = []
+    
+    for price, volume in sorted_levels:
+        cumulative_volume += volume
+        value_area_prices.append(price)
+        if cumulative_volume >= value_area_volume:
+            break
+    
+    va_high = max(value_area_prices) if value_area_prices else poc_price
+    va_low = min(value_area_prices) if value_area_prices else poc_price
+    
+    return {
+        'poc': poc_price,
+        'va_high': va_high,
+        'va_low': va_low,
+        'price_levels': price_levels
+    }
+
+def identify_liquidity_zones(df, option_data):
+    """Identify liquidity zones based on volume and OI"""
+    zones = []
+    
+    # Price-based liquidity zones
+    if not df.empty:
+        df['volume_ma'] = df['volume'].rolling(window=20).mean()
+        high_volume_threshold = df['volume_ma'].quantile(0.8)
+        
+        for _, row in df.iterrows():
+            if row['volume'] > high_volume_threshold * 1.5:
+                zones.append({
+                    'type': 'Volume Zone',
+                    'price': row['close'],
+                    'strength': 'High',
+                    'time': row['datetime']
+                })
+    
+    # Options-based liquidity zones
+    if option_data and 'data' in option_data:
+        oc_data = option_data['data']['oc']
+        for strike_str, strike_data in oc_data.items():
+            strike = float(strike_str)
+            ce_oi = strike_data.get('ce', {}).get('oi', 0)
+            pe_oi = strike_data.get('pe', {}).get('oi', 0)
+            total_oi = ce_oi + pe_oi
+            
+            if total_oi > 100000:  # High OI threshold
+                zones.append({
+                    'type': 'OI Zone',
+                    'price': strike,
+                    'strength': 'High' if total_oi > 500000 else 'Medium',
+                    'ce_oi': ce_oi,
+                    'pe_oi': pe_oi
+                })
+    
+    return zones
+
+def analyze_smart_money_flow(option_data, underlying_price):
+    """Analyze smart money vs retail flow"""
+    if not option_data or 'data' not in option_data:
+        return None
+    
+    oc_data = option_data['data']['oc']
+    large_trades = []
+    retail_sentiment = {'bullish': 0, 'bearish': 0}
+    smart_money = {'bullish': 0, 'bearish': 0}
+    
+    for strike_str, strike_data in oc_data.items():
+        strike = float(strike_str)
+        
+        if 'ce' in strike_data:
+            ce_vol = strike_data['ce'].get('volume', 0)
+            ce_oi = strike_data['ce'].get('oi', 0)
+            ce_chg_oi = ce_oi - strike_data['ce'].get('previous_oi', 0)
+            
+            # Large volume = smart money, small volume = retail
+            if ce_vol > 10000:  # Smart money threshold
+                if strike > underlying_price * 1.02:  # OTM calls
+                    smart_money['bullish'] += ce_chg_oi
+                else:
+                    smart_money['bearish'] += abs(ce_chg_oi)
+            else:
+                retail_sentiment['bullish'] += ce_chg_oi
+        
+        if 'pe' in strike_data:
+            pe_vol = strike_data['pe'].get('volume', 0)
+            pe_oi = strike_data['pe'].get('oi', 0)
+            pe_chg_oi = pe_oi - strike_data['pe'].get('previous_oi', 0)
+            
+            if pe_vol > 10000:  # Smart money
+                if strike < underlying_price * 0.98:  # OTM puts
+                    smart_money['bearish'] += pe_chg_oi
+                else:
+                    smart_money['bullish'] += abs(pe_chg_oi)
+            else:
+                retail_sentiment['bearish'] += pe_chg_oi
+    
+    # Calculate sentiment scores
+    smart_sentiment = "Bullish" if smart_money['bullish'] > smart_money['bearish'] else "Bearish"
+    retail_sentiment_final = "Bullish" if retail_sentiment['bullish'] > retail_sentiment['bearish'] else "Bearish"
+    
+    return {
+        'smart_money_sentiment': smart_sentiment,
+        'retail_sentiment': retail_sentiment_final,
+        'smart_bullish': smart_money['bullish'],
+        'smart_bearish': smart_money['bearish'],
+        'retail_bullish': retail_sentiment['bullish'],
+        'retail_bearish': retail_sentiment['bearish']
+    }
+
+def calculate_delta_hedging(option_data, spot_price, portfolio_delta=0):
+    """Calculate delta hedging requirements"""
+    if not option_data or 'data' not in option_data:
+        return None
+    
+    oc_data = option_data['data']['oc']
+    total_delta = portfolio_delta
+    hedging_suggestions = []
+    
+    for strike_str, strike_data in oc_data.items():
+        strike = float(strike_str)
+        
+        if 'ce' in strike_data and 'greeks' in strike_data['ce']:
+            ce_delta = strike_data['ce']['greeks'].get('delta', 0)
+            ce_oi = strike_data['ce'].get('oi', 0)
+            
+            if abs(ce_delta) > 0.1 and ce_oi > 1000:
+                hedging_suggestions.append({
+                    'type': 'CE',
+                    'strike': strike,
+                    'delta': ce_delta,
+                    'oi': ce_oi,
+                    'hedge_ratio': abs(ce_delta)
+                })
+        
+        if 'pe' in strike_data and 'greeks' in strike_data['pe']:
+            pe_delta = strike_data['pe']['greeks'].get('delta', 0)
+            pe_oi = strike_data['pe'].get('oi', 0)
+            
+            if abs(pe_delta) > 0.1 and pe_oi > 1000:
+                hedging_suggestions.append({
+                    'type': 'PE',
+                    'strike': strike,
+                    'delta': pe_delta,
+                    'oi': pe_oi,
+                    'hedge_ratio': abs(pe_delta)
+                })
+    
+    # Calculate required hedge
+    if total_delta != 0:
+        hedge_quantity = abs(total_delta) / spot_price * 100  # Simplified calculation
+        hedge_suggestions = sorted(hedging_suggestions, key=lambda x: abs(x['delta']), reverse=True)[:5]
+    else:
+        hedge_quantity = 0
+        hedge_suggestions = []
+    
+    return {
+        'current_delta': total_delta,
+        'hedge_quantity': hedge_quantity,
+        'hedge_direction': 'Buy' if total_delta < 0 else 'Sell',
+        'suggestions': hedge_suggestions
+    }
 
 def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
