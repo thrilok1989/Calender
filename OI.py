@@ -46,7 +46,7 @@ def is_market_hours():
 
 # Auto-refresh with different intervals for different data
 if is_market_hours():
-    st_autorefresh(interval=15000, key="main_refresh")  # 15 seconds for main data
+    st_autorefresh(interval=150000, key="main_refresh")  # 15 seconds for main data
 else:
     st.info("🏛️ Market is closed. Institutional analysis in preview mode.")
 
