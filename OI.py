@@ -8,7 +8,7 @@ import json
 
 # Streamlit page config
 st.set_page_config(
-    page_title="DhanHQ Candle Data",
+    page_title="DhanHQ Trading Dashboard",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -21,7 +21,7 @@ class DhanAPI:
             self.access_token = st.secrets["DHAN_ACCESS_TOKEN"]
             self.client_id = st.secrets["DHAN_CLIENT_ID"]
         except KeyError as e:
-            st.error(f"Missing secret: {e}. Please configure in Streamlit secrets.")
+            st.error(f"Missing secret: {e}. Please configure DHAN_ACCESS_TOKEN and DHAN_CLIENT_ID in Streamlit secrets.")
             st.stop()
         
         self.base_url = "https://api.dhan.co/v2"
@@ -29,6 +29,18 @@ class DhanAPI:
             'Content-Type': 'application/json',
             'access-token': self.access_token,
             'client-id': self.client_id
+        }
+        
+        # Predefined security IDs for popular instruments
+        self.popular_instruments = {
+            'NIFTY': {'id': '13', 'segment': 'IDX_I', 'instrument': 'INDEX'},
+            'BANKNIFTY': {'id': '25', 'segment': 'IDX_I', 'instrument': 'INDEX'},
+            'SENSEX': {'id': '51', 'segment': 'IDX_I', 'instrument': 'INDEX'},
+            'RELIANCE': {'id': '1333', 'segment': 'NSE_EQ', 'instrument': 'EQUITY'},
+            'TCS': {'id': '11536', 'segment': 'NSE_EQ', 'instrument': 'EQUITY'},
+            'INFY': {'id': '1594', 'segment': 'NSE_EQ', 'instrument': 'EQUITY'},
+            'HDFCBANK': {'id': '1333', 'segment': 'NSE_EQ', 'instrument': 'EQUITY'},
+            'ICICIBANK': {'id': '4963', 'segment': 'NSE_EQ', 'instrument': 'EQUITY'}
         }
     
     @st.cache_data(ttl=3600)  # Cache for 1 hour
@@ -42,34 +54,90 @@ class DhanAPI:
             st.error(f"Error downloading instrument master: {e}")
             return None
     
-    def find_security_id(self, symbol, exchange_segment):
-        """Find security ID for a symbol"""
+    def get_instrument_info(self, symbol):
+        """Get instrument info from predefined list or search"""
+        symbol = symbol.upper()
+        
+        # Check predefined instruments first
+        if symbol in self.popular_instruments:
+            info = self.popular_instruments[symbol]
+            return info['id'], info['segment'], info['instrument']
+        
+        # Search in instrument master
         instruments = self.download_instrument_master()
         if instruments is None:
-            return None
+            return None, None, None
         
-        # Map exchange segments
-        segment_map = {
-            'NSE_EQ': 'E',
-            'NSE_FNO': 'D', 
-            'BSE_EQ': 'E',
-            'MCX_COMM': 'M'
-        }
-        
-        segment_code = segment_map.get(exchange_segment, 'E')
-        
+        # Search by symbol
         filtered = instruments[
-            (instruments['SEM_CUSTOM_SYMBOL'].str.contains(symbol, case=False, na=False)) &
-            (instruments['SEM_SEGMENT'] == segment_code)
+            instruments['SEM_CUSTOM_SYMBOL'].str.contains(symbol, case=False, na=False)
         ]
         
         if not filtered.empty:
-            return str(filtered.iloc[0]['SEM_EXM_EXCH_ID'])
-        return None
+            row = filtered.iloc[0]
+            security_id = str(row['SEM_EXM_EXCH_ID'])
+            
+            # Determine exchange segment and instrument type
+            segment = row['SEM_SEGMENT']
+            segment_map = {
+                'E': 'NSE_EQ',
+                'D': 'NSE_FNO', 
+                'C': 'NSE_CURRENCY',
+                'M': 'MCX_COMM'
+            }
+            exchange_segment = segment_map.get(segment, 'NSE_EQ')
+            
+            # Determine instrument type
+            instrument_name = str(row.get('SEM_INSTRUMENT_NAME', '')).upper()
+            if 'INDEX' in instrument_name:
+                instrument = 'INDEX'
+                exchange_segment = 'IDX_I'
+            elif 'EQUITY' in instrument_name:
+                instrument = 'EQUITY'
+            elif 'FUTURE' in instrument_name:
+                instrument = 'FUTSTK' if exchange_segment == 'NSE_EQ' else 'FUTIDX'
+            elif 'OPTION' in instrument_name:
+                instrument = 'OPTSTK' if exchange_segment == 'NSE_EQ' else 'OPTIDX'
+            else:
+                instrument = 'EQUITY'  # Default
+            
+            return security_id, exchange_segment, instrument
+        
+        return None, None, None
+    
+    def validate_parameters(self, security_id, exchange_segment, instrument, from_date, to_date):
+        """Validate API parameters"""
+        if not security_id:
+            st.error("Security ID is required")
+            return False
+        
+        if not exchange_segment:
+            st.error("Exchange segment is required")
+            return False
+        
+        if not instrument:
+            st.error("Instrument type is required")
+            return False
+        
+        # Validate date range
+        if from_date >= to_date:
+            st.error("From date must be before to date")
+            return False
+        
+        # Check if requesting too much intraday data
+        date_diff = (to_date - from_date).days
+        if date_diff > 90:
+            st.warning("Intraday data is limited to 90 days. Adjusting date range.")
+            return False
+        
+        return True
     
     def get_historical_candles(self, security_id, exchange_segment, instrument, 
                              from_date, to_date, include_oi=False):
         """Get daily historical candles"""
+        if not self.validate_parameters(security_id, exchange_segment, instrument, from_date, to_date):
+            return None
+        
         url = f"{self.base_url}/charts/historical"
         
         payload = {
@@ -77,19 +145,28 @@ class DhanAPI:
             "exchangeSegment": exchange_segment,
             "instrument": instrument,
             "expiryCode": 0,
-            "oi": include_oi,
-            "fromDate": from_date,
-            "toDate": to_date
+            "oi": include_oi and exchange_segment in ['NSE_FNO', 'BSE_FNO'],
+            "fromDate": from_date.strftime("%Y-%m-%d"),
+            "toDate": to_date.strftime("%Y-%m-%d")
         }
         
+        # Debug information
+        with st.expander("Debug - API Request"):
+            st.json(payload)
+        
         try:
-            response = requests.post(url, headers=self.headers, json=payload)
+            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+            
             if response.status_code == 200:
                 data = response.json()
                 return self._format_candle_data(data)
             else:
                 st.error(f"API Error: {response.status_code} - {response.text}")
                 return None
+                
+        except requests.exceptions.Timeout:
+            st.error("Request timeout. Please try again.")
+            return None
         except Exception as e:
             st.error(f"Request failed: {e}")
             return None
@@ -97,159 +174,248 @@ class DhanAPI:
     def get_intraday_candles(self, security_id, exchange_segment, instrument,
                            interval, from_date, to_date, include_oi=False):
         """Get intraday candles"""
+        if not self.validate_parameters(security_id, exchange_segment, instrument, from_date, to_date):
+            return None
+        
         url = f"{self.base_url}/charts/intraday"
+        
+        # Format datetime strings
+        from_datetime = f"{from_date.strftime('%Y-%m-%d')} 09:30:00"
+        to_datetime = f"{to_date.strftime('%Y-%m-%d')} 15:30:00"
         
         payload = {
             "securityId": security_id,
             "exchangeSegment": exchange_segment,
             "instrument": instrument,
             "interval": interval,
-            "oi": include_oi,
-            "fromDate": from_date,
-            "toDate": to_date
+            "oi": include_oi and exchange_segment in ['NSE_FNO', 'BSE_FNO'],
+            "fromDate": from_datetime,
+            "toDate": to_datetime
         }
         
+        # Debug information
+        with st.expander("Debug - API Request"):
+            st.json(payload)
+        
         try:
-            response = requests.post(url, headers=self.headers, json=payload)
+            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+            
             if response.status_code == 200:
                 data = response.json()
                 return self._format_candle_data(data)
             else:
                 st.error(f"API Error: {response.status_code} - {response.text}")
                 return None
+                
+        except requests.exceptions.Timeout:
+            st.error("Request timeout. Please try again.")
+            return None
         except Exception as e:
             st.error(f"Request failed: {e}")
             return None
     
     def _format_candle_data(self, raw_data):
         """Convert raw API response to DataFrame"""
-        if not raw_data or 'open' not in raw_data:
+        if not raw_data or not isinstance(raw_data, dict):
+            st.error("Invalid API response format")
             return None
         
-        df = pd.DataFrame({
-            'timestamp': raw_data['timestamp'],
-            'open': raw_data['open'],
-            'high': raw_data['high'],
-            'low': raw_data['low'],
-            'close': raw_data['close'],
-            'volume': raw_data['volume']
-        })
+        required_fields = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
+        if not all(field in raw_data for field in required_fields):
+            st.error("Missing required fields in API response")
+            return None
         
-        if 'open_interest' in raw_data:
-            df['open_interest'] = raw_data['open_interest']
+        # Check if arrays have data
+        if not raw_data['open'] or len(raw_data['open']) == 0:
+            st.error("No data returned from API")
+            return None
         
-        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-        return df
+        # Verify all arrays have same length
+        arrays = [raw_data[field] for field in required_fields]
+        lengths = [len(arr) for arr in arrays]
+        
+        if len(set(lengths)) > 1:
+            st.error("Inconsistent data array lengths in API response")
+            return None
+        
+        try:
+            df = pd.DataFrame({
+                'timestamp': raw_data['timestamp'],
+                'open': raw_data['open'],
+                'high': raw_data['high'],
+                'low': raw_data['low'],
+                'close': raw_data['close'],
+                'volume': raw_data['volume']
+            })
+            
+            # Add Open Interest if available
+            if 'open_interest' in raw_data and raw_data['open_interest']:
+                df['open_interest'] = raw_data['open_interest']
+            
+            # Convert timestamp to datetime
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s', errors='coerce')
+            
+            # Remove any rows with invalid timestamps
+            df = df.dropna(subset=['datetime'])
+            
+            if df.empty:
+                st.error("No valid data after processing")
+                return None
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"Error processing data: {e}")
+            return None
 
-def create_candlestick_chart(df, title):
+def create_candlestick_chart(df, title, symbol):
     """Create candlestick chart with volume"""
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.1,
-        subplot_titles=('Price', 'Volume'),
-        row_width=[0.7, 0.3]
-    )
+    if df is None or df.empty:
+        st.error("No data available for charting")
+        return None
     
-    # Candlestick chart
-    fig.add_trace(
-        go.Candlestick(
-            x=df['datetime'],
-            open=df['open'],
-            high=df['high'],
-            low=df['low'],
-            close=df['close'],
-            name='Price'
-        ),
-        row=1, col=1
-    )
-    
-    # Volume chart
-    colors = ['red' if close < open else 'green' 
-              for close, open in zip(df['close'], df['open'])]
-    
-    fig.add_trace(
-        go.Bar(
-            x=df['datetime'],
-            y=df['volume'],
-            name='Volume',
-            marker_color=colors,
-            opacity=0.7
-        ),
-        row=2, col=1
-    )
-    
-    fig.update_layout(
-        title=title,
-        yaxis_title='Price',
-        yaxis2_title='Volume',
-        xaxis_rangeslider_visible=False,
-        height=600
-    )
-    
-    return fig
+    try:
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.1,
+            subplot_titles=(f'{symbol} - Price', 'Volume'),
+            row_heights=[0.7, 0.3]
+        )
+        
+        # Candlestick chart
+        fig.add_trace(
+            go.Candlestick(
+                x=df['datetime'],
+                open=df['open'],
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                name='Price',
+                increasing_line_color='green',
+                decreasing_line_color='red'
+            ),
+            row=1, col=1
+        )
+        
+        # Volume chart
+        colors = ['red' if close < open else 'green' 
+                  for close, open in zip(df['close'], df['open'])]
+        
+        fig.add_trace(
+            go.Bar(
+                x=df['datetime'],
+                y=df['volume'],
+                name='Volume',
+                marker_color=colors,
+                opacity=0.7
+            ),
+            row=2, col=1
+        )
+        
+        fig.update_layout(
+            title=title,
+            yaxis_title='Price (₹)',
+            yaxis2_title='Volume',
+            xaxis_rangeslider_visible=False,
+            height=700,
+            showlegend=True,
+            template='plotly_white'
+        )
+        
+        # Format y-axis for better readability
+        fig.update_yaxes(tickformat='.2f', row=1, col=1)
+        fig.update_yaxes(tickformat='.0s', row=2, col=1)
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error creating chart: {e}")
+        return None
 
 def main():
-    st.title("📈 DhanHQ Candle Data Dashboard")
+    st.title("📈 DhanHQ Trading Dashboard")
     st.markdown("Real-time and historical candle data with volume analysis")
     
+    # Check market status
+    now = datetime.now()
+    market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=45, second=0, microsecond=0)
+    
+    if now.weekday() < 5 and market_open <= now <= market_close:
+        st.success("🟢 Market is OPEN")
+    else:
+        st.info("🔴 Market is CLOSED")
+    
     # Initialize API
-    dhan = DhanAPI()
+    try:
+        dhan = DhanAPI()
+        st.sidebar.success("✅ DhanHQ API Connected")
+    except Exception as e:
+        st.error(f"Failed to initialize DhanHQ API: {e}")
+        return
     
     # Sidebar configuration
-    st.sidebar.header("Configuration")
+    st.sidebar.header("📊 Configuration")
     
-    # Symbol input
-    symbol = st.sidebar.text_input("Stock Symbol", value="RELIANCE").upper()
-    
-    # Exchange segment
-    exchange_segment = st.sidebar.selectbox(
-        "Exchange Segment",
-        ["NSE_EQ", "NSE_FNO", "BSE_EQ", "MCX_COMM"]
+    # Symbol selection
+    symbol_option = st.sidebar.selectbox(
+        "Select Symbol",
+        ["Custom"] + list(dhan.popular_instruments.keys())
     )
     
-    # Instrument type
-    instrument_map = {
-        "NSE_EQ": "EQUITY",
-        "NSE_FNO": ["FUTIDX", "OPTIDX", "FUTSTK", "OPTSTK"],
-        "BSE_EQ": "EQUITY",
-        "MCX_COMM": ["FUTCOM", "OPTFUT"]
-    }
-    
-    if isinstance(instrument_map[exchange_segment], list):
-        instrument = st.sidebar.selectbox("Instrument Type", instrument_map[exchange_segment])
+    if symbol_option == "Custom":
+        symbol = st.sidebar.text_input("Enter Symbol", value="RELIANCE").upper()
     else:
-        instrument = instrument_map[exchange_segment]
-        st.sidebar.write(f"Instrument: {instrument}")
+        symbol = symbol_option
     
     # Data type selection
     data_type = st.sidebar.radio("Data Type", ["Historical Daily", "Intraday"])
     
     if data_type == "Intraday":
-        interval = st.sidebar.selectbox("Interval", ["1", "5", "15", "25", "60"])
-        st.sidebar.write("Note: Max 90 days for intraday data")
+        interval = st.sidebar.selectbox("Interval (minutes)", ["1", "5", "15", "25", "60"])
+        max_days = 30  # Limit for intraday
+        st.sidebar.info("⚠️ Intraday data limited to 90 days")
+    else:
+        max_days = 365  # Limit for daily data
     
     # Date selection
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        from_date = st.date_input("From Date", value=datetime.now() - timedelta(days=30))
+        from_date = st.date_input(
+            "From Date", 
+            value=datetime.now() - timedelta(days=30),
+            max_value=datetime.now()
+        )
     with col2:
-        to_date = st.date_input("To Date", value=datetime.now())
+        to_date = st.date_input(
+            "To Date", 
+            value=datetime.now(),
+            max_value=datetime.now()
+        )
     
-    # Include OI for derivatives
+    # Additional options
     include_oi = st.sidebar.checkbox("Include Open Interest", value=False)
     
     # Fetch data button
-    if st.sidebar.button("Fetch Data", type="primary"):
-        with st.spinner("Fetching data..."):
-            # Find security ID
-            security_id = dhan.find_security_id(symbol, exchange_segment)
+    if st.sidebar.button("📈 Fetch Data", type="primary"):
+        with st.spinner(f"Fetching {data_type.lower()} data for {symbol}..."):
+            
+            # Get instrument information
+            security_id, exchange_segment, instrument = dhan.get_instrument_info(symbol)
             
             if not security_id:
-                st.error(f"Symbol '{symbol}' not found in {exchange_segment}")
+                st.error(f"❌ Symbol '{symbol}' not found. Please check the symbol name.")
                 return
             
-            st.success(f"Found {symbol} - Security ID: {security_id}")
+            # Display instrument info
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.info(f"**Security ID:** {security_id}")
+            with col2:
+                st.info(f"**Exchange:** {exchange_segment}")
+            with col3:
+                st.info(f"**Instrument:** {instrument}")
             
             # Fetch candle data
             if data_type == "Historical Daily":
@@ -257,22 +423,18 @@ def main():
                     security_id=security_id,
                     exchange_segment=exchange_segment,
                     instrument=instrument,
-                    from_date=from_date.strftime("%Y-%m-%d"),
-                    to_date=to_date.strftime("%Y-%m-%d"),
+                    from_date=from_date,
+                    to_date=to_date,
                     include_oi=include_oi
                 )
             else:
-                # Format datetime for intraday
-                from_datetime = f"{from_date.strftime('%Y-%m-%d')} 09:30:00"
-                to_datetime = f"{to_date.strftime('%Y-%m-%d')} 15:30:00"
-                
                 df = dhan.get_intraday_candles(
                     security_id=security_id,
                     exchange_segment=exchange_segment,
                     instrument=instrument,
                     interval=interval,
-                    from_date=from_datetime,
-                    to_date=to_datetime,
+                    from_date=from_date,
+                    to_date=to_date,
                     include_oi=include_oi
                 )
             
@@ -281,24 +443,22 @@ def main():
                 st.session_state['df'] = df
                 st.session_state['symbol'] = symbol
                 st.session_state['data_type'] = data_type
+                st.session_state['exchange_segment'] = exchange_segment
+                st.session_state['instrument'] = instrument
                 
-                st.success(f"Fetched {len(df)} candles")
+                st.success(f"✅ Fetched {len(df)} candles for {symbol}")
             else:
-                st.error("No data received")
+                st.error("❌ No data received. Please check parameters and try again.")
     
     # Display data if available
-    if 'df' in st.session_state:
+    if 'df' in st.session_state and st.session_state['df'] is not None:
         df = st.session_state['df']
         symbol = st.session_state['symbol']
         data_type = st.session_state['data_type']
         
-        # Chart
-        chart_title = f"{symbol} - {data_type} Candles"
-        fig = create_candlestick_chart(df, chart_title)
-        st.plotly_chart(fig, use_container_width=True)
-        
         # Statistics
-        col1, col2, col3, col4 = st.columns(4)
+        st.subheader("📊 Market Statistics")
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
             st.metric("Total Candles", len(df))
@@ -312,28 +472,95 @@ def main():
             st.metric("Avg Volume", f"{avg_volume:,.0f}")
         
         with col4:
-            price_change = df['close'].iloc[-1] - df['close'].iloc[0]
-            st.metric("Price Change", f"{price_change:.2f}")
+            if len(df) > 1:
+                price_change = df['close'].iloc[-1] - df['close'].iloc[0]
+                price_change_pct = (price_change / df['close'].iloc[0]) * 100
+                st.metric(
+                    "Price Change", 
+                    f"₹{price_change:.2f}",
+                    f"{price_change_pct:.2f}%"
+                )
+            else:
+                st.metric("Price Change", "N/A")
+        
+        with col5:
+            current_price = df['close'].iloc[-1]
+            st.metric("Current Price", f"₹{current_price:.2f}")
+        
+        # Chart
+        st.subheader(f"📈 {symbol} - {data_type} Chart")
+        chart_title = f"{symbol} - {data_type} Candles"
+        fig = create_candlestick_chart(df, chart_title, symbol)
+        
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True)
         
         # Data table
-        st.subheader("Recent Data")
+        st.subheader("📋 Recent Data")
         display_cols = ['datetime', 'open', 'high', 'low', 'close', 'volume']
         if 'open_interest' in df.columns:
             display_cols.append('open_interest')
         
+        # Format the dataframe for better display
+        display_df = df[display_cols].tail(20).copy()
+        display_df['datetime'] = display_df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Round numerical columns
+        for col in ['open', 'high', 'low', 'close']:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].round(2)
+        
         st.dataframe(
-            df[display_cols].tail(20).round(2),
-            use_container_width=True
+            display_df,
+            use_container_width=True,
+            hide_index=True
         )
         
-        # Download button
-        csv = df.to_csv(index=False)
-        st.download_button(
-            label="Download CSV",
-            data=csv,
-            file_name=f"{symbol}_{data_type}_candles.csv",
-            mime="text/csv"
-        )
+        # Download section
+        st.subheader("💾 Export Data")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv,
+                file_name=f"{symbol}_{data_type.replace(' ', '_')}_candles.csv",
+                mime="text/csv"
+            )
+        
+        with col2:
+            json_data = df.to_json(orient='records', date_format='iso')
+            st.download_button(
+                label="📥 Download JSON",
+                data=json_data,
+                file_name=f"{symbol}_{data_type.replace(' ', '_')}_candles.json",
+                mime="application/json"
+            )
+    
+    # Instructions
+    with st.expander("📖 Instructions"):
+        st.markdown("""
+        **How to use:**
+        1. Select a popular symbol or enter a custom one
+        2. Choose between Historical Daily or Intraday data
+        3. Set your date range (max 90 days for intraday)
+        4. Click 'Fetch Data' to load charts
+        5. Download data in CSV or JSON format
+        
+        **Popular Symbols:**
+        - **Indices:** NIFTY, BANKNIFTY, SENSEX
+        - **Stocks:** RELIANCE, TCS, INFY, HDFCBANK, ICICIBANK
+        
+        **Data Includes:**
+        - OHLC (Open, High, Low, Close) prices
+        - Volume data for all instruments
+        - Open Interest (for derivatives when selected)
+        """)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        st.error(f"Application error: {e}")
+        st.write("Please refresh the page and try again.")
