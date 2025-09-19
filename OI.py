@@ -947,10 +947,12 @@ def main():
                             elif atm_row['IV_Bias'] == 'PE Cheaper':
                                 st.write("• Consider Put options (cheaper IV)")
                             
-                            if atm_row['Gamma_Bias'] == 'Neutral':
-                                st.write("• Low volatility expected - consider selling options")
-                            elif 'Higher Gamma' in atm_row['Gamma_Bias']:
-                                st.write("• High volatility expected - consider buying options")
+                            if atm_row['Gamma_Bias'] == 'Bullish':
+                                st.write("• PE Higher Gamma - Bullish gamma bias")
+                            elif atm_row['Gamma_Bias'] == 'Bearish':
+                                st.write("• CE Higher Gamma - Bearish gamma bias")
+                            elif atm_row['Gamma_Bias'] == 'Neutral':
+                                st.write("• Balanced gamma exposure")
                     
                     if enable_signals and not df.empty and is_market_hours():
                         with st.spinner("Checking for signals..."):
