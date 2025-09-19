@@ -154,6 +154,19 @@ class DhanAPI:
         with st.expander("Debug - API Request"):
             st.json(payload)
         
+        # Debug response
+        with st.expander("Debug - API Response Sample"):
+            if response.status_code == 200:
+                data = response.json()
+                if data and 'volume' in data:
+                    st.write(f"Volume array length: {len(data['volume'])}")
+                    st.write(f"Sample volumes: {data['volume'][:10]}")
+                    st.write(f"Volume sum: {sum(data['volume'])}")
+                else:
+                    st.write("No volume data in response")
+            else:
+                st.write(f"Response error: {response.text}")
+        
         try:
             response = requests.post(url, headers=self.headers, json=payload, timeout=30)
             
@@ -392,25 +405,41 @@ def create_candlestick_chart(df, title, symbol):
             row=1, col=1
         )
         
-        # Volume chart
-        colors = ['red' if close < open else 'green' 
-                  for close, open in zip(df['close'], df['open'])]
-        
-        fig.add_trace(
-            go.Bar(
-                x=df['datetime'],
-                y=df['volume'],
-                name='Volume',
-                marker_color=colors,
-                opacity=0.7
-            ),
-            row=2, col=1
-        )
+        # Volume chart (only if volume data exists)
+        total_volume = df['volume'].sum()
+        if total_volume > 0:
+            colors = ['red' if close < open else 'green' 
+                      for close, open in zip(df['close'], df['open'])]
+            
+            fig.add_trace(
+                go.Bar(
+                    x=df['datetime'],
+                    y=df['volume'],
+                    name='Volume',
+                    marker_color=colors,
+                    opacity=0.7
+                ),
+                row=2, col=1
+            )
+            volume_title = 'Volume'
+        else:
+            # Show a placeholder for indices or zero volume data
+            fig.add_trace(
+                go.Scatter(
+                    x=df['datetime'],
+                    y=[0] * len(df),
+                    name='No Volume Data',
+                    line=dict(color='gray', dash='dash'),
+                    text='No volume data available'
+                ),
+                row=2, col=1
+            )
+            volume_title = 'Volume (Not Available)'
         
         fig.update_layout(
             title=title,
             yaxis_title='Price (₹)',
-            yaxis2_title='Volume',
+            yaxis2_title=volume_title,
             xaxis_rangeslider_visible=False,
             height=700,
             showlegend=True,
@@ -602,11 +631,18 @@ def main():
         
         with col2:
             total_volume = df['volume'].sum()
-            st.metric("Total Volume", f"{total_volume:,.0f}")
+            if total_volume == 0 and exchange_segment == 'IDX_I':
+                st.metric("Volume", "N/A (Index)")
+                st.caption("Indices don't have trading volume")
+            else:
+                st.metric("Total Volume", f"{total_volume:,.0f}")
         
         with col3:
             avg_volume = df['volume'].mean()
-            st.metric("Avg Volume", f"{avg_volume:,.0f}")
+            if avg_volume == 0 and exchange_segment == 'IDX_I':
+                st.metric("Avg Volume", "N/A (Index)")
+            else:
+                st.metric("Avg Volume", f"{avg_volume:,.0f}")
         
         with col4:
             if len(df) > 1:
