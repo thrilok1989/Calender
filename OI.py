@@ -585,6 +585,7 @@ def calculate_final_bias_score(df, option_summary, iv_df, gamma_df, volume_sprea
     
     scores = {}
     
+    # 1. RSI Score (-2 to +2)
     df['rsi'] = calculate_rsi(df)
     current_rsi = df['rsi'].iloc[-1] if not df.empty else 50
     if current_rsi > 70:
@@ -599,100 +600,74 @@ def calculate_final_bias_score(df, option_summary, iv_df, gamma_df, volume_sprea
         rsi_score = 0
     scores['RSI'] = rsi_score
     
+    # Get ATM data for remaining scores
     atm_data = option_summary[option_summary['Zone'] == 'ATM']
-    if not atm_data.empty:
-        atm_row = atm_data.iloc[0]
-        oi_bullish = sum([1 for bias in [atm_row['ChgOI_Bias'], atm_row['Volume_Bias'], 
-                         atm_row['Ask_Bias'], atm_row['Bid_Bias'], atm_row['CE_Delta_Bias'], atm_row['PE_Delta_Bias']] 
-                         if bias == 'Bullish'])
-        oi_score = oi_bullish - 3
-        oi_score = max(-2, min(2, oi_score))
-        scores['OI_Bias'] = oi_score
-    else:
-        scores['OI_Bias'] = 0
+    if atm_data.empty:
+        return "Insufficient Data", 0, {}
     
-    if volume_spread_df is not None and not volume_spread_df.empty:
-        atm_volume = volume_spread_df[volume_spread_df['Strike'].isin(atm_data['Strike'])]
-        if not atm_volume.empty:
-            avg_ce_delta = atm_volume['CE_Cumulative_Delta'].mean()
-            avg_pe_delta = atm_volume['PE_Cumulative_Delta'].mean()
-            if avg_ce_delta > abs(avg_pe_delta):
-                volume_delta_score = -1
-            elif avg_pe_delta > abs(avg_ce_delta):
-                volume_delta_score = 1
-            else:
-                volume_delta_score = 0
-        else:
-            volume_delta_score = 0
-        scores['Volume_Delta'] = volume_delta_score
-    else:
-        scores['Volume_Delta'] = 0
+    atm_row = atm_data.iloc[0]
     
-    if iv_df is not None and not iv_df.empty:
-        atm_iv = iv_df[iv_df['Strike'].isin(atm_data['Strike'])]
-        if not atm_iv.empty:
-            avg_ce_iv_bias = 1 if atm_iv['CE_IV_Bias'].iloc[0] == 'Expensive' else -1 if atm_iv['CE_IV_Bias'].iloc[0] == 'Cheaper' else 0
-            avg_pe_iv_bias = 1 if atm_iv['PE_IV_Bias'].iloc[0] == 'Expensive' else -1 if atm_iv['PE_IV_Bias'].iloc[0] == 'Cheaper' else 0
-            iv_score = (avg_ce_iv_bias + avg_pe_iv_bias) / 2
-        else:
-            iv_score = 0
-        scores['IV'] = iv_score
-    else:
-        scores['IV'] = 0
+    # 2. ATM Change in OI Score (-1 to +1)
+    chg_oi_score = 1 if atm_row['ChgOI_Bias'] == 'Bullish' else -1 if atm_row['ChgOI_Bias'] == 'Bearish' else 0
+    scores['ChgOI'] = chg_oi_score
     
-    if gamma_df is not None and not gamma_df.empty:
-        total_net_gex = gamma_df['Net_GEX'].sum()
-        if abs(total_net_gex) > 2000:
-            gamma_score = 1
-        elif abs(total_net_gex) < 1000:
-            gamma_score = -1
-        else:
-            gamma_score = 0
-        scores['Gamma'] = gamma_score
-    else:
-        scores['Gamma'] = 0
+    # 3. ATM Volume Score (-1 to +1)
+    volume_score = 1 if atm_row['Volume_Bias'] == 'Bullish' else -1 if atm_row['Volume_Bias'] == 'Bearish' else 0
+    scores['Volume'] = volume_score
     
-    if len(df) > 0:
-        df = calculate_vwap_bands(df)
-        current_vwap = df['vwap'].iloc[-1]
-        current_upper_1 = df['vwap_upper_1'].iloc[-1]
-        current_lower_1 = df['vwap_lower_1'].iloc[-1]
-        
-        if current_price > current_upper_1:
-            vwap_score = 1
-        elif current_price < current_lower_1:
-            vwap_score = -1
-        else:
-            vwap_score = 0
-        scores['VWAP'] = vwap_score
-    else:
-        scores['VWAP'] = 0
+    # 4. ATM Bid Score (-1 to +1)
+    bid_score = 1 if atm_row['Bid_Bias'] == 'Bullish' else -1 if atm_row['Bid_Bias'] == 'Bearish' else 0
+    scores['Bid'] = bid_score
     
+    # 5. ATM Ask Score (-1 to +1)
+    ask_score = 1 if atm_row['Ask_Bias'] == 'Bullish' else -1 if atm_row['Ask_Bias'] == 'Bearish' else 0
+    scores['Ask'] = ask_score
+    
+    # 6. ATM CE Delta Score (-1 to +1)
+    ce_delta_score = 1 if atm_row['CE_Delta_Bias'] == 'Bullish' else -1 if atm_row['CE_Delta_Bias'] == 'Bearish' else 0
+    scores['CE_Delta'] = ce_delta_score
+    
+    # 7. ATM PE Delta Score (-1 to +1)
+    pe_delta_score = 1 if atm_row['PE_Delta_Bias'] == 'Bullish' else -1 if atm_row['PE_Delta_Bias'] == 'Bearish' else 0
+    scores['PE_Delta'] = pe_delta_score
+    
+    # 8. ATM IV Score (-1 to +1)
+    if atm_row['IV_Bias'] == 'CE Cheaper':
+        iv_score = 1  # Calls cheaper = Bullish
+    elif atm_row['IV_Bias'] == 'PE Cheaper':
+        iv_score = -1  # Puts cheaper = Bearish
+    else:
+        iv_score = 0
+    scores['IV'] = iv_score
+    
+    # 9. ATM Gamma Score (-1 to +1)
+    # PE High Gamma = Bullish, CE High Gamma = Bearish
+    gamma_score = 1 if atm_row['Gamma_Bias'] == 'Bullish' else -1 if atm_row['Gamma_Bias'] == 'Bearish' else 0
+    scores['Gamma'] = gamma_score
+    
+    # Calculate total score
     total_score = sum(scores.values())
+    max_possible = 11  # RSI(2) + 8 other components(1 each)
     
-    if total_score >= 3:
+    # Determine bias
+    if total_score >= 5:
         bias = "Strong Bullish"
-    elif total_score >= 1:
+    elif total_score >= 2:
         bias = "Bullish"
-    elif total_score <= -3:
+    elif total_score <= -5:
         bias = "Strong Bearish"
-    elif total_score <= -1:
+    elif total_score <= -2:
         bias = "Bearish"
     else:
         bias = "Neutral"
     
-    if gamma_df is not None and not gamma_df.empty:
-        total_gex = abs(gamma_df['Net_GEX'].sum())
-        if total_gex < 500:
-            market_dynamics = "Highly Pinned"
-        elif total_gex < 1500:
-            market_dynamics = "Moderately Pinned"
-        elif total_gex < 3000:
-            market_dynamics = "Normal Volatility"
-        else:
-            market_dynamics = "High Volatility"
+    # Market dynamics based on gamma
+    if atm_row['Gamma_Bias'] == 'Bullish':
+        market_dynamics = "PE Gamma Dominant (Bullish)"
+    elif atm_row['Gamma_Bias'] == 'Bearish':
+        market_dynamics = "CE Gamma Dominant (Bearish)"
     else:
-        market_dynamics = "Unknown"
+        market_dynamics = "Balanced Gamma"
     
     return bias, total_score, scores, market_dynamics
 
@@ -740,7 +715,7 @@ def check_advanced_signals(df, option_data, iv_df, gamma_df, volume_spread_df, c
 
 📍 Spot: ₹{current_price:.2f}
 🎯 ATM: {row['Strike']}
-📊 Bias Score: {score}/8 ({bias})
+📊 Bias Score: {score}/11 ({bias})
 
 📈 Technical Confluence:
 RSI: {current_rsi:.2f}
@@ -879,7 +854,7 @@ def main():
                     with bias_col1:
                         bias_color = "green" if "Bullish" in bias else "red" if "Bearish" in bias else "gray"
                         st.markdown(f"**Market Bias:** <span style='color:{bias_color}'>{bias}</span>", unsafe_allow_html=True)
-                        st.markdown(f"**Score:** {score}/8")
+                        st.markdown(f"**Score:** {score}/11")
                     
                     with bias_col2:
                         st.markdown(f"**Dynamics:** {dynamics}")
