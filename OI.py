@@ -1,204 +1,39 @@
 import streamlit as st
-import requests
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import requests
 from datetime import datetime, timedelta
-import json
 
-# Streamlit page config
-st.set_page_config(
-    page_title="DhanHQ Trading Dashboard",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-class DhanAPI:
-    def __init__(self):
-        # Get credentials from Streamlit secrets
-        try:
-            self.access_token = st.secrets["DHAN_ACCESS_TOKEN"]
-            self.client_id = st.secrets["DHAN_CLIENT_ID"]
-        except KeyError as e:
-            st.error(f"Missing secret: {e}. Please configure DHAN_ACCESS_TOKEN and DHAN_CLIENT_ID in Streamlit secrets.")
-            st.stop()
-        
+class VolumeProfileAnalyzer:
+    def __init__(self, access_token):
+        self.access_token = access_token
         self.base_url = "https://api.dhan.co/v2"
-        self.headers = {
-            'Content-Type': 'application/json',
-            'access-token': self.access_token,
-            'client-id': self.client_id
-        }
-        
-        # Predefined security IDs for popular instruments
-        self.popular_instruments = {
-            'NIFTY': {'id': '13', 'segment': 'IDX_I', 'instrument': 'INDEX'},
-            'BANKNIFTY': {'id': '25', 'segment': 'IDX_I', 'instrument': 'INDEX'},
-            'SENSEX': {'id': '51', 'segment': 'IDX_I', 'instrument': 'INDEX'},
-            'RELIANCE': {'id': '1333', 'segment': 'NSE_EQ', 'instrument': 'EQUITY'},
-            'TCS': {'id': '11536', 'segment': 'NSE_EQ', 'instrument': 'EQUITY'},
-            'INFY': {'id': '1594', 'segment': 'NSE_EQ', 'instrument': 'EQUITY'},
-            'HDFCBANK': {'id': '1333', 'segment': 'NSE_EQ', 'instrument': 'EQUITY'},
-            'ICICIBANK': {'id': '4963', 'segment': 'NSE_EQ', 'instrument': 'EQUITY'}
-        }
     
-    @st.cache_data(ttl=3600)  # Cache for 1 hour
-    def download_instrument_master(_self):
-        """Download and cache instrument master"""
-        try:
-            url = "https://images.dhan.co/api-data/api-scrip-master.csv"
-            df = pd.read_csv(url)
-            return df
-        except Exception as e:
-            st.error(f"Error downloading instrument master: {e}")
-            return None
-    
-    def get_instrument_info(self, symbol):
-        """Get instrument info from predefined list or search"""
-        symbol = symbol.upper()
-        
-        # Check predefined instruments first
-        if symbol in self.popular_instruments:
-            info = self.popular_instruments[symbol]
-            return info['id'], info['segment'], info['instrument']
-        
-        # Search in instrument master
-        instruments = self.download_instrument_master()
-        if instruments is None:
-            return None, None, None
-        
-        # Search by symbol
-        filtered = instruments[
-            instruments['SEM_CUSTOM_SYMBOL'].str.contains(symbol, case=False, na=False)
-        ]
-        
-        if not filtered.empty:
-            row = filtered.iloc[0]
-            security_id = str(row['SEM_EXM_EXCH_ID'])
-            
-            # Determine exchange segment and instrument type
-            segment = row['SEM_SEGMENT']
-            segment_map = {
-                'E': 'NSE_EQ',
-                'D': 'NSE_FNO', 
-                'C': 'NSE_CURRENCY',
-                'M': 'MCX_COMM'
-            }
-            exchange_segment = segment_map.get(segment, 'NSE_EQ')
-            
-            # Determine instrument type
-            instrument_name = str(row.get('SEM_INSTRUMENT_NAME', '')).upper()
-            if 'INDEX' in instrument_name:
-                instrument = 'INDEX'
-                exchange_segment = 'IDX_I'
-            elif 'EQUITY' in instrument_name:
-                instrument = 'EQUITY'
-            elif 'FUTURE' in instrument_name:
-                instrument = 'FUTSTK' if exchange_segment == 'NSE_EQ' else 'FUTIDX'
-            elif 'OPTION' in instrument_name:
-                instrument = 'OPTSTK' if exchange_segment == 'NSE_EQ' else 'OPTIDX'
-            else:
-                instrument = 'EQUITY'  # Default
-            
-            return security_id, exchange_segment, instrument
-        
-        return None, None, None
-    
-    def validate_parameters(self, security_id, exchange_segment, instrument, from_date, to_date):
-        """Validate API parameters"""
-        if not security_id:
-            st.error("Security ID is required")
-            return False
-        
-        if not exchange_segment:
-            st.error("Exchange segment is required")
-            return False
-        
-        if not instrument:
-            st.error("Instrument type is required")
-            return False
-        
-        # Validate date range
-        if from_date >= to_date:
-            st.error("From date must be before to date")
-            return False
-        
-        # Check if requesting too much intraday data
-        date_diff = (to_date - from_date).days
-        if date_diff > 90:
-            st.warning("Intraday data is limited to 90 days. Adjusting date range.")
-            return False
-        
-        return True
-    
-    def get_historical_candles(self, security_id, exchange_segment, instrument, 
-                             from_date, to_date, include_oi=False):
-        """Get daily historical candles"""
-        if not self.validate_parameters(security_id, exchange_segment, instrument, from_date, to_date):
-            return None
-        
-        url = f"{self.base_url}/charts/historical"
-        
-        payload = {
-            "securityId": security_id,
-            "exchangeSegment": exchange_segment,
-            "instrument": instrument,
-            "expiryCode": 0,
-            "oi": include_oi and exchange_segment in ['NSE_FNO', 'BSE_FNO'],
-            "fromDate": from_date.strftime("%Y-%m-%d"),
-            "toDate": to_date.strftime("%Y-%m-%d")
-        }
-        
-        # Debug information
-        with st.expander("Debug - API Request"):
-            st.json(payload)
-        
-        try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
-            
-            if response.status_code == 200:
-                data = response.json()
-                return self._format_candle_data(data)
-            else:
-                st.error(f"API Error: {response.status_code} - {response.text}")
-                return None
-                
-        except requests.exceptions.Timeout:
-            st.error("Request timeout. Please try again.")
-            return None
-        except Exception as e:
-            st.error(f"Request failed: {e}")
-            return None
-    
-    def get_intraday_candles(self, security_id, exchange_segment, instrument,
-                           interval, from_date, to_date, include_oi=False):
-        """Get intraday candles"""
-        if not self.validate_parameters(security_id, exchange_segment, instrument, from_date, to_date):
-            return None
-        
+    def get_candle_data(self, security_id, exchange_segment, instrument, 
+                       interval, from_date, to_date):
+        """Fetch intraday candle data from DhanHQ API"""
         url = f"{self.base_url}/charts/intraday"
         
-        # Format datetime strings
-        from_datetime = f"{from_date.strftime('%Y-%m-%d')} 09:30:00"
-        to_datetime = f"{to_date.strftime('%Y-%m-%d')} 15:30:00"
+        headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'access-token': self.access_token
+        }
         
         payload = {
             "securityId": security_id,
             "exchangeSegment": exchange_segment,
             "instrument": instrument,
             "interval": interval,
-            "oi": include_oi and exchange_segment in ['NSE_FNO', 'BSE_FNO'],
-            "fromDate": from_datetime,
-            "toDate": to_datetime
+            "oi": False,
+            "fromDate": from_date.strftime("%Y-%m-%d"),
+            "toDate": to_date.strftime("%Y-%m-%d")
         }
         
-        # Debug information
-        with st.expander("Debug - API Request"):
-            st.json(payload)
-        
         try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
             
             if response.status_code == 200:
                 data = response.json()
@@ -206,121 +41,167 @@ class DhanAPI:
             else:
                 st.error(f"API Error: {response.status_code} - {response.text}")
                 return None
-                
-        except requests.exceptions.Timeout:
-            st.error("Request timeout. Please try again.")
-            return None
         except Exception as e:
             st.error(f"Request failed: {e}")
             return None
     
-    def aggregate_to_weekly(self, df):
-        """Aggregate daily data to weekly candles"""
-        if df is None or df.empty:
-            return None
-        
-        df['week'] = df['datetime'].dt.to_period('W')
-        
-        weekly = df.groupby('week').agg({
-            'open': 'first',
-            'high': 'max', 
-            'low': 'min',
-            'close': 'last',
-            'volume': 'sum',
-            'datetime': 'first'
-        }).reset_index()
-        
-        if 'open_interest' in df.columns:
-            weekly['open_interest'] = df.groupby('week')['open_interest'].last().values
-            
-        return weekly
-    
-    def aggregate_to_monthly(self, df):
-        """Aggregate daily data to monthly candles"""
-        if df is None or df.empty:
-            return None
-        
-        df['month'] = df['datetime'].dt.to_period('M')
-        
-        monthly = df.groupby('month').agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min', 
-            'close': 'last',
-            'volume': 'sum',
-            'datetime': 'first'
-        }).reset_index()
-        
-        if 'open_interest' in df.columns:
-            monthly['open_interest'] = df.groupby('month')['open_interest'].last().values
-            
-        return monthly
+    def _format_candle_data(self, raw_data):
         """Convert raw API response to DataFrame"""
-        if not raw_data or not isinstance(raw_data, dict):
-            st.error("Invalid API response format")
+        if not raw_data or 'open' not in raw_data:
             return None
         
-        required_fields = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
-        if not all(field in raw_data for field in required_fields):
-            st.error("Missing required fields in API response")
-            return None
+        df = pd.DataFrame({
+            'timestamp': raw_data['timestamp'],
+            'open': raw_data['open'],
+            'high': raw_data['high'],
+            'low': raw_data['low'],
+            'close': raw_data['close'],
+            'volume': raw_data['volume']
+        })
         
-        # Check if arrays have data
-        if not raw_data['open'] or len(raw_data['open']) == 0:
-            st.error("No data returned from API")
-            return None
-        
-        # Verify all arrays have same length
-        arrays = [raw_data[field] for field in required_fields]
-        lengths = [len(arr) for arr in arrays]
-        
-        if len(set(lengths)) > 1:
-            st.error("Inconsistent data array lengths in API response")
-            return None
-        
-        try:
-            df = pd.DataFrame({
-                'timestamp': raw_data['timestamp'],
-                'open': raw_data['open'],
-                'high': raw_data['high'],
-                'low': raw_data['low'],
-                'close': raw_data['close'],
-                'volume': raw_data['volume']
-            })
-            
-            # Add Open Interest if available
-            if 'open_interest' in raw_data and raw_data['open_interest']:
-                df['open_interest'] = raw_data['open_interest']
-            
-            # Convert timestamp to datetime
-            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s', errors='coerce')
-            
-            # Remove any rows with invalid timestamps
-            df = df.dropna(subset=['datetime'])
-            
-            if df.empty:
-                st.error("No valid data after processing")
-                return None
-            
-            return df
-            
-        except Exception as e:
-            st.error(f"Error processing data: {e}")
-            return None
-
-def create_candlestick_chart(df, title, symbol):
-    """Create candlestick chart with volume"""
-    if df is None or df.empty:
-        st.error("No data available for charting")
-        return None
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+        return df
     
-    try:
+    def create_volume_profile(self, df, price_levels=50, volume_distribution='uniform'):
+        """
+        Create approximate volume profile from OHLCV candle data
+        
+        Args:
+            df: DataFrame with OHLCV data
+            price_levels: Number of price levels for the profile
+            volume_distribution: 'uniform', 'weighted', or 'vwap_weighted'
+        """
+        if df is None or df.empty or df['volume'].sum() == 0:
+            st.error("No volume data available for volume profile")
+            return None
+        
+        # Define price range
+        min_price = df['low'].min()
+        max_price = df['high'].max()
+        price_step = (max_price - min_price) / price_levels
+        
+        # Create price bins
+        price_bins = np.arange(min_price, max_price + price_step, price_step)
+        volume_at_price = np.zeros(len(price_bins) - 1)
+        
+        # Distribute volume across price levels for each candle
+        for idx, row in df.iterrows():
+            if row['volume'] == 0:
+                continue
+                
+            candle_low = row['low']
+            candle_high = row['high']
+            candle_volume = row['volume']
+            candle_close = row['close']
+            candle_open = row['open']
+            
+            # Find which price bins this candle overlaps
+            start_bin = max(0, int((candle_low - min_price) / price_step))
+            end_bin = min(len(price_bins) - 2, int((candle_high - min_price) / price_step))
+            
+            if start_bin == end_bin:
+                # Volume concentrated in one price level
+                volume_at_price[start_bin] += candle_volume
+            else:
+                # Distribute volume across price range
+                if volume_distribution == 'uniform':
+                    # Uniform distribution across price range
+                    volume_per_level = candle_volume / (end_bin - start_bin + 1)
+                    volume_at_price[start_bin:end_bin + 1] += volume_per_level
+                
+                elif volume_distribution == 'weighted':
+                    # Weight distribution based on candle body vs wicks
+                    body_size = abs(candle_close - candle_open)
+                    total_range = candle_high - candle_low
+                    
+                    if total_range > 0:
+                        body_weight = 0.7  # 70% of volume in body
+                        wick_weight = 0.3  # 30% in wicks
+                        
+                        # Distribute body volume
+                        body_low = min(candle_open, candle_close)
+                        body_high = max(candle_open, candle_close)
+                        body_start_bin = max(start_bin, int((body_low - min_price) / price_step))
+                        body_end_bin = min(end_bin, int((body_high - min_price) / price_step))
+                        
+                        if body_start_bin <= body_end_bin:
+                            body_volume_per_level = (candle_volume * body_weight) / (body_end_bin - body_start_bin + 1)
+                            volume_at_price[body_start_bin:body_end_bin + 1] += body_volume_per_level
+                        
+                        # Distribute wick volume
+                        remaining_bins = list(range(start_bin, end_bin + 1))
+                        body_bins = list(range(body_start_bin, body_end_bin + 1))
+                        wick_bins = [b for b in remaining_bins if b not in body_bins]
+                        
+                        if wick_bins:
+                            wick_volume_per_level = (candle_volume * wick_weight) / len(wick_bins)
+                            for bin_idx in wick_bins:
+                                volume_at_price[bin_idx] += wick_volume_per_level
+                
+                elif volume_distribution == 'vwap_weighted':
+                    # Weight toward VWAP (approximated as (H+L+C)/3)
+                    vwap_price = (row['high'] + row['low'] + row['close']) / 3
+                    vwap_bin = int((vwap_price - min_price) / price_step)
+                    vwap_bin = max(start_bin, min(end_bin, vwap_bin))
+                    
+                    # 50% of volume at VWAP level, rest distributed uniformly
+                    volume_at_price[vwap_bin] += candle_volume * 0.5
+                    remaining_volume = candle_volume * 0.5
+                    remaining_volume_per_level = remaining_volume / (end_bin - start_bin + 1)
+                    volume_at_price[start_bin:end_bin + 1] += remaining_volume_per_level
+        
+        # Create result DataFrame
+        profile_df = pd.DataFrame({
+            'price': price_bins[:-1] + price_step/2,  # Mid-point of each bin
+            'volume': volume_at_price
+        })
+        
+        # Calculate additional metrics
+        total_volume = profile_df['volume'].sum()
+        profile_df['volume_pct'] = (profile_df['volume'] / total_volume) * 100
+        
+        # Find Point of Control (POC) - price level with highest volume
+        poc_idx = profile_df['volume'].idxmax()
+        poc_price = profile_df.loc[poc_idx, 'price']
+        poc_volume = profile_df.loc[poc_idx, 'volume']
+        
+        # Calculate Value Area (approximately 70% of volume)
+        sorted_profile = profile_df.sort_values('volume', ascending=False)
+        cumulative_volume = 0
+        value_area_prices = []
+        
+        for idx, row in sorted_profile.iterrows():
+            cumulative_volume += row['volume']
+            value_area_prices.append(row['price'])
+            if cumulative_volume >= total_volume * 0.7:
+                break
+        
+        value_area_high = max(value_area_prices)
+        value_area_low = min(value_area_prices)
+        
+        return {
+            'profile_df': profile_df,
+            'poc_price': poc_price,
+            'poc_volume': poc_volume,
+            'value_area_high': value_area_high,
+            'value_area_low': value_area_low,
+            'total_volume': total_volume
+        }
+    
+    def plot_volume_profile(self, df, profile_data, symbol):
+        """Create volume profile visualization"""
+        if profile_data is None:
+            return None
+        
+        profile_df = profile_data['profile_df']
+        
+        # Create subplot: candlestick + volume profile
         fig = make_subplots(
-            rows=2, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.1,
-            subplot_titles=(f'{symbol} - Price', 'Volume'),
-            row_heights=[0.7, 0.3]
+            rows=1, cols=2,
+            column_widths=[0.7, 0.3],
+            shared_yaxes=True,
+            subplot_titles=(f'{symbol} Price Chart', 'Volume Profile'),
+            horizontal_spacing=0.02
         )
         
         # Candlestick chart
@@ -338,312 +219,163 @@ def create_candlestick_chart(df, title, symbol):
             row=1, col=1
         )
         
-        # Volume chart
-        colors = ['red' if close < open else 'green' 
-                  for close, open in zip(df['close'], df['open'])]
+        # Add POC line
+        fig.add_hline(
+            y=profile_data['poc_price'],
+            line=dict(color='blue', width=2, dash='solid'),
+            annotation_text=f"POC: {profile_data['poc_price']:.2f}",
+            annotation_position="left",
+            row=1, col=1
+        )
         
+        # Add Value Area
+        fig.add_hrect(
+            y0=profile_data['value_area_low'],
+            y1=profile_data['value_area_high'],
+            fillcolor='lightblue',
+            opacity=0.2,
+            line_width=0,
+            annotation_text="Value Area",
+            annotation_position="left",
+            row=1, col=1
+        )
+        
+        # Volume Profile (horizontal bars)
         fig.add_trace(
             go.Bar(
-                x=df['datetime'],
-                y=df['volume'],
-                name='Volume',
-                marker_color=colors,
-                opacity=0.7
+                y=profile_df['price'],
+                x=profile_df['volume'],
+                orientation='h',
+                name='Volume Profile',
+                marker_color='rgba(66, 165, 245, 0.7)',
+                hovertemplate='Price: %{y:.2f}<br>Volume: %{x:,.0f}<br>%{customdata:.1f}% of total<extra></extra>',
+                customdata=profile_df['volume_pct']
             ),
-            row=2, col=1
+            row=1, col=2
         )
         
         fig.update_layout(
-            title=title,
-            yaxis_title='Price (₹)',
-            yaxis2_title='Volume',
-            xaxis_rangeslider_visible=False,
+            title=f'{symbol} Volume Profile Analysis',
             height=700,
             showlegend=True,
-            template='plotly_white'
+            xaxis_rangeslider_visible=False
         )
         
-        # Format y-axis for better readability
-        fig.update_yaxes(tickformat='.2f', row=1, col=1)
-        fig.update_yaxes(tickformat='.0s', row=2, col=1)
+        # Update x-axis labels
+        fig.update_xaxes(title_text="Time", row=1, col=1)
+        fig.update_xaxes(title_text="Volume", row=1, col=2)
+        fig.update_yaxes(title_text="Price", row=1, col=1)
         
         return fig
-        
-    except Exception as e:
-        st.error(f"Error creating chart: {e}")
-        return None
 
 def main():
-    st.title("📈 DhanHQ Trading Dashboard")
-    st.markdown("Real-time and historical candle data with volume analysis")
-    
-    # Check market status
-    now = datetime.now()
-    market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    market_close = now.replace(hour=15, minute=45, second=0, microsecond=0)
-    
-    if now.weekday() < 5 and market_open <= now <= market_close:
-        st.success("🟢 Market is OPEN")
-    else:
-        st.info("🔴 Market is CLOSED")
-    
-    # Initialize API
-    try:
-        dhan = DhanAPI()
-        st.sidebar.success("✅ DhanHQ API Connected")
-    except Exception as e:
-        st.error(f"Failed to initialize DhanHQ API: {e}")
-        return
+    st.title("Volume Profile Analyzer")
+    st.markdown("Approximate volume profile analysis using DhanHQ candle data")
     
     # Sidebar configuration
-    st.sidebar.header("📊 Configuration")
+    st.sidebar.header("Configuration")
     
-    # Symbol selection
-    symbol_option = st.sidebar.selectbox(
-        "Select Symbol",
-        ["Custom"] + list(dhan.popular_instruments.keys())
+    # Get access token
+    try:
+        access_token = st.secrets["DHAN_ACCESS_TOKEN"]
+    except KeyError:
+        access_token = st.sidebar.text_input("DhanHQ Access Token", type="password")
+        if not access_token:
+            st.warning("Please enter your DhanHQ access token")
+            return
+    
+    analyzer = VolumeProfileAnalyzer(access_token)
+    
+    # Symbol and timeframe selection
+    symbol = st.sidebar.text_input("Symbol", value="RELIANCE").upper()
+    
+    interval = st.sidebar.selectbox("Interval", ["1", "5", "15", "25", "60"])
+    
+    # Date selection
+    from_date = st.sidebar.date_input("From Date", value=datetime.now() - timedelta(days=5))
+    to_date = st.sidebar.date_input("To Date", value=datetime.now())
+    
+    # Volume profile settings
+    st.sidebar.subheader("Volume Profile Settings")
+    price_levels = st.sidebar.slider("Price Levels", 20, 100, 50)
+    
+    distribution_method = st.sidebar.selectbox(
+        "Volume Distribution",
+        ["uniform", "weighted", "vwap_weighted"],
+        help="uniform: Equal distribution across price range\n"
+             "weighted: More volume in candle body\n"
+             "vwap_weighted: Concentrated around VWAP"
     )
     
-    if symbol_option == "Custom":
-        symbol = st.sidebar.text_input("Enter Symbol", value="RELIANCE").upper()
-    else:
-        symbol = symbol_option
-    
-    # Timeframe selection with more options
-    timeframe_option = st.sidebar.selectbox(
-        "Select Timeframe",
-        [
-            "1 Minute",
-            "5 Minutes", 
-            "15 Minutes",
-            "25 Minutes",
-            "1 Hour",
-            "Daily",
-            "Weekly",
-            "Monthly"
-        ]
-    )
-    
-    # Map timeframe to API parameters
-    timeframe_mapping = {
-        "1 Minute": {"type": "intraday", "interval": "1", "max_days": 5},
-        "5 Minutes": {"type": "intraday", "interval": "5", "max_days": 30},
-        "15 Minutes": {"type": "intraday", "interval": "15", "max_days": 90},
-        "25 Minutes": {"type": "intraday", "interval": "25", "max_days": 90},
-        "1 Hour": {"type": "intraday", "interval": "60", "max_days": 90},
-        "Daily": {"type": "historical", "interval": None, "max_days": 365},
-        "Weekly": {"type": "historical", "interval": None, "max_days": 365*2},
-        "Monthly": {"type": "historical", "interval": None, "max_days": 365*5}
-    }
-    
-    timeframe_config = timeframe_mapping[timeframe_option]
-    data_type = timeframe_config["type"]
-    interval = timeframe_config["interval"]
-    max_days = timeframe_config["max_days"]
-    
-    # Show timeframe info
-    if data_type == "intraday":
-        st.sidebar.info(f"Intraday data - Max {max_days} days")
-    else:
-        st.sidebar.info(f"Historical data - Max {max_days//365} years")
-    
-    # Date selection with smart defaults based on timeframe
-    default_days = min(max_days, 30) if data_type == "intraday" else min(max_days, 90)
-    
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        from_date = st.date_input(
-            "From Date", 
-            value=datetime.now() - timedelta(days=default_days),
-            max_value=datetime.now()
-        )
-    with col2:
-        to_date = st.date_input(
-            "To Date", 
-            value=datetime.now(),
-            max_value=datetime.now()
-        )
-    
-    # Validate date range for selected timeframe
-    date_diff = (to_date - from_date).days
-    if date_diff > max_days:
-        st.sidebar.warning(f"Date range exceeds {max_days} days limit for {timeframe_option}")
-        from_date = to_date - timedelta(days=max_days)
-    
-    # Additional options
-    include_oi = st.sidebar.checkbox("Include Open Interest", value=False)
-    
-    # Fetch data button
-    if st.sidebar.button("📈 Fetch Data", type="primary"):
-        with st.spinner(f"Fetching {data_type.lower()} data for {symbol}..."):
+    if st.sidebar.button("Generate Volume Profile", type="primary"):
+        with st.spinner("Fetching data and generating volume profile..."):
             
-            # Get instrument information
-            security_id, exchange_segment, instrument = dhan.get_instrument_info(symbol)
-            
-            if not security_id:
-                st.error(f"❌ Symbol '{symbol}' not found. Please check the symbol name.")
-                return
-            
-            # Display instrument info
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.info(f"**Security ID:** {security_id}")
-            with col2:
-                st.info(f"**Exchange:** {exchange_segment}")
-            with col3:
-                st.info(f"**Instrument:** {instrument}")
-            
-            # Fetch candle data based on timeframe
-            if data_type == "historical":
-                df = dhan.get_historical_candles(
-                    security_id=security_id,
-                    exchange_segment=exchange_segment,
-                    instrument=instrument,
-                    from_date=from_date,
-                    to_date=to_date,
-                    include_oi=include_oi
-                )
-                
-                # Aggregate to weekly or monthly if needed
-                if timeframe_option == "Weekly" and df is not None:
-                    df = dhan.aggregate_to_weekly(df)
-                elif timeframe_option == "Monthly" and df is not None:
-                    df = dhan.aggregate_to_monthly(df)
-                    
-            else:  # intraday
-                df = dhan.get_intraday_candles(
-                    security_id=security_id,
-                    exchange_segment=exchange_segment,
-                    instrument=instrument,
-                    interval=interval,
-                    from_date=from_date,
-                    to_date=to_date,
-                    include_oi=include_oi
-                )
+            # Fetch candle data
+            df = analyzer.get_candle_data(
+                security_id="1333",  # RELIANCE - you'd need to look up actual security IDs
+                exchange_segment="NSE_EQ",
+                instrument="EQUITY",
+                interval=interval,
+                from_date=from_date,
+                to_date=to_date
+            )
             
             if df is not None and not df.empty:
-                # Store in session state
-                st.session_state['df'] = df
-                st.session_state['symbol'] = symbol
-                st.session_state['timeframe'] = timeframe_option
-                st.session_state['exchange_segment'] = exchange_segment
-                st.session_state['instrument'] = instrument
-                
-                st.success(f"✅ Fetched {len(df)} {timeframe_option.lower()} candles for {symbol}")
-            else:
-                st.error("❌ No data received. Please check parameters and try again.")
-    
-    # Display data if available
-    if 'df' in st.session_state and st.session_state['df'] is not None:
-        df = st.session_state['df']
-        symbol = st.session_state['symbol']
-        timeframe = st.session_state['timeframe']
-        
-        # Statistics
-        st.subheader("📊 Market Statistics")
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric("Total Candles", len(df))
-        
-        with col2:
-            total_volume = df['volume'].sum()
-            st.metric("Total Volume", f"{total_volume:,.0f}")
-        
-        with col3:
-            avg_volume = df['volume'].mean()
-            st.metric("Avg Volume", f"{avg_volume:,.0f}")
-        
-        with col4:
-            if len(df) > 1:
-                price_change = df['close'].iloc[-1] - df['close'].iloc[0]
-                price_change_pct = (price_change / df['close'].iloc[0]) * 100
-                st.metric(
-                    "Price Change", 
-                    f"₹{price_change:.2f}",
-                    f"{price_change_pct:.2f}%"
+                # Generate volume profile
+                profile_data = analyzer.create_volume_profile(
+                    df, 
+                    price_levels=price_levels,
+                    volume_distribution=distribution_method
                 )
+                
+                if profile_data:
+                    # Display metrics
+                    st.subheader("Volume Profile Metrics")
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric("POC Price", f"₹{profile_data['poc_price']:.2f}")
+                    with col2:
+                        st.metric("Value Area High", f"₹{profile_data['value_area_high']:.2f}")
+                    with col3:
+                        st.metric("Value Area Low", f"₹{profile_data['value_area_low']:.2f}")
+                    with col4:
+                        st.metric("Total Volume", f"{profile_data['total_volume']:,.0f}")
+                    
+                    # Plot volume profile
+                    fig = analyzer.plot_volume_profile(df, profile_data, symbol)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Display top volume levels
+                    st.subheader("Top Volume Levels")
+                    top_levels = profile_data['profile_df'].nlargest(10, 'volume')
+                    st.dataframe(
+                        top_levels[['price', 'volume', 'volume_pct']].round(2),
+                        use_container_width=True
+                    )
+                else:
+                    st.error("Could not generate volume profile")
             else:
-                st.metric("Price Change", "N/A")
-        
-        with col5:
-            current_price = df['close'].iloc[-1]
-            st.metric("Current Price", f"₹{current_price:.2f}")
-        
-        # Chart
-        st.subheader(f"📈 {symbol} - {timeframe} Chart")
-        chart_title = f"{symbol} - {timeframe} Candles"
-        fig = create_candlestick_chart(df, chart_title, symbol)
-        
-        if fig is not None:
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # Data table
-        st.subheader("📋 Recent Data")
-        display_cols = ['datetime', 'open', 'high', 'low', 'close', 'volume']
-        if 'open_interest' in df.columns:
-            display_cols.append('open_interest')
-        
-        # Format the dataframe for better display
-        display_df = df[display_cols].tail(20).copy()
-        display_df['datetime'] = display_df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Round numerical columns
-        for col in ['open', 'high', 'low', 'close']:
-            if col in display_df.columns:
-                display_df[col] = display_df[col].round(2)
-        
-        st.dataframe(
-            display_df,
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Download section
-        st.subheader("💾 Export Data")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download CSV",
-                data=csv,
-                file_name=f"{symbol}_{timeframe.replace(' ', '_')}_candles.csv",
-                mime="text/csv"
-            )
-        
-        with col2:
-            json_data = df.to_json(orient='records', date_format='iso')
-            st.download_button(
-                label="📥 Download JSON",
-                data=json_data,
-                file_name=f"{symbol}_{timeframe.replace(' ', '_')}_candles.json",
-                mime="application/json"
-            )
+                st.error("No data received")
     
     # Instructions
-    with st.expander("📖 Instructions"):
+    with st.expander("How Volume Profile Works"):
         st.markdown("""
-        **How to use:**
-        1. Select a popular symbol or enter a custom one
-        2. Choose between Historical Daily or Intraday data
-        3. Set your date range (max 90 days for intraday)
-        4. Click 'Fetch Data' to load charts
-        5. Download data in CSV or JSON format
+        **Volume Profile Analysis:**
+        - Distributes volume across price levels based on OHLC candle data
+        - **POC (Point of Control):** Price level with highest volume
+        - **Value Area:** Price range containing ~70% of total volume
+        - **Distribution Methods:**
+          - *Uniform:* Equal volume distribution across price range
+          - *Weighted:* More volume concentrated in candle body
+          - *VWAP Weighted:* Volume concentrated around typical price
         
-        **Popular Symbols:**
-        - **Indices:** NIFTY, BANKNIFTY, SENSEX
-        - **Stocks:** RELIANCE, TCS, INFY, HDFCBANK, ICICIBANK
-        
-        **Data Includes:**
-        - OHLC (Open, High, Low, Close) prices
-        - Volume data for all instruments
-        - Open Interest (for derivatives when selected)
+        **Limitations:**
+        - Approximate analysis based on candle data, not tick data
+        - Less accurate than true tick-by-tick volume profile
+        - Best used with higher frequency data (1-5 minute candles)
         """)
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        st.error(f"Application error: {e}")
-        st.write("Please refresh the page and try again.")
+    main()
