@@ -23,7 +23,7 @@ def is_market_hours():
     return market_start <= now <= market_end
 
 if is_market_hours():
-    st_autorefresh(interval=35000, key="refresh")
+    st_autorefresh(interval=45000, key="refresh")
 else:
     st.info("Market is closed. Auto-refresh disabled.")
 
