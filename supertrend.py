@@ -423,36 +423,6 @@ PCR: {row['PCR']}
 """
         send_telegram(message)
         st.success(f"🎯 FOURTH {signal_type} signal sent!")
-    
-    # RSI EXTREME SIGNALS
-    if current_rsi is not None:
-        if current_rsi > 70:
-            message = f"""
-⚠️ RSI OVERBOUGHT SIGNAL ⚠️
-
-📍 Spot: ₹{current_price:.2f}
-📊 RSI: {current_rsi:.2f} (Above 70)
-
-RSI indicates overbought conditions. Consider potential reversal or pullback.
-
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-"""
-            send_telegram(message)
-            st.success("⚠️ RSI Overbought signal sent!")
-        
-        elif current_rsi < 30:
-            message = f"""
-⚠️ RSI OVERSOLD SIGNAL ⚠️
-
-📍 Spot: ₹{current_price:.2f}
-📊 RSI: {current_rsi:.2f} (Below 30)
-
-RSI indicates oversold conditions. Consider potential bounce or reversal.
-
-🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
-"""
-            send_telegram(message)
-            st.success("⚠️ RSI Oversold signal sent!")
 
 def main():
     st.title("📈 Nifty Trading Analyzer")
