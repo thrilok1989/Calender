@@ -2,6 +2,25 @@ import streamlit as st
 import pandas as pd
 import requests
 import time
+from datetime import datetime, timedelta
+import pytz  # for IST timezone
+
+# -------------------------
+# ✅ Market Hours Check
+# -------------------------
+def is_market_open():
+    ist = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(ist)
+    # NSE market open Mon-Fri 9:00 - 15:40
+    if now.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+        return False
+    market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=40, second=0, microsecond=0)
+    return market_open <= now <= market_close
+
+if not is_market_open():
+    st.warning("⚠️ NSE Market is currently closed. This app runs only Monday–Friday, 9:00–15:40 IST.")
+    st.stop()
 
 st.set_page_config(page_title="Nifty Option Screener", layout="wide")
 
