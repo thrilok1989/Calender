@@ -66,7 +66,7 @@ class AngelOneAPI:
         }
         self.authenticated = False
         
-    def login(self):
+    def login(self, manual_totp=""):
         """Authenticate with Angel One API"""
         if not ANGEL_CLIENT_CODE or not ANGEL_PIN or not ANGEL_API_KEY:
             st.error("Missing Angel One credentials in secrets")
@@ -77,7 +77,7 @@ class AngelOneAPI:
         payload = {
             "clientcode": ANGEL_CLIENT_CODE,
             "password": ANGEL_PIN,
-            "totp": "",
+            "totp": manual_totp or ANGEL_TOTP or "",
             "state": "live"
         }
         
@@ -105,9 +105,9 @@ class AngelOneAPI:
             headers['Authorization'] = f'Bearer {self.jwt_token}'
         return headers
     
-    def get_historical_data(self, interval="FIVE_MINUTE", days_back=1):
+    def get_historical_data(self, interval="FIVE_MINUTE", days_back=1, manual_totp=""):
         """Get historical candlestick data"""
-        if not self.authenticated and not self.login():
+        if not self.authenticated and not self.login(manual_totp):
             return None
             
         url = f"{self.base_url}/rest/secure/angelbroking/historical/v1/getCandleData"
@@ -137,9 +137,9 @@ class AngelOneAPI:
             st.error(f"Historical data error: {str(e)}")
             return None
     
-    def get_ltp_data(self):
+    def get_ltp_data(self, manual_totp=""):
         """Get Last Traded Price"""
-        if not self.authenticated and not self.login():
+        if not self.authenticated and not self.login(manual_totp):
             return None
             
         url = f"{self.base_url}/rest/secure/angelbroking/market/v1/quote/"
@@ -432,6 +432,10 @@ def main():
         st.info("Market hours: Monday-Friday, 9:00 AM to 3:45 PM IST")
     
     st.sidebar.header("Settings")
+    
+    # TOTP input for manual entry
+    manual_totp = st.sidebar.text_input("TOTP Code (if 2FA enabled)", placeholder="123456", type="password")
+    
     interval_map = {"1min": "ONE_MINUTE", "3min": "THREE_MINUTE", "5min": "FIVE_MINUTE", 
                    "10min": "TEN_MINUTE", "15min": "FIFTEEN_MINUTE"}
     interval_display = st.sidebar.selectbox("Timeframe", list(interval_map.keys()), index=2)
@@ -449,11 +453,11 @@ def main():
         st.header("Chart")
         
         # Get historical data
-        data = api.get_historical_data(interval)
+        data = api.get_historical_data(interval, manual_totp=manual_totp)
         df = process_candle_data(data) if data else pd.DataFrame()
         
         # Get current price
-        ltp_data = api.get_ltp_data()
+        ltp_data = api.get_ltp_data(manual_totp=manual_totp)
         current_price = ltp_data.get('ltp', 0) if ltp_data else None
         
         if current_price is None and not df.empty:
