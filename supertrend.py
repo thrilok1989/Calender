@@ -11,6 +11,7 @@ import math
 from scipy.stats import norm
 from datetime import datetime, timedelta
 import json
+import pyotp
 
 # Page config
 st.set_page_config(page_title="Nifty Analyzer", page_icon="📈", layout="wide")
@@ -65,6 +66,16 @@ class AngelOneAPI:
             'X-PrivateKey': ANGEL_API_KEY
         }
         self.authenticated = False
+    
+    def generate_totp(self):
+        """Generate TOTP code from secret"""
+        if not ANGEL_TOTP:
+            return ""
+        try:
+            totp = pyotp.TOTP(ANGEL_TOTP)
+            return totp.now()
+        except:
+            return ""
         
     def login(self):
         """Authenticate with Angel One API"""
@@ -77,7 +88,7 @@ class AngelOneAPI:
         payload = {
             "clientcode": ANGEL_CLIENT_CODE,
             "password": ANGEL_PIN,
-            "totp": ANGEL_TOTP or "",
+            "totp": self.generate_totp(),
             "state": "live"
         }
         
