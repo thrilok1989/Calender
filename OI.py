@@ -145,13 +145,15 @@ def fetch_today_logs():
 logs_df = fetch_today_logs()
 if not logs_df.empty:
     logs_df["timestamp"] = pd.to_datetime(logs_df["timestamp"])
+    
     def get_session(time):
         if datetime.time(9,15) <= time < datetime.time(12,30): return "Morning"
         elif datetime.time(12,30) <= time < datetime.time(14,30): return "Afternoon"
         elif datetime.time(14,30) <= time <= datetime.time(15,30): return "Closing"
         else: return "Off Hours"
+    
     logs_df["session"] = logs_df["timestamp"].dt.time.apply(get_session)
-    logs_df = logs_df[logs_df["session"] != "Off Hours"
+    logs_df = logs_df[logs_df["session"] != "Off Hours"]
 
     st.markdown("### 📈 Intraday PCR Trend (3 Sessions)")
     st.line_chart(logs_df.set_index("timestamp")["pcr"])
