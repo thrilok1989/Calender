@@ -217,4 +217,9 @@ if not logs_df.empty:
 
     # Detect Sentiment Shift
     if morning_pcr and afternoon_pcr:
-        if morning
+        if morning_pcr > 1 and afternoon_pcr < 0.8:
+            st.warning("⚠️ Sentiment shifted: Bullish (Morning) → Bearish (Afternoon)")
+        elif morning_pcr < 0.8 and afternoon_pcr > 1.2:
+            st.success("✅ Sentiment shifted: Bearish (Morning) → Bullish (Afternoon)")
+        else:
+            st.info("ℹ️ No major sentiment shift detected yet.")
