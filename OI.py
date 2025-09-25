@@ -8,6 +8,22 @@ from supabase import create_client
 # --- Streamlit Config ---
 st.set_page_config(page_title="Nifty Option Screener – Intraday PCR", layout="wide")
 
+# --- Market Hours Check ---
+def is_market_open():
+    now_utc = datetime.datetime.utcnow()
+    ist_offset = datetime.timedelta(hours=5, minutes=30)
+    now_ist = now_utc + ist_offset
+    # Weekday: Monday=0, Friday=4
+    if now_ist.weekday() > 4:
+        return False
+    market_open = datetime.time(9, 0)
+    market_close = datetime.time(15, 40)
+    return market_open <= now_ist.time() <= market_close
+
+if not is_market_open():
+    st.warning("⛔ Market is closed. Data fetch only runs Monday-Friday 9:00–15:40 IST.")
+    st.stop()
+
 # --- Auto Refresh ---
 def auto_refresh(interval_sec=60):
     if "last_refresh" not in st.session_state:
@@ -149,7 +165,7 @@ if not logs_df.empty:
     def get_session(time):
         if datetime.time(9,15) <= time < datetime.time(12,30): return "Morning"
         elif datetime.time(12,30) <= time < datetime.time(14,30): return "Afternoon"
-        elif datetime.time(14,30) <= time <= datetime.time(15,30): return "Closing"
+        elif datetime.time(14,30) <= time <= datetime.time(15,40): return "Closing"
         else: return "Off Hours"
     
     logs_df["session"] = logs_df["timestamp"].dt.time.apply(get_session)
