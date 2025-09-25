@@ -11,6 +11,11 @@ import math
 from scipy.stats import norm
 from datetime import datetime, timedelta
 import json
+import base64
+import hmac
+import hashlib
+import struct
+import time
 
 # Page config
 st.set_page_config(page_title="Nifty Analyzer", page_icon="📈", layout="wide")
@@ -48,6 +53,34 @@ TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
 NIFTY_TOKEN = "99926000"  # Nifty token from master data
 NIFTY_EXCHANGE = "NSE"
 
+def generate_totp(secret_key):
+    """Generate TOTP code from base32 secret key"""
+    if not secret_key:
+        return ""
+    
+    try:
+        # Decode base32 secret
+        key = base64.b32decode(secret_key, casefold=True)
+        
+        # Get current time step (30 second intervals)
+        time_step = int(time.time()) // 30
+        
+        # Pack time step as big-endian 64-bit integer
+        time_bytes = struct.pack('>Q', time_step)
+        
+        # Generate HMAC-SHA1 hash
+        hmac_hash = hmac.new(key, time_bytes, hashlib.sha1).digest()
+        
+        # Dynamic truncation
+        offset = hmac_hash[-1] & 0x0f
+        code = struct.unpack('>I', hmac_hash[offset:offset+4])[0]
+        code &= 0x7fffffff
+        code %= 1000000
+        
+        return f"{code:06d}"
+    except:
+        return ""
+
 class AngelOneAPI:
     def __init__(self):
         self.base_url = "https://apiconnect.angelone.in"
@@ -74,10 +107,13 @@ class AngelOneAPI:
             
         url = f"{self.base_url}/rest/auth/angelbroking/user/v1/loginByPassword"
         
+        # Use manual TOTP if provided, otherwise generate from secret
+        totp_code = manual_totp if manual_totp else generate_totp(ANGEL_TOTP)
+        
         payload = {
             "clientcode": ANGEL_CLIENT_CODE,
             "password": ANGEL_PIN,
-            "totp": manual_totp or ANGEL_TOTP or "",
+            "totp": totp_code,
             "state": "live"
         }
         
