@@ -27,7 +27,7 @@ def is_market_open():
     
     # Check for market hours
     market_open = datetime.time(9, 15)  # More accurate market open time
-    market_close = datetime.time(15, 30)  # More accurate market close time
+    market_close = datetime.time(17, 30)  # More accurate market close time
     pre_market = datetime.time(9, 0)
     
     current_time = now_ist.time()
