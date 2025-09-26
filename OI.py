@@ -19,7 +19,7 @@ def is_market_open():
     if now_ist.weekday() > 4:
         return False
     market_open = datetime.time(9, 0)
-    market_close = datetime.time(15, 40)
+    market_close = datetime.time(18, 40)
     return market_open <= now_ist.time() <= market_close
 
 if not is_market_open():
