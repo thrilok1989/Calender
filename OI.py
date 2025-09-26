@@ -27,7 +27,7 @@ def is_market_open():
     
     # Check for market hours
     market_open = datetime.time(9, 15)  # More accurate market open time
-    market_close = datetime.time(17, 30)  # More accurate market close time
+    market_close = datetime.time(15, 30)  # More accurate market close time
     pre_market = datetime.time(9, 0)
     
     current_time = now_ist.time()
@@ -123,75 +123,21 @@ def log_pcr(expiry, underlying, atm_strike, pcr, total_ce_oi, total_pe_oi, addit
         st.error(f"Supabase logging failed: {e}")
         return False
 
-# --- Enhanced Option Chain Fetch ---
-@st.cache_data(ttl=120)  # Reduced TTL for more frequent updates
-def fetch_option_chain(retries=3):
+# --- Fetch Option Chain (Your Original Method) ---
+@st.cache_data(ttl=180)
+def fetch_option_chain():
     url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br"
-    }
-    
-    for attempt in range(retries):
-        try:
-            s = requests.Session()
-            # Get cookies first
-            s.get("https://www.nseindia.com", headers=headers, timeout=10)
-            time.sleep(1)  # Brief pause
-            
-            r = s.get(url, headers=headers, timeout=10)
-            if r.status_code == 200:
-                return r.json()
-            else:
-                st.warning(f"Attempt {attempt + 1}: HTTP {r.status_code}")
-        except requests.exceptions.RequestException as e:
-            st.warning(f"Attempt {attempt + 1} failed: {str(e)}")
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
-    
-    return None
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        s = requests.Session()
+        s.get("https://www.nseindia.com", headers=headers)
+        r = s.get(url, headers=headers, timeout=3)
+        return r.json()
+    except:
+        st.warning("⚠️ Could not fetch data from NSE.")
+        return None
 
-# --- Enhanced Data Processing ---
-def process_option_data(data, selected_expiry):
-    if not data or 'records' not in data:
-        return None, None, None, None
-    
-    raw_data = data['records']['data']
-    underlying = data['records'].get('underlyingValue', 0)
-    
-    ce_list, pe_list = [], []
-    
-    for item in raw_data:
-        if item.get("expiryDate") != selected_expiry:
-            continue
-            
-        strike = item.get("strikePrice", 0)
-        
-        if "CE" in item:
-            ce = item["CE"]
-            ce_list.append({
-                "strikePrice": strike,
-                "OI_CE": ce.get("openInterest", 0),
-                "Chg_OI_CE": ce.get("changeinOpenInterest", 0),
-                "Vol_CE": ce.get("totalTradedVolume", 0),
-                "LTP_CE": ce.get("lastPrice", 0),
-                "IV_CE": ce.get("impliedVolatility", 0),
-            })
-        
-        if "PE" in item:
-            pe = item["PE"]
-            pe_list.append({
-                "strikePrice": strike,
-                "OI_PE": pe.get("openInterest", 0),
-                "Chg_OI_PE": pe.get("changeinOpenInterest", 0),
-                "Vol_PE": pe.get("totalTradedVolume", 0),
-                "LTP_PE": pe.get("lastPrice", 0),
-                "IV_PE": pe.get("impliedVolatility", 0),
-            })
-    
-    return pd.DataFrame(ce_list), pd.DataFrame(pe_list), underlying, raw_data
+
 
 # --- Main Application ---
 st.title("📊 NIFTY Option Screener – Intraday PCR")
@@ -209,12 +155,44 @@ if data is None:
 expiry_list = data['records']['expiryDates']
 selected_expiry = st.sidebar.selectbox("📅 Select Expiry Date", expiry_list)
 
-# Process data
-df_ce, df_pe, underlying, raw_data = process_option_data(data, selected_expiry)
-
-if df_ce is None or df_pe is None:
-    st.error("❌ Error processing option data.")
+# --- Your Original Data Processing ---
+data = fetch_option_chain()
+if data is None: 
     st.stop()
+
+raw_data = data['records']['data']
+expiry_list = data['records']['expiryDates']
+underlying = data['records'].get('underlyingValue', 0)
+selected_expiry = st.sidebar.selectbox("📅 Select Expiry Date", expiry_list)
+
+# --- CE & PE Data (Your Original Logic) ---
+ce_list, pe_list = [], []
+for item in raw_data:
+    if item.get("expiryDate") == selected_expiry:
+        strike = item.get("strikePrice", 0)
+        if "CE" in item:
+            ce = item["CE"]
+            ce_list.append({
+                "strikePrice": strike,
+                "OI_CE": ce.get("openInterest", 0),
+                "Chg_OI_CE": ce.get("changeinOpenInterest", 0),
+                "Vol_CE": ce.get("totalTradedVolume", 0),
+                "LTP_CE": ce.get("lastPrice", 0),
+                "IV_CE": ce.get("impliedVolatility", 0),
+            })
+        if "PE" in item:
+            pe = item["PE"]
+            pe_list.append({
+                "strikePrice": strike,
+                "OI_PE": pe.get("openInterest", 0),
+                "Chg_OI_PE": pe.get("changeinOpenInterest", 0),
+                "Vol_PE": pe.get("totalTradedVolume", 0),
+                "LTP_PE": pe.get("lastPrice", 0),
+                "IV_PE": pe.get("impliedVolatility", 0),
+            })
+
+df_ce = pd.DataFrame(ce_list)
+df_pe = pd.DataFrame(pe_list)
 
 # Strike range selection
 strike_range = st.sidebar.slider("📏 Strike Range (±points)", 200, 1000, 500, 50)
