@@ -92,7 +92,7 @@ if data is None: st.stop()
 raw_data = data['records']['data']
 expiry_list = data['records']['expiryDates']
 underlying = data['records'].get('underlyingValue', 0)
-selected_expiry = st.selectbox("📅 Select Expiry Date", expiry_list)
+selected_expiry = st.sidebar.selectbox("📅 Select Expiry Date", expiry_list)
 
 # --- CE & PE Data ---
 ce_list, pe_list = [], []
