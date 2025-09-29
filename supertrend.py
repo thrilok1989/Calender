@@ -144,7 +144,7 @@ with st.sidebar:
     st.header("⚙️ Telegram Alerts")
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         st.success("✅ Telegram Connected")
-        st.info("Alerts trigger when:\n- Total Score ±2 strikes ≥ ±10\n- All ATM biases align (ChgOI, Volume, Delta, Gamma, AskBid, IV)")
+        st.info("Alerts trigger when:\n- Bull: Score > 10\n- Bear: Score < -10\n- All ATM biases align")
     else:
         st.warning("⚠️ Telegram Not Configured")
         st.code("Add to .streamlit/secrets.toml:\nTELEGRAM_BOT_TOKEN = 'your_token'\nTELEGRAM_CHAT_ID = 'your_chat_id'")
@@ -225,8 +225,18 @@ try:
     total_score = sum([r['Score'] for r in results])
     atm_data = [r for r in results if r['Zone'] == 'ATM']
     
-    if atm_data and (total_score >= 10 or total_score <= -10):
+    # Display total score
+    score_color = "green" if total_score > 0 else "red" if total_score < 0 else "gray"
+    st.metric("Total Score (ATM ±2)", total_score, delta=None)
+    
+    if atm_data:
         atm = atm_data[0]
+        atm_strike = atm['Strike']
+        
+        # Get ATM LTP prices from original dataframe
+        atm_row = df[df['strikePrice'] == atm_strike].iloc[0]
+        ce_ltp = atm_row['lastPrice_CE']
+        pe_ltp = atm_row['lastPrice_PE']
         
         # Check if all biases align
         bias_list = [atm['ChgOI_Bias'], atm['Volume_Bias'], atm['Delta_Bias'], 
@@ -235,17 +245,23 @@ try:
         all_bullish = all(b == 'Bullish' for b in bias_list)
         all_bearish = all(b == 'Bearish' for b in bias_list)
         
-        if all_bullish or all_bearish:
+        # Bull: score > 10, Bear: score < -10
+        if (all_bullish and total_score > 10) or (all_bearish and total_score < -10):
             signal = "BULLISH" if all_bullish else "BEARISH"
-            alert_key = f"{atm['Strike']}_{signal}_{total_score}"
+            option_type = "CALL (CE)" if all_bullish else "PUT (PE)"
+            ltp_price = ce_ltp if all_bullish else pe_ltp
+            alert_key = f"{atm_strike}_{signal}_{total_score}"
             
             if alert_key not in st.session_state.last_alert:
                 message = f"""
 🚨 <b>NIFTY TRADING ALERT</b> 🚨
 
 <b>Signal:</b> {signal}
-<b>ATM Strike:</b> {atm['Strike']}
-<b>Total Score (±2):</b> {total_score}
+<b>BUY:</b> {option_type}
+<b>ATM Strike:</b> {atm_strike}
+<b>LTP Price:</b> ₹{ltp_price}
+
+<b>Total Score (±2 Strikes):</b> {total_score}
 <b>Verdict:</b> {atm['Verdict']}
 
 <b>ATM Bias Analysis:</b>
@@ -263,7 +279,7 @@ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 """
                 send_telegram_alert(message)
                 st.session_state.last_alert[alert_key] = time.time()
-                st.info(f"📲 Telegram Alert Sent: {signal} signal detected!")
+                st.success(f"📲 Telegram Alert Sent: {signal} - BUY {option_type} @ ₹{ltp_price}")
     
 except Exception as e:
     st.error(f"Error: {str(e)}")
