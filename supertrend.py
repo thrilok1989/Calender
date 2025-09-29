@@ -157,7 +157,10 @@ def fetch_option_chain():
     return df, underlying, atm_strike
 
 # Main App
-st.title("🔥 Nifty Option Chain Bias Summary")
+st.title("🔥 Option Chain Bias Summary")
+
+# Index Selection
+index_choice = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY"], index=0)
 
 # Display IST time and trading status
 ist_now = get_ist_time()
@@ -189,7 +192,7 @@ if not trading_active:
     st.stop()
 
 try:
-    df, underlying, atm_strike = fetch_option_chain()
+    df, underlying, atm_strike = fetch_option_chain(index_choice)
     
     # Display key metrics at top
     col1, col2, col3 = st.columns(3)
@@ -198,7 +201,8 @@ try:
     with col2:
         st.metric("ATM Strike", f"{atm_strike}")
     with col3:
-        st.metric("Strikes Range", f"{atm_strike-100} to {atm_strike+100}")
+        strike_interval = 50 if index_choice == "NIFTY" else 100
+        st.metric("Strikes Range", f"{atm_strike - strike_interval*2} to {atm_strike + strike_interval*2}")
     
     results = []
     for _, row in df.iterrows():
@@ -339,7 +343,7 @@ try:
             
             if alert_key not in st.session_state.last_alert:
                 message = f"""
-🚨 <b>NIFTY TRADING ALERT</b> 🚨
+🚨 <b>{index_choice} TRADING ALERT</b> 🚨
 
 <b>Signal:</b> {signal}
 <b>BUY:</b> {option_type}
