@@ -5,9 +5,19 @@ import numpy as np
 from datetime import datetime
 import math
 from scipy.stats import norm
+import time
 
 # Page config
 st.set_page_config(page_title="Nifty Option Chain", layout="wide")
+
+# Auto refresh every 1 minute
+if 'last_refresh' not in st.session_state:
+    st.session_state.last_refresh = time.time()
+
+current_time = time.time()
+if current_time - st.session_state.last_refresh > 60:
+    st.session_state.last_refresh = current_time
+    st.rerun()
 
 # Greeks Calculation
 def calculate_greeks(option_type, S, K, T, r, sigma):
@@ -107,6 +117,9 @@ def fetch_option_chain():
 
 # Main App
 st.title("🔥 Nifty Option Chain Bias Summary")
+
+# Display last update time
+st.caption(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Auto-refresh: Every 60 seconds")
 
 try:
     df, underlying, atm_strike = fetch_option_chain()
