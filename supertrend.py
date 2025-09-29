@@ -100,7 +100,7 @@ def fetch_option_chain():
     df = df.sort_values('strikePrice')
     
     atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
-    df = df[df['strikePrice'].between(atm_strike - 250, atm_strike + 250)]
+    df = df[df['strikePrice'].between(atm_strike - 100, atm_strike + 100)]
     df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
     
     return df, underlying, atm_strike
@@ -159,7 +159,7 @@ try:
     best = max(results, key=lambda x: abs(x['Score']))
     st.success(f"📢 TRADE {'CALL' if best['Score'] > 0 else 'PUT'} | Momentum: {'STRONG' if abs(best['Score']) >= 4 else 'MODERATE'} | Move: {best['FakeReal'].upper()} | Suggested: {best['Scalp/Moment'].upper()}")
     
-    st.subheader("📊 Complete Bias Analysis (ATM ±5 Strikes)")
+    st.subheader("📊 Complete Bias Analysis (ATM ±2 Strikes)")
     
     cols = ["Strike", "Zone", "LTP_Bias", "OI_Bias", "ChgOI_Bias", "Volume_Bias", "Delta_Bias", 
             "Gamma_Bias", "AskBid_Bias", "IV_Bias", "DeltaExp_Bias", "GammaExp_Bias", "DVP_Bias",
