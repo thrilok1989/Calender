@@ -274,13 +274,7 @@ try:
     
     detailed_df = pd.DataFrame(detailed_results)
     
-    # Color styling for detailed table
-    def highlight_atm(row):
-        return ['background-color: #FFFF99' if row['Zone'] == 'ATM' else '' for _ in row]
-    
-    styled_detailed = detailed_df.style.apply(highlight_atm, axis=1)
-    
-    st.dataframe(styled_detailed, use_container_width=True, height=400)
+    st.dataframe(detailed_df, use_container_width=True, height=400)
     
     # Check for Telegram alerts
     atm_data = [r for r in results if r['Zone'] == 'ATM']
