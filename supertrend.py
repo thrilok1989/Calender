@@ -127,9 +127,12 @@ def fetch_option_chain():
     df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE'))
     df = df.sort_values('strikePrice')
     
-    atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
+    # Calculate ATM as nearest strike to spot price
+    atm_strike = round(underlying / 50) * 50
+    
+    # Filter ATM ±2 strikes (±100 points for Nifty which has 50 point intervals)
     df = df[df['strikePrice'].between(atm_strike - 100, atm_strike + 100)]
-    df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
+    df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < atm_strike else 'OTM')
     
     return df, underlying, atm_strike
 
@@ -151,6 +154,15 @@ with st.sidebar:
 
 try:
     df, underlying, atm_strike = fetch_option_chain()
+    
+    # Display key metrics at top
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Spot Price", f"₹{underlying:,.2f}")
+    with col2:
+        st.metric("ATM Strike", f"{atm_strike}")
+    with col3:
+        st.metric("Strikes Range", f"{atm_strike-100} to {atm_strike+100}")
     
     results = []
     for _, row in df.iterrows():
@@ -200,6 +212,10 @@ try:
     best = max(results, key=lambda x: abs(x['Score']))
     st.success(f"📢 TRADE {'CALL' if best['Score'] > 0 else 'PUT'} | Momentum: {'STRONG' if abs(best['Score']) >= 4 else 'MODERATE'} | Move: {best['FakeReal'].upper()} | Suggested: {best['Scalp/Moment'].upper()}")
     
+    # Display total score prominently
+    total_score = sum([r['Score'] for r in results])
+    st.subheader(f"📊 Total Score (ATM ±2 Strikes): {total_score}")
+    
     st.subheader("📊 Complete Bias Analysis (ATM ±2 Strikes)")
     
     cols = ["Strike", "Zone", "LTP_Bias", "OI_Bias", "ChgOI_Bias", "Volume_Bias", "Delta_Bias", 
@@ -222,16 +238,10 @@ try:
     st.dataframe(styled_df, use_container_width=True, height=600)
     
     # Check for Telegram alerts
-    total_score = sum([r['Score'] for r in results])
     atm_data = [r for r in results if r['Zone'] == 'ATM']
-    
-    # Display total score
-    score_color = "green" if total_score > 0 else "red" if total_score < 0 else "gray"
-    st.metric("Total Score (ATM ±2)", total_score, delta=None)
     
     if atm_data:
         atm = atm_data[0]
-        atm_strike = atm['Strike']
         
         # Get ATM LTP prices from original dataframe
         atm_row = df[df['strikePrice'] == atm_strike].iloc[0]
@@ -258,10 +268,12 @@ try:
 
 <b>Signal:</b> {signal}
 <b>BUY:</b> {option_type}
+
+<b>Spot Price:</b> ₹{underlying:,.2f}
 <b>ATM Strike:</b> {atm_strike}
 <b>LTP Price:</b> ₹{ltp_price}
 
-<b>Total Score (±2 Strikes):</b> {total_score}
+<b>Total Score (ATM ±2 Strikes):</b> {total_score}
 <b>Verdict:</b> {atm['Verdict']}
 
 <b>ATM Bias Analysis:</b>
