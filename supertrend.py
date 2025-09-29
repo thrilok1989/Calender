@@ -172,14 +172,13 @@ try:
             "Zone": row['Zone'],
         }
         
-        row_data["LTP_Bias"] = "Bullish" if row['lastPrice_CE'] > row['lastPrice_PE'] else "Bearish"
         row_data["OI_Bias"] = "Bearish" if row['openInterest_CE'] > row['openInterest_PE'] else "Bullish"
         row_data["ChgOI_Bias"] = "Bearish" if row['changeinOpenInterest_CE'] > row['changeinOpenInterest_PE'] else "Bullish"
         row_data["Volume_Bias"] = "Bullish" if row['totalTradedVolume_CE'] > row['totalTradedVolume_PE'] else "Bearish"
         row_data["Delta_Bias"] = "Bullish" if row['Delta_CE'] > abs(row['Delta_PE']) else "Bearish"
         row_data["Gamma_Bias"] = "Bullish" if row['Gamma_CE'] > row['Gamma_PE'] else "Bearish"
         row_data["AskBid_Bias"] = "Bullish" if row['bidQty_CE'] > row['askQty_CE'] else "Bearish"
-        row_data["IV_Bias"] = "Bullish" if row['impliedVolatility_CE'] < row['impliedVolatility_PE'] else "Bearish"
+        row_data["IV_Bias"] = "Bullish" if row['impliedVolatility_CE'] > row['impliedVolatility_PE'] else "Bearish"
         
         delta_exp_ce = row['Delta_CE'] * row['openInterest_CE']
         delta_exp_pe = row['Delta_PE'] * row['openInterest_PE']
@@ -218,7 +217,7 @@ try:
     
     st.subheader("📊 Complete Bias Analysis (ATM ±2 Strikes)")
     
-    cols = ["Strike", "Zone", "LTP_Bias", "OI_Bias", "ChgOI_Bias", "Volume_Bias", "Delta_Bias", 
+    cols = ["Strike", "Zone", "OI_Bias", "ChgOI_Bias", "Volume_Bias", "Delta_Bias", 
             "Gamma_Bias", "AskBid_Bias", "IV_Bias", "DeltaExp_Bias", "GammaExp_Bias", "DVP_Bias",
             "Score", "Verdict", "Operator Entry", "Scalp/Moment", "FakeReal", "ChgOI (C vs P)", "OI (C vs P)"]
     
@@ -236,6 +235,52 @@ try:
     styled_df = display_df.style.applymap(color_bias, subset=[col for col in cols if '_Bias' in col or col == 'DVP_Bias'])
     
     st.dataframe(styled_df, use_container_width=True, height=600)
+    
+    # New table: Call vs Put values for all biases
+    st.subheader("📈 Call vs Put Detailed Analysis (ATM ±2 Strikes)")
+    
+    detailed_results = []
+    for _, row in df.iterrows():
+        strike = row['strikePrice']
+        zone = 'ATM' if strike == atm_strike else 'ITM' if strike < atm_strike else 'OTM'
+        
+        detailed_row = {
+            "Strike": strike,
+            "Zone": zone,
+            "LTP_CE": row['lastPrice_CE'],
+            "LTP_PE": row['lastPrice_PE'],
+            "OI_CE": f"{round(row['openInterest_CE']/1e6, 2)}M",
+            "OI_PE": f"{round(row['openInterest_PE']/1e6, 2)}M",
+            "ChgOI_CE": f"{int(row['changeinOpenInterest_CE']/1000)}K",
+            "ChgOI_PE": f"{int(row['changeinOpenInterest_PE']/1000)}K",
+            "Volume_CE": row['totalTradedVolume_CE'],
+            "Volume_PE": row['totalTradedVolume_PE'],
+            "Delta_CE": row['Delta_CE'],
+            "Delta_PE": row['Delta_PE'],
+            "Gamma_CE": row['Gamma_CE'],
+            "Gamma_PE": row['Gamma_PE'],
+            "Vega_CE": row['Vega_CE'],
+            "Vega_PE": row['Vega_PE'],
+            "Theta_CE": row['Theta_CE'],
+            "Theta_PE": row['Theta_PE'],
+            "IV_CE": round(row['impliedVolatility_CE'], 2),
+            "IV_PE": round(row['impliedVolatility_PE'], 2),
+            "BidQty_CE": row['bidQty_CE'],
+            "AskQty_CE": row['askQty_CE'],
+            "BidQty_PE": row['bidQty_PE'],
+            "AskQty_PE": row['askQty_PE'],
+        }
+        detailed_results.append(detailed_row)
+    
+    detailed_df = pd.DataFrame(detailed_results)
+    
+    # Color styling for detailed table
+    def highlight_atm(row):
+        return ['background-color: #FFFF99' if row['Zone'] == 'ATM' else '' for _ in row]
+    
+    styled_detailed = detailed_df.style.apply(highlight_atm, axis=1)
+    
+    st.dataframe(styled_detailed, use_container_width=True, height=400)
     
     # Check for Telegram alerts
     atm_data = [r for r in results if r['Zone'] == 'ATM']
