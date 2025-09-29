@@ -179,7 +179,7 @@ try:
         row_data["Delta_Bias"] = "Bullish" if row['Delta_CE'] > abs(row['Delta_PE']) else "Bearish"
         row_data["Gamma_Bias"] = "Bullish" if row['Gamma_CE'] > row['Gamma_PE'] else "Bearish"
         row_data["AskBid_Bias"] = "Bullish" if row['bidQty_CE'] > row['askQty_CE'] else "Bearish"
-        row_data["IV_Bias"] = "Bullish" if row['impliedVolatility_CE'] > row['impliedVolatility_PE'] else "Bearish"
+        row_data["IV_Bias"] = "Bullish" if row['impliedVolatility_CE'] < row['impliedVolatility_PE'] else "Bearish"
         
         delta_exp_ce = row['Delta_CE'] * row['openInterest_CE']
         delta_exp_pe = row['Delta_PE'] * row['openInterest_PE']
