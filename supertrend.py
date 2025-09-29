@@ -10,9 +10,27 @@ import time
 # Page config
 st.set_page_config(page_title="Nifty Option Chain", layout="wide")
 
+# Telegram Configuration
+TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+
+def send_telegram_alert(message):
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        try:
+            requests.post(url, json=payload, timeout=5)
+        except:
+            pass
+
 # Auto refresh every 1 minute
 if 'last_refresh' not in st.session_state:
     st.session_state.last_refresh = time.time()
+    st.session_state.last_alert = {}
 
 current_time = time.time()
 if current_time - st.session_state.last_refresh > 60:
@@ -121,6 +139,16 @@ st.title("🔥 Nifty Option Chain Bias Summary")
 # Display last update time
 st.caption(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Auto-refresh: Every 60 seconds")
 
+# Telegram status
+with st.sidebar:
+    st.header("⚙️ Telegram Alerts")
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        st.success("✅ Telegram Connected")
+        st.info("Alerts trigger when:\n- Total Score ±2 strikes ≥ ±10\n- All ATM biases align (ChgOI, Volume, Delta, Gamma, AskBid, IV)")
+    else:
+        st.warning("⚠️ Telegram Not Configured")
+        st.code("Add to .streamlit/secrets.toml:\nTELEGRAM_BOT_TOKEN = 'your_token'\nTELEGRAM_CHAT_ID = 'your_chat_id'")
+
 try:
     df, underlying, atm_strike = fetch_option_chain()
     
@@ -192,6 +220,50 @@ try:
     styled_df = display_df.style.applymap(color_bias, subset=[col for col in cols if '_Bias' in col or col == 'DVP_Bias'])
     
     st.dataframe(styled_df, use_container_width=True, height=600)
+    
+    # Check for Telegram alerts
+    total_score = sum([r['Score'] for r in results])
+    atm_data = [r for r in results if r['Zone'] == 'ATM']
+    
+    if atm_data and (total_score >= 10 or total_score <= -10):
+        atm = atm_data[0]
+        
+        # Check if all biases align
+        bias_list = [atm['ChgOI_Bias'], atm['Volume_Bias'], atm['Delta_Bias'], 
+                     atm['Gamma_Bias'], atm['AskBid_Bias'], atm['IV_Bias']]
+        
+        all_bullish = all(b == 'Bullish' for b in bias_list)
+        all_bearish = all(b == 'Bearish' for b in bias_list)
+        
+        if all_bullish or all_bearish:
+            signal = "BULLISH" if all_bullish else "BEARISH"
+            alert_key = f"{atm['Strike']}_{signal}_{total_score}"
+            
+            if alert_key not in st.session_state.last_alert:
+                message = f"""
+🚨 <b>NIFTY TRADING ALERT</b> 🚨
+
+<b>Signal:</b> {signal}
+<b>ATM Strike:</b> {atm['Strike']}
+<b>Total Score (±2):</b> {total_score}
+<b>Verdict:</b> {atm['Verdict']}
+
+<b>ATM Bias Analysis:</b>
+• ChgOI: {atm['ChgOI_Bias']}
+• Volume: {atm['Volume_Bias']}
+• Delta: {atm['Delta_Bias']}
+• Gamma: {atm['Gamma_Bias']}
+• AskBid: {atm['AskBid_Bias']}
+• IV: {atm['IV_Bias']}
+
+<b>Trade Suggestion:</b> {atm['Scalp/Moment']}
+<b>Entry:</b> {atm['Operator Entry']}
+
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                """
+                send_telegram_alert(message)
+                st.session_state.last_alert[alert_key] = time.time()
+                st.info(f"📲 Telegram Alert Sent: {signal} signal detected!")
     
 except Exception as e:
     st.error(f"Error: {str(e)}")
