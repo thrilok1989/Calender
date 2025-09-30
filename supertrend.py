@@ -6,28 +6,9 @@ from datetime import datetime
 import math
 from scipy.stats import norm
 import time
-import pytz
 
 # Page config
 st.set_page_config(page_title="Nifty Option Chain", layout="wide")
-
-# IST timezone
-IST = pytz.timezone('Asia/Kolkata')
-
-def get_ist_time():
-    return datetime.now(IST)
-
-def is_trading_hours():
-    now = get_ist_time()
-    # Monday = 0, Friday = 4
-    if now.weekday() > 4:  # Saturday(5) or Sunday(6)
-        return False
-    
-    current_time = now.time()
-    market_open = datetime.strptime("09:00", "%H:%M").time()
-    market_close = datetime.strptime("15:45", "%H:%M").time()
-    
-    return market_open <= current_time <= market_close
 
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
@@ -46,7 +27,7 @@ def send_telegram_alert(message):
         except:
             pass
 
-# Auto refresh every 1 minute during trading hours
+# Auto refresh every 1 minute
 if 'last_refresh' not in st.session_state:
     st.session_state.last_refresh = time.time()
     st.session_state.last_alert = {}
@@ -54,8 +35,7 @@ if 'last_refresh' not in st.session_state:
 current_time = time.time()
 if current_time - st.session_state.last_refresh > 60:
     st.session_state.last_refresh = current_time
-    if is_trading_hours():
-        st.rerun()
+    st.rerun()
 
 # Greeks Calculation
 def calculate_greeks(option_type, S, K, T, r, sigma):
@@ -157,23 +137,10 @@ def fetch_option_chain():
     return df, underlying, atm_strike
 
 # Main App
-st.title("🔥 Option Chain Bias Summary")
+st.title("🔥 Nifty Option Chain Bias Summary")
 
-# Index Selection
-index_choice = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY"], index=0)
-
-# Display IST time and trading status
-ist_now = get_ist_time()
-trading_active = is_trading_hours()
-
-col_time1, col_time2 = st.columns(2)
-with col_time1:
-    st.caption(f"IST Time: {ist_now.strftime('%Y-%m-%d %H:%M:%S')}")
-with col_time2:
-    if trading_active:
-        st.caption("🟢 Market Open | Auto-refresh: Every 60 seconds")
-    else:
-        st.caption("🔴 Market Closed | Trading Hours: Mon-Fri 9:00 AM - 3:45 PM IST")
+# Display last update time
+st.caption(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Auto-refresh: Every 60 seconds")
 
 # Telegram status
 with st.sidebar:
@@ -185,14 +152,8 @@ with st.sidebar:
         st.warning("⚠️ Telegram Not Configured")
         st.code("Add to .streamlit/secrets.toml:\nTELEGRAM_BOT_TOKEN = 'your_token'\nTELEGRAM_CHAT_ID = 'your_chat_id'")
 
-# Check if trading hours
-if not trading_active:
-    st.warning("⚠️ Market is currently closed. Data fetching is disabled outside trading hours (Mon-Fri 9:00 AM - 3:45 PM IST).")
-    st.info(f"Current IST Time: {ist_now.strftime('%A, %d %B %Y %H:%M:%S')}")
-    st.stop()
-
 try:
-    df, underlying, atm_strike = fetch_option_chain(index_choice)
+    df, underlying, atm_strike = fetch_option_chain()
     
     # Display key metrics at top
     col1, col2, col3 = st.columns(3)
@@ -201,8 +162,7 @@ try:
     with col2:
         st.metric("ATM Strike", f"{atm_strike}")
     with col3:
-        strike_interval = 50 if index_choice == "NIFTY" else 100
-        st.metric("Strikes Range", f"{atm_strike - strike_interval*2} to {atm_strike + strike_interval*2}")
+        st.metric("Strikes Range", f"{atm_strike-100} to {atm_strike+100}")
     
     results = []
     for _, row in df.iterrows():
@@ -343,7 +303,7 @@ try:
             
             if alert_key not in st.session_state.last_alert:
                 message = f"""
-🚨 <b>{index_choice} TRADING ALERT</b> 🚨
+🚨 <b>NIFTY TRADING ALERT</b> 🚨
 
 <b>Signal:</b> {signal}
 <b>BUY:</b> {option_type}
@@ -366,7 +326,7 @@ try:
 <b>Trade Suggestion:</b> {atm['Scalp/Moment']}
 <b>Entry:</b> {atm['Operator Entry']}
 
-Time (IST): {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 """
                 send_telegram_alert(message)
                 st.session_state.last_alert[alert_key] = time.time()
