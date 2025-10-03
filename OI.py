@@ -1,468 +1,566 @@
 import streamlit as st
-import pandas as pd
+from streamlit_autorefresh import st_autorefresh
 import requests
-import time
-import datetime
-from supabase import create_client
+import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import datetime
+import pytz
 import numpy as np
+import math
+from scipy.stats import norm
+from datetime import datetime, timedelta
+import json
+import base64
+import hmac
+import hashlib
+import struct
+import time
 
-# --- Streamlit Config ---
-st.set_page_config(page_title="Nifty Option Screener – Intraday Fresh PCR", layout="wide")
+# Page config
+st.set_page_config(page_title="Nifty Analyzer", page_icon="📈", layout="wide")
 
-# --- Market Hours Check ---
-def is_market_open():
-    now_utc = datetime.datetime.utcnow()
-    ist_offset = datetime.timedelta(hours=5, minutes=30)
-    now_ist = now_utc + ist_offset
-    # Weekday: Monday=0, Friday=4
-    if now_ist.weekday() > 4:
+# Function to check if it's market hours
+def is_market_hours():
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    
+    # Check if it's a weekday (Monday to Friday)
+    if now.weekday() >= 5:  # 5=Saturday, 6=Sunday
         return False
-    market_open = datetime.time(9, 0)
-    market_close = datetime.time(18, 40)
-    return market_open <= now_ist.time() <= market_close
+    
+    # Check if current time is between 9:00 AM and 3:45 PM IST
+    market_start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    market_end = now.replace(hour=15, minute=45, second=0, microsecond=0)
+    
+    return market_start <= now <= market_end
 
-if not is_market_open():
-    st.warning("⛔ Market is closed. Data fetch only runs Monday-Friday 9:00–15:40 IST.")
-    st.stop()
+# Only run autorefresh during market hours
+if is_market_hours():
+    st_autorefresh(interval=35000, key="refresh")
+else:
+    st.info("Market is closed. Auto-refresh disabled.")
 
-# Strike range selector
-strike_range = st.sidebar.slider("📏 Strike Range (±)", 200, 1000, 500, 50)
+# Credentials
+ANGEL_CLIENT_CODE = st.secrets.get("ANGEL_CLIENT_CODE", "")
+ANGEL_PIN = st.secrets.get("ANGEL_PIN", "")
+ANGEL_TOTP = st.secrets.get("ANGEL_TOTP", "")
+ANGEL_API_KEY = st.secrets.get("ANGEL_API_KEY", "")
+TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
 
-# --- Auto Refresh ---
-def auto_refresh(interval_sec=60):
-    if "last_refresh" not in st.session_state:
-        st.session_state["last_refresh"] = time.time()
-    if time.time() - st.session_state["last_refresh"] > interval_sec:
-        st.session_state["last_refresh"] = time.time()
-        st.rerun()
-auto_refresh(60)
+# Angel One Constants
+NIFTY_TOKEN = "99926000"  # Nifty token from master data
+NIFTY_EXCHANGE = "NSE"
 
-# --- Telegram Setup ---
-def send_telegram_message(message):
+def generate_totp(secret_key):
+    """Generate TOTP code from base32 secret key"""
+    if not secret_key:
+        return ""
+    
     try:
-        bot_token = st.secrets["TELEGRAM"]["BOT_TOKEN"]
-        chat_id = st.secrets["TELEGRAM"]["CHAT_ID"]
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
-        response = requests.post(url, json=payload)
-        return response.status_code == 200
-    except Exception as e:
-        st.error(f"Failed to send Telegram message: {e}")
-        return False
-
-# --- Supabase Setup ---
-supabase_url = st.secrets["supabase"]["url"]
-supabase_key = st.secrets["supabase"]["key"]
-supabase = create_client(supabase_url, supabase_key)
-
-# --- Enhanced Log PCR to Supabase (with fresh OI data) ---
-def log_pcr(expiry, underlying, atm_strike, pcr, total_ce_oi, total_pe_oi, fresh_pcr, fresh_ce_oi, fresh_pe_oi):
-    try:
-        data = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "expiry": expiry,
-            "underlying": underlying,
-            "atm_strike": atm_strike,
-            "pcr": pcr,
-            "total_ce_oi": int(total_ce_oi),
-            "total_pe_oi": int(total_pe_oi),
-            "fresh_pcr": fresh_pcr,
-            "fresh_ce_oi": int(fresh_ce_oi),
-            "fresh_pe_oi": int(fresh_pe_oi)
-        }
-        supabase.table("nifty_pcr_logs").insert(data).execute()
-    except Exception as e:
-        st.error(f"Supabase logging failed: {e}")
-
-# --- Fetch Option Chain ---
-@st.cache_data(ttl=180)
-def fetch_option_chain():
-    url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        s = requests.Session()
-        s.get("https://www.nseindia.com", headers=headers)
-        r = s.get(url, headers=headers, timeout=3)
-        return r.json()
+        # Decode base32 secret
+        key = base64.b32decode(secret_key, casefold=True)
+        
+        # Get current time step (30 second intervals)
+        time_step = int(time.time()) // 30
+        
+        # Pack time step as big-endian 64-bit integer
+        time_bytes = struct.pack('>Q', time_step)
+        
+        # Generate HMAC-SHA1 hash
+        hmac_hash = hmac.new(key, time_bytes, hashlib.sha1).digest()
+        
+        # Dynamic truncation
+        offset = hmac_hash[-1] & 0x0f
+        code = struct.unpack('>I', hmac_hash[offset:offset+4])[0]
+        code &= 0x7fffffff
+        code %= 1000000
+        
+        return f"{code:06d}"
     except:
-        st.warning("⚠️ Could not fetch data from NSE.")
-        return None
+        return ""
 
-# --- Fetch Data ---
-data = fetch_option_chain()
-if data is None: st.stop()
-raw_data = data['records']['data']
-expiry_list = data['records']['expiryDates']
-underlying = data['records'].get('underlyingValue', 0)
-selected_expiry = st.sidebar.selectbox("📅 Select Expiry Date", expiry_list)
-
-# --- CE & PE Data ---
-ce_list, pe_list = [], []
-for item in raw_data:
-    if item.get("expiryDate") == selected_expiry:
-        strike = item.get("strikePrice", 0)
-        if "CE" in item:
-            ce = item["CE"]
-            ce_list.append({
-                "strikePrice": strike,
-                "OI_CE": ce.get("openInterest", 0),
-                "Chg_OI_CE": ce.get("changeinOpenInterest", 0),
-                "Vol_CE": ce.get("totalTradedVolume", 0),
-            })
-        if "PE" in item:
-            pe = item["PE"]
-            pe_list.append({
-                "strikePrice": strike,
-                "OI_PE": pe.get("openInterest", 0),
-                "Chg_OI_PE": pe.get("changeinOpenInterest", 0),
-                "Vol_PE": pe.get("totalTradedVolume", 0),
-            })
-
-df_ce = pd.DataFrame(ce_list)
-df_pe = pd.DataFrame(pe_list)
-
-# --- ATM Strike & Filter ---
-atm_strike = min(df_ce['strikePrice'], key=lambda x: abs(x - underlying))
-df_ce = df_ce[(df_ce["strikePrice"] >= atm_strike - strike_range) & (df_ce["strikePrice"] <= atm_strike + strike_range)]
-df_pe = df_pe[(df_pe["strikePrice"] >= atm_strike - strike_range) & (df_pe["strikePrice"] <= atm_strike + strike_range)]
-
-# --- PCR Calculations (Both Total and Fresh) ---
-# Total PCR (your original)
-total_ce_oi = df_ce["OI_CE"].sum()
-total_pe_oi = df_pe["OI_PE"].sum()
-pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0
-if "previous_pcr" not in st.session_state: st.session_state.previous_pcr = pcr
-pcr_change = pcr - st.session_state.previous_pcr
-st.session_state.previous_pcr = pcr
-
-# Fresh PCR (based on OI changes)
-fresh_ce_oi = df_ce["Chg_OI_CE"].sum()
-fresh_pe_oi = df_pe["Chg_OI_PE"].sum()
-fresh_pcr = round(fresh_pe_oi / fresh_ce_oi, 2) if fresh_ce_oi > 0 else 0
-if "previous_fresh_pcr" not in st.session_state: st.session_state.previous_fresh_pcr = fresh_pcr
-fresh_pcr_change = fresh_pcr - st.session_state.previous_fresh_pcr
-st.session_state.previous_fresh_pcr = fresh_pcr
-
-# Volume PCR
-total_ce_vol = df_ce["Vol_CE"].sum()
-total_pe_vol = df_pe["Vol_PE"].sum()
-pcr_vol = round(total_pe_vol / total_ce_vol, 2) if total_ce_vol > 0 else 0
-
-# --- Session-wise Fresh OI Tracking ---
-def get_current_session():
-    now_utc = datetime.datetime.utcnow()
-    ist_offset = datetime.timedelta(hours=5, minutes=30)
-    now_ist = now_utc + ist_offset
-    current_time = now_ist.time()
-    
-    if datetime.time(9,15) <= current_time < datetime.time(12,30): 
-        return "Morning"
-    elif datetime.time(12,30) <= current_time < datetime.time(14,30): 
-        return "Afternoon"
-    elif datetime.time(14,30) <= current_time <= datetime.time(15,40): 
-        return "Closing"
-    else: 
-        return "Off Hours"
-
-current_session = get_current_session()
-
-# Initialize session OI tracking
-if "session_oi_start" not in st.session_state:
-    st.session_state.session_oi_start = {}
-if "last_session" not in st.session_state:
-    st.session_state.last_session = current_session
-
-# Reset OI tracking when session changes
-if st.session_state.last_session != current_session:
-    st.session_state.session_oi_start[current_session] = {
-        "ce_oi": total_ce_oi,
-        "pe_oi": total_pe_oi,
-        "timestamp": datetime.datetime.now()
-    }
-    st.session_state.last_session = current_session
-
-# Calculate session-wise fresh PCR
-session_fresh_pcr = 0
-if current_session in st.session_state.session_oi_start:
-    start_ce_oi = st.session_state.session_oi_start[current_session]["ce_oi"]
-    start_pe_oi = st.session_state.session_oi_start[current_session]["pe_oi"]
-    
-    session_fresh_ce = total_ce_oi - start_ce_oi
-    session_fresh_pe = total_pe_oi - start_pe_oi
-    
-    session_fresh_pcr = round(session_fresh_pe / session_fresh_ce, 2) if session_fresh_ce > 0 else 0
-else:
-    # Initialize for current session
-    st.session_state.session_oi_start[current_session] = {
-        "ce_oi": total_ce_oi,
-        "pe_oi": total_pe_oi,
-        "timestamp": datetime.datetime.now()
-    }
-
-# --- Max Pain calculation ---
-def calculate_max_pain():
-    strikes = df_ce['strikePrice'].tolist()
-    max_pain_strike = None
-    min_total_oi = float('inf')
-    
-    for strike in strikes:
-        ce_oi = df_ce[df_ce['strikePrice'] >= strike]['OI_CE'].sum()
-        pe_oi = df_pe[df_pe['strikePrice'] <= strike]['OI_PE'].sum()
-        total_oi = ce_oi + pe_oi
-        if total_oi < min_total_oi:
-            min_total_oi = total_oi
-            max_pain_strike = strike
-    return max_pain_strike
-
-max_pain = calculate_max_pain()
-
-# --- Auto-alert for extreme PCR ---
-if "extreme_alerted" not in st.session_state:
-    st.session_state.extreme_alerted = []
-
-current_time = datetime.datetime.now().strftime('%H:%M')
-if fresh_pcr > 1.5 and f"FRESH_HIGH-{current_time[:4]}" not in st.session_state.extreme_alerted:
-    msg = f"🚨 EXTREME FRESH PCR HIGH: {fresh_pcr}\nSpot: {underlying}\nTime: {current_time}"
-    if send_telegram_message(msg):
-        st.session_state.extreme_alerted.append(f"FRESH_HIGH-{current_time[:4]}")
-
-if fresh_pcr < 0.5 and f"FRESH_LOW-{current_time[:4]}" not in st.session_state.extreme_alerted:
-    msg = f"🚨 EXTREME FRESH PCR LOW: {fresh_pcr}\nSpot: {underlying}\nTime: {current_time}"
-    if send_telegram_message(msg):
-        st.session_state.extreme_alerted.append(f"FRESH_LOW-{current_time[:4]}")
-
-# --- Log to Supabase (with fresh data) ---
-log_pcr(selected_expiry, underlying, atm_strike, pcr, total_ce_oi, total_pe_oi, fresh_pcr, fresh_ce_oi, fresh_pe_oi)
-
-# --- Enhanced Dashboard ---
-st.title("📊 NIFTY Option Screener – Fresh Intraday PCR")
-
-# Primary metrics
-col1, col2, col3, col4, col5 = st.columns(5)
-with col1: st.metric("📈 NIFTY Spot", f"{underlying:.1f}")
-with col2: st.metric("📉 Total PCR", pcr, delta=round(pcr_change,2))
-with col3: st.metric("🔥 Fresh PCR", fresh_pcr, delta=round(fresh_pcr_change,2))
-with col4: st.metric("📊 Volume PCR", pcr_vol)
-with col5: st.metric("🎯 ATM Strike", atm_strike)
-
-# Secondary metrics
-col1, col2, col3, col4 = st.columns(4)
-with col1: st.metric("💥 Max Pain", max_pain)
-with col2: st.metric(f"📅 {current_session} Fresh PCR", session_fresh_pcr)
-with col3: 
-    fresh_sentiment = "🟢 Fresh Bullish" if fresh_pcr > 1.2 else "🔴 Fresh Bearish" if fresh_pcr < 0.8 else "🟡 Fresh Neutral"
-    st.write(f"**{fresh_sentiment}**")
-with col4: 
-    if fresh_ce_oi > 0:
-        st.metric("🆕 Fresh CE OI", f"{fresh_ce_oi:,}")
-    if fresh_pe_oi > 0:
-        st.metric("🆕 Fresh PE OI", f"{fresh_pe_oi:,}")
-
-# Enhanced sentiment display
-col1, col2 = st.columns(2)
-with col1:
-    if pcr > 1.2: st.success("🟢 Total PCR: Bullish")
-    elif pcr < 0.8: st.error("🔴 Total PCR: Bearish")
-    else: st.warning("🟡 Total PCR: Neutral")
-
-with col2:
-    if st.button("📨 Send Telegram Signal"):
-        msg = f"""📊 <b>NIFTY PCR Alert</b>
-
-💹 Spot: {underlying:.1f}
-📉 Total PCR: {pcr}
-🔥 Fresh PCR: {fresh_pcr}
-📊 Volume PCR: {pcr_vol}
-🎯 ATM: {atm_strike}
-💥 Max Pain: {max_pain}
-📅 {current_session} Session Fresh PCR: {session_fresh_pcr}
-⏰ {datetime.datetime.now().strftime('%H:%M')}"""
-        send_telegram_message(msg)
-
-# --- Fresh OI Analysis Table ---
-st.markdown("### 🔥 Fresh OI Analysis")
-fresh_analysis = pd.DataFrame({
-    "Metric": ["Fresh CE OI", "Fresh PE OI", "Fresh PCR", "Session Fresh PCR"],
-    "Value": [f"{fresh_ce_oi:,}", f"{fresh_pe_oi:,}", fresh_pcr, session_fresh_pcr],
-    "Interpretation": [
-        "🔴 Bearish if high" if fresh_ce_oi > fresh_pe_oi else "🟢 Bullish signal",
-        "🟢 Bullish if high" if fresh_pe_oi > fresh_ce_oi else "🔴 Bearish signal", 
-        "🟢 Bullish" if fresh_pcr > 1.2 else "🔴 Bearish" if fresh_pcr < 0.8 else "🟡 Neutral",
-        f"🟢 {current_session} Bullish" if session_fresh_pcr > 1.2 else f"🔴 {current_session} Bearish" if session_fresh_pcr < 0.8 else f"🟡 {current_session} Neutral"
-    ]
-})
-st.dataframe(fresh_analysis, use_container_width=True)
-
-# --- Merge & Display Option Chain ---
-merged_df = pd.merge(df_ce, df_pe, on="strikePrice", how="outer").sort_values("strikePrice")
-merged_df["IV_CE"], merged_df["IV_PE"] = 12.5, 13.2
-def price_tag(iv): return "🟢 Cheap" if iv<10 else "🔴 Expensive" if iv>15 else "🟡 Fair"
-merged_df["Price_Tag_CE"] = merged_df["IV_CE"].apply(price_tag)
-merged_df["Price_Tag_PE"] = merged_df["IV_PE"].apply(price_tag)
-
-# Highlight ATM row and fresh OI changes
-def highlight_rows(row):
-    styles = [''] * len(row)
-    if row["strikePrice"] == atm_strike:
-        styles = ['background-color: yellow'] * len(row)
-    
-    # Highlight significant fresh OI
-    if abs(row.get("Chg_OI_CE", 0)) > 10000:
-        styles[merged_df.columns.get_loc("Chg_OI_CE")] = 'background-color: lightcoral'
-    if abs(row.get("Chg_OI_PE", 0)) > 10000:
-        styles[merged_df.columns.get_loc("Chg_OI_PE")] = 'background-color: lightgreen'
-    
-    return styles
-
-st.markdown("### 🧾 Option Chain (Fresh OI Highlighted)")
-st.markdown("*🟡 = ATM Strike, 🔴 = High CE OI Change, 🟢 = High PE OI Change*")
-styled_df = merged_df.style.apply(highlight_rows, axis=1)
-st.dataframe(styled_df, use_container_width=True)
-
-# --- Enhanced Intraday Analysis with Fresh PCR ---
-def fetch_today_logs():
-    today = datetime.datetime.now().date().isoformat()
-    res = supabase.table("nifty_pcr_logs").select("*").gte("timestamp", today).order("timestamp").execute()
-    return pd.DataFrame(res.data)
-
-logs_df = fetch_today_logs()
-if not logs_df.empty:
-    logs_df["timestamp"] = pd.to_datetime(logs_df["timestamp"])
-    
-    def get_session(time):
-        if datetime.time(9,15) <= time < datetime.time(12,30): return "Morning"
-        elif datetime.time(12,30) <= time < datetime.time(14,30): return "Afternoon"
-        elif datetime.time(14,30) <= time <= datetime.time(15,40): return "Closing"
-        else: return "Off Hours"
-    
-    logs_df["session"] = logs_df["timestamp"].dt.time.apply(get_session)
-    logs_df = logs_df[logs_df["session"] != "Off Hours"]
-
-    st.markdown("### 📈 Intraday PCR Trends")
-    
-    # Dual chart - Total PCR vs Fresh PCR
-    fig = go.Figure()
-    
-    # Total PCR
-    fig.add_trace(go.Scatter(
-        x=logs_df["timestamp"], 
-        y=logs_df["pcr"], 
-        mode='lines+markers', 
-        name='Total PCR',
-        line=dict(color='blue', width=2)
-    ))
-    
-    # Fresh PCR (if available)
-    if 'fresh_pcr' in logs_df.columns:
-        fig.add_trace(go.Scatter(
-            x=logs_df["timestamp"], 
-            y=logs_df["fresh_pcr"], 
-            mode='lines+markers', 
-            name='Fresh PCR',
-            line=dict(color='red', width=2, dash='dash')
-        ))
-    
-    # Reference lines
-    fig.add_hline(y=1.2, line_dash="dash", line_color="green", annotation_text="Bullish")
-    fig.add_hline(y=0.8, line_dash="dash", line_color="red", annotation_text="Bearish")
-    
-    fig.update_layout(
-        height=500, 
-        title="Total PCR vs Fresh PCR",
-        xaxis_title="Time", 
-        yaxis_title="PCR",
-        legend=dict(x=0.01, y=0.99)
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Session Analysis
-    if 'fresh_pcr' in logs_df.columns:
-        session_stats = logs_df.groupby("session").agg({
-            "pcr": "mean",
-            "fresh_pcr": "mean"
-        }).round(3)
+class AngelOneAPI:
+    def __init__(self):
+        self.base_url = "https://apiconnect.angelone.in"
+        self.jwt_token = None
+        self.refresh_token = None
+        self.feed_token = None
+        self.headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-UserType': 'USER',
+            'X-SourceID': 'WEB',
+            'X-ClientLocalIP': '127.0.0.1',
+            'X-ClientPublicIP': '127.0.0.1',
+            'X-MACAddress': '00:00:00:00:00:00',
+            'X-PrivateKey': ANGEL_API_KEY
+        }
+        self.authenticated = False
         
-        st.markdown("### 📊 Session-wise Analysis")
-        col1, col2, col3 = st.columns(3)
-        
-        sessions = ["Morning", "Afternoon", "Closing"]
-        cols = [col1, col2, col3]
-        
-        for i, session in enumerate(sessions):
-            if session in session_stats.index:
-                with cols[i]:
-                    st.metric(f"🕐 {session} Total PCR", session_stats.loc[session, "pcr"])
-                    st.metric(f"🔥 {session} Fresh PCR", session_stats.loc[session, "fresh_pcr"])
-        
-        # Enhanced Sentiment Flip Detection (using Fresh PCR)
-        st.markdown("### 🔄 Fresh PCR Sentiment Flips")
-        
-        flips = []
-        sessions_order = ["Morning", "Afternoon", "Closing"]
-        
-        if "fresh_sentiment_flips_alerted" not in st.session_state:
-            st.session_state.fresh_sentiment_flips_alerted = []
-        
-        for i in range(len(sessions_order) - 1):
-            s1, s2 = sessions_order[i], sessions_order[i + 1]
+    def login(self, manual_totp=""):
+        """Authenticate with Angel One API"""
+        if not ANGEL_CLIENT_CODE or not ANGEL_PIN or not ANGEL_API_KEY:
+            st.error("Missing Angel One credentials in secrets")
+            return False
             
-            if s1 in session_stats.index and s2 in session_stats.index:
-                p1, p2 = session_stats.loc[s1, "fresh_pcr"], session_stats.loc[s2, "fresh_pcr"]
-                flip_text = None
-                
-                if p1 > 1.1 and p2 < 0.9:
-                    flip_text = f"⚠️ Fresh Bullish ({s1}) → Fresh Bearish ({s2})"
-                elif p1 < 0.9 and p2 > 1.1:
-                    flip_text = f"✅ Fresh Bearish ({s1}) → Fresh Bullish ({s2})"
-                elif abs(p1 - p2) > 0.4:
-                    direction = "📈" if p2 > p1 else "📉"
-                    flip_text = f"{direction} Fresh PCR shift: {s1} ({p1:.2f}) → {s2} ({p2:.2f})"
-                
-                if flip_text:
-                    flips.append(flip_text)
-                    
-                    # Auto-alert for major fresh flips
-                    if flip_text not in st.session_state.fresh_sentiment_flips_alerted and ("Fresh Bullish → Fresh Bearish" in flip_text or "Fresh Bearish → Fresh Bullish" in flip_text):
-                        message = f"""🚨 <b>Fresh PCR Flip Alert</b>
-                        
-{flip_text}
-💹 Current Spot: {underlying:.2f}
-⏰ Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
-                        
-                        if send_telegram_message(message):
-                            st.session_state.fresh_sentiment_flips_alerted.append(flip_text)
-                            st.success(f"📱 Fresh PCR Auto-alert sent: {flip_text}")
+        url = f"{self.base_url}/rest/auth/angelbroking/user/v1/loginByPassword"
         
-        for flip in flips:
-            if "Fresh Bullish → Fresh Bearish" in flip or "Fresh Bearish → Fresh Bullish" in flip:
-                st.warning(flip)
+        # Use manual TOTP if provided, otherwise generate from secret
+        totp_code = manual_totp if manual_totp else generate_totp(ANGEL_TOTP)
+        
+        payload = {
+            "clientcode": ANGEL_CLIENT_CODE,
+            "password": ANGEL_PIN,
+            "totp": totp_code,
+            "state": "live"
+        }
+        
+        try:
+            # Debug: Show generated TOTP
+            if totp_code:
+                st.sidebar.info(f"Generated TOTP: {totp_code}")
+            
+            response = requests.post(url, headers=self.headers, json=payload)
+            data = response.json()
+            
+            # Debug: Show full response
+            st.sidebar.write("API Response:", data)
+            
+            if data.get('status') and data.get('data'):
+                self.jwt_token = data['data']['jwtToken']
+                self.refresh_token = data['data']['refreshToken']
+                self.feed_token = data['data']['feedToken']
+                self.authenticated = True
+                return True
             else:
-                st.info(flip)
+                st.error(f"Login failed: {data.get('message', 'Unknown error')}")
+                return False
+        except Exception as e:
+            st.error(f"Login error: {str(e)}")
+            return False
+    
+    def get_auth_headers(self):
+        """Get headers with authorization"""
+        headers = self.headers.copy()
+        if self.jwt_token:
+            headers['Authorization'] = f'Bearer {self.jwt_token}'
+        return headers
+    
+    def get_historical_data(self, interval="FIVE_MINUTE", days_back=1, manual_totp=""):
+        """Get historical candlestick data"""
+        if not self.authenticated and not self.login(manual_totp):
+            return None
+            
+        url = f"{self.base_url}/rest/secure/angelbroking/historical/v1/getCandleData"
         
-        if not flips:
-            st.success("✅ No significant fresh PCR flips detected today.")
+        ist = pytz.timezone('Asia/Kolkata')
+        end_date = datetime.now(ist)
+        start_date = end_date - timedelta(days=days_back)
+        
+        payload = {
+            "exchange": NIFTY_EXCHANGE,
+            "symboltoken": NIFTY_TOKEN,
+            "interval": interval,
+            "fromdate": start_date.strftime("%Y-%m-%d %H:%M"),
+            "todate": end_date.strftime("%Y-%m-%d %H:%M")
+        }
+        
+        try:
+            response = requests.post(url, headers=self.get_auth_headers(), json=payload)
+            data = response.json()
+            
+            if data.get('status') and data.get('data'):
+                return data['data']
+            else:
+                st.error(f"Historical data error: {data.get('message', 'Unknown error')}")
+                return None
+        except Exception as e:
+            st.error(f"Historical data error: {str(e)}")
+            return None
+    
+    def get_ltp_data(self, manual_totp=""):
+        """Get Last Traded Price"""
+        if not self.authenticated and not self.login(manual_totp):
+            return None
+            
+        url = f"{self.base_url}/rest/secure/angelbroking/market/v1/quote/"
+        
+        payload = {
+            "mode": "LTP",
+            "exchangeTokens": {
+                NIFTY_EXCHANGE: [NIFTY_TOKEN]
+            }
+        }
+        
+        try:
+            response = requests.post(url, headers=self.get_auth_headers(), json=payload)
+            data = response.json()
+            
+            if data.get('status') and data.get('data', {}).get('fetched'):
+                return data['data']['fetched'][0]
+            else:
+                return None
+        except Exception as e:
+            st.error(f"LTP error: {str(e)}")
+            return None
 
-else:
-    st.info("📊 No intraday data available yet. Fresh PCR data will appear as the day progresses.")
+def send_telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except:
+        pass
 
-# --- Enhanced Sidebar Info ---
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔥 Fresh PCR Status")
-st.sidebar.write(f"⏰ Last Update: {datetime.datetime.now().strftime('%H:%M:%S')}")
-st.sidebar.write(f"📈 Underlying: {underlying:.1f}")
-st.sidebar.write(f"🎯 ATM Strike: {atm_strike}")
-st.sidebar.write(f"💥 Max Pain: {max_pain}")
-st.sidebar.write(f"📅 Current Session: {current_session}")
-st.sidebar.write(f"🔥 Fresh PCR: {fresh_pcr}")
-st.sidebar.write(f"📅 Session Fresh PCR: {session_fresh_pcr}")
+def process_candle_data(data):
+    """Process Angel One historical data format: [timestamp, open, high, low, close, volume]"""
+    if not data:
+        return pd.DataFrame()
+    
+    df_data = []
+    for candle in data:
+        if len(candle) >= 6:
+            df_data.append({
+                'timestamp': pd.to_datetime(candle[0]),
+                'open': float(candle[1]),
+                'high': float(candle[2]),
+                'low': float(candle[3]),
+                'close': float(candle[4]),
+                'volume': int(candle[5]) if candle[5] else 0
+            })
+    
+    if not df_data:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(df_data)
+    ist = pytz.timezone('Asia/Kolkata')
+    df['datetime'] = pd.to_datetime(df['timestamp']).dt.tz_convert(ist)
+    return df
 
-st.sidebar.markdown("### 📊 PCR Levels")
-st.sidebar.write("🟢 Bullish: PCR > 1.2")
-st.sidebar.write("🔴 Bearish: PCR < 0.8")
-st.sidebar.write("🟡 Neutral: 0.8-1.2")
+def calculate_rsi(data, period=14):
+    """Calculate RSI indicator"""
+    delta = data['close'].diff()
+    
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    return rsi
 
-st.sidebar.markdown("### 🔥 Fresh vs Total PCR")
-st.sidebar.write("**Total PCR**: Overall market positioning")
-st.sidebar.write("**Fresh PCR**: New positions today")
-st.sidebar.write("**Session Fresh**: New positions this session")
+def get_pivots(df, timeframe="FIVE_MINUTE", length=4):
+    """Get pivot points from price data"""
+    if df.empty:
+        return []
+    
+    # Map timeframe to pandas resample rule
+    rule_map = {
+        "THREE_MINUTE": "3min", 
+        "FIVE_MINUTE": "5min", 
+        "TEN_MINUTE": "10min", 
+        "FIFTEEN_MINUTE": "15min"
+    }
+    rule = rule_map.get(timeframe, "5min")
+    
+    df_temp = df.set_index('datetime')
+    try:
+        resampled = df_temp.resample(rule).agg({
+            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
+        }).dropna()
+        
+        if len(resampled) < length * 2 + 1:
+            return []
+        
+        max_vals = resampled['high'].rolling(window=length*2+1, center=True).max()
+        min_vals = resampled['low'].rolling(window=length*2+1, center=True).min()
+        
+        pivots = []
+        for timestamp, value in resampled['high'][resampled['high'] == max_vals].items():
+            pivots.append({'type': 'high', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
+        
+        for timestamp, value in resampled['low'][resampled['low'] == min_vals].items():
+            pivots.append({'type': 'low', 'timeframe': timeframe, 'timestamp': timestamp, 'value': value})
+        
+        return pivots
+    except:
+        return []
+
+def create_chart(df, title):
+    """Create candlestick chart with RSI and volume"""
+    if df.empty:
+        return go.Figure()
+    
+    # Calculate RSI
+    df['rsi'] = calculate_rsi(df)
+    
+    # Create subplots with 3 rows (price, volume, RSI)
+    fig = make_subplots(
+        rows=3, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.05, 
+        row_heights=[0.6, 0.2, 0.2],
+        subplot_titles=('Price', 'Volume', 'RSI')
+    )
+    
+    # Price chart
+    fig.add_trace(go.Candlestick(
+        x=df['datetime'], open=df['open'], high=df['high'], 
+        low=df['low'], close=df['close'], name='Nifty',
+        increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
+    ), row=1, col=1)
+    
+    # Volume chart
+    volume_colors = ['#00ff88' if close >= open else '#ff4444' 
+                    for close, open in zip(df['close'], df['open'])]
+    fig.add_trace(go.Bar(
+        x=df['datetime'], y=df['volume'], name='Volume',
+        marker_color=volume_colors, opacity=0.7
+    ), row=2, col=1)
+    
+    # RSI chart
+    fig.add_trace(go.Scatter(
+        x=df['datetime'], y=df['rsi'], name='RSI',
+        line=dict(color='#ff9900', width=2)
+    ), row=3, col=1)
+    
+    # Add RSI reference lines
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    fig.add_hline(y=50, line_dash="dot", line_color="gray", row=3, col=1)
+    
+    # Add pivot levels
+    if len(df) > 50:
+        timeframes = ["FIVE_MINUTE", "TEN_MINUTE", "FIFTEEN_MINUTE"]
+        colors = ["#ff9900", "#ff44ff", '#4444ff']
+        
+        for tf, color in zip(timeframes, colors):
+            pivots = get_pivots(df, tf)
+            x_start, x_end = df['datetime'].min(), df['datetime'].max()
+            
+            for pivot in pivots[-5:]:
+                fig.add_shape(type="line", x0=x_start, x1=x_end,
+                            y0=pivot['value'], y1=pivot['value'],
+                            line=dict(color=color, width=1, dash="dash"), row=1, col=1)
+    
+    fig.update_layout(title=title, template='plotly_dark', height=800,
+                     xaxis_rangeslider_visible=False, showlegend=False)
+    
+    # Update y-axis for RSI
+    fig.update_yaxes(title_text="RSI", range=[0, 100], row=3, col=1)
+    
+    return fig
+
+def create_mock_options_data(current_price):
+    """Create mock options data for demonstration (replace with actual Angel One options API when available)"""
+    if not current_price:
+        return None
+    
+    # Round to nearest 50 for ATM strike
+    atm_strike = round(current_price / 50) * 50
+    
+    strikes = [atm_strike - 100, atm_strike - 50, atm_strike, atm_strike + 50, atm_strike + 100]
+    
+    options_data = []
+    for strike in strikes:
+        # Mock data - replace with actual options chain API
+        ce_oi = np.random.randint(10000, 100000)
+        pe_oi = np.random.randint(10000, 100000)
+        ce_chg_oi = np.random.randint(-5000, 5000)
+        pe_chg_oi = np.random.randint(-5000, 5000)
+        
+        zone = 'ATM' if strike == atm_strike else 'ITM' if strike < current_price else 'OTM'
+        level = "Support" if pe_oi > 1.12 * ce_oi else "Resistance" if ce_oi > 1.12 * pe_oi else "Neutral"
+        
+        chg_oi_bias = "Bullish" if ce_chg_oi < pe_chg_oi else "Bearish"
+        volume_bias = "Bullish" if np.random.random() > 0.5 else "Bearish"
+        ask_bias = "Bullish" if np.random.random() > 0.5 else "Bearish"
+        bid_bias = "Bullish" if np.random.random() > 0.5 else "Bearish"
+        
+        options_data.append({
+            "Strike": strike,
+            "Zone": zone,
+            "Level": level,
+            "ChgOI_Bias": chg_oi_bias,
+            "Volume_Bias": volume_bias,
+            "Ask_Bias": ask_bias,
+            "Bid_Bias": bid_bias,
+            "PCR": round(pe_oi / ce_oi if ce_oi > 0 else 0, 2),
+            "changeinOpenInterest_CE": ce_chg_oi,
+            "changeinOpenInterest_PE": pe_chg_oi
+        })
+    
+    return pd.DataFrame(options_data)
+
+def check_signals(df, option_data, current_price, proximity=5):
+    """Check for trading signals"""
+    if df.empty or option_data is None or not current_price:
+        return
+    
+    # Calculate RSI
+    df['rsi'] = calculate_rsi(df)
+    current_rsi = df['rsi'].iloc[-1] if not df.empty else None
+    
+    atm_data = option_data[option_data['Zone'] == 'ATM']
+    if atm_data.empty:
+        return
+    
+    row = atm_data.iloc[0]
+    
+    ce_chg_oi = abs(row.get('changeinOpenInterest_CE', 0))
+    pe_chg_oi = abs(row.get('changeinOpenInterest_PE', 0))
+    
+    bias_aligned_bullish = (
+        row['ChgOI_Bias'] == 'Bullish' and 
+        row['Volume_Bias'] == 'Bullish' and
+        row['Ask_Bias'] == 'Bullish' and
+        row['Bid_Bias'] == 'Bullish'
+    )
+    
+    bias_aligned_bearish = (
+        row['ChgOI_Bias'] == 'Bearish' and 
+        row['Volume_Bias'] == 'Bearish' and
+        row['Ask_Bias'] == 'Bearish' and
+        row['Bid_Bias'] == 'Bearish'
+    )
+    
+    # PRIMARY SIGNAL
+    pivots = get_pivots(df, "FIVE_MINUTE") + get_pivots(df, "TEN_MINUTE") + get_pivots(df, "FIFTEEN_MINUTE")
+    near_pivot = False
+    pivot_level = None
+    
+    for pivot in pivots:
+        if abs(current_price - pivot['value']) <= proximity:
+            near_pivot = True
+            pivot_level = pivot
+            break
+    
+    if near_pivot:
+        primary_bullish_signal = (row['Level'] == 'Support' and bias_aligned_bullish)
+        primary_bearish_signal = (row['Level'] == 'Resistance' and bias_aligned_bearish)
+        
+        if primary_bullish_signal or primary_bearish_signal:
+            signal_type = "CALL" if primary_bullish_signal else "PUT"
+            price_diff = current_price - pivot_level['value']
+            
+            message = f"""
+🚨 PRIMARY NIFTY {signal_type} SIGNAL 🚨
+
+📍 Spot: ₹{current_price:.2f} ({'ABOVE' if price_diff > 0 else 'BELOW'} pivot by {price_diff:+.2f})
+📌 Pivot: {pivot_level['timeframe']} at ₹{pivot_level['value']:.2f}
+🎯 ATM: {row['Strike']}
+📊 RSI: {current_rsi:.2f}
+
+Conditions: {row['Level']}, All Bias Aligned
+ChgOI: {row['ChgOI_Bias']}, Volume: {row['Volume_Bias']}, Ask: {row['Ask_Bias']}, Bid: {row['Bid_Bias']}
+
+🕐 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S IST')}
+"""
+            send_telegram(message)
+            st.success(f"🔔 PRIMARY {signal_type} signal sent!")
+
+def main():
+    st.title("📈 Nifty Trading Analyzer (Angel One)")
+    
+    # Show market status
+    ist = pytz.timezone('Asia/Kolkata')
+    current_time = datetime.now(ist)
+    
+    if not is_market_hours():
+        st.warning(f"⚠️ Market is closed. Current time: {current_time.strftime('%H:%M:%S IST')}")
+        st.info("Market hours: Monday-Friday, 9:00 AM to 3:45 PM IST")
+    
+    st.sidebar.header("Settings")
+    
+    # TOTP input for manual entry
+    manual_totp = st.sidebar.text_input("TOTP Code (if 2FA enabled)", placeholder="123456", type="password")
+    
+    interval_map = {"1min": "ONE_MINUTE", "3min": "THREE_MINUTE", "5min": "FIVE_MINUTE", 
+                   "10min": "TEN_MINUTE", "15min": "FIFTEEN_MINUTE"}
+    interval_display = st.sidebar.selectbox("Timeframe", list(interval_map.keys()), index=2)
+    interval = interval_map[interval_display]
+    
+    proximity = st.sidebar.slider("Signal Proximity", 1, 20, 5)
+    enable_signals = st.sidebar.checkbox("Enable Signals", value=True)
+    
+    # Initialize API
+    api = AngelOneAPI()
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.header("Chart")
+        
+        # Get historical data
+        data = api.get_historical_data(interval, manual_totp=manual_totp)
+        df = process_candle_data(data) if data else pd.DataFrame()
+        
+        # Get current price
+        ltp_data = api.get_ltp_data(manual_totp=manual_totp)
+        current_price = ltp_data.get('ltp', 0) if ltp_data else None
+        
+        if current_price is None and not df.empty:
+            current_price = df['close'].iloc[-1]
+        
+        if not df.empty and len(df) > 1:
+            prev_close = df['close'].iloc[-2]
+            change = current_price - prev_close if current_price else 0
+            change_pct = (change / prev_close) * 100 if prev_close else 0
+            
+            # Calculate RSI
+            current_rsi = None
+            if not df.empty:
+                df['rsi'] = calculate_rsi(df)
+                current_rsi = df['rsi'].iloc[-1]
+            
+            col1_m, col2_m, col3_m, col4_m = st.columns(4)
+            with col1_m:
+                st.metric("Price", f"₹{current_price:,.2f}" if current_price else "N/A", 
+                         f"{change:+.2f} ({change_pct:+.2f}%)" if current_price else None)
+            with col2_m:
+                st.metric("High", f"₹{df['high'].max():,.2f}")
+            with col3_m:
+                st.metric("Low", f"₹{df['low'].min():,.2f}")
+            with col4_m:
+                st.metric("RSI", f"{current_rsi:.2f}" if current_rsi is not None else "N/A")
+        
+        if not df.empty:
+            fig = create_chart(df, f"Nifty {interval_display}")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.error("No chart data available - check Angel One credentials and connection")
+    
+    with col2:
+        st.header("Options (Mock Data)")
+        st.info("Note: This uses mock options data. Integrate with Angel One options chain API when available.")
+        
+        option_summary = create_mock_options_data(current_price)
+        
+        if option_summary is not None:
+            st.info(f"Spot: ₹{current_price:.2f}" if current_price else "Price: N/A")
+            st.dataframe(option_summary, use_container_width=True)
+            
+            if enable_signals and not df.empty and is_market_hours():
+                check_signals(df, option_summary, current_price, proximity)
+        else:
+            st.error("Options data unavailable")
+    
+    # Status information
+    current_time = datetime.now(ist).strftime("%H:%M:%S IST")
+    st.sidebar.info(f"Updated: {current_time}")
+    
+    if api.authenticated:
+        st.sidebar.success("✅ Angel One Connected")
+    else:
+        st.sidebar.error("❌ Angel One Not Connected")
+    
+    if st.sidebar.button("Test Telegram"):
+        send_telegram("🔔 Test message from Nifty Analyzer (Angel One)")
+        st.sidebar.success("Test sent!")
+
+if __name__ == "__main__":
+    main()
