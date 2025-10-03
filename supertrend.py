@@ -25,7 +25,7 @@ def is_trading_hours():
     
     current_time = now.time()
     market_open = datetime.strptime("09:00", "%H:%M").time()
-    market_close = datetime.strptime("15:45", "%H:%M").time()
+    market_close = datetime.strptime("17:45", "%H:%M").time()
     
     return market_open <= current_time <= market_close
 
