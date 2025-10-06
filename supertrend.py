@@ -214,7 +214,7 @@ try:
         row_data["Delta_Bias"] = "Bullish" if abs(row.get('Delta_CE', 0)) > abs(row.get('Delta_PE', 0)) else "Bearish"
         row_data["Gamma_Bias"] = "Bullish" if row.get('Gamma_CE', 0) > row.get('Gamma_PE', 0) else "Bearish"
         row_data["AskBid_Bias"] = "Bullish" if row.get('bidQty_CE', 0) > row.get('askQty_CE', 1) else "Bearish"
-        row_data["IV_Bias"] = "Bullish" if row.get('impliedVolatility_CE', 0) > row.get('impliedVolatility_PE', 0) else "Bearish"
+        row_data["IV_Bias"] = "Bullish" if row.get('impliedVolatility_CE', 0) < row.get('impliedVolatility_PE', 0) else "Bearish"
         
         delta_exp_ce = row.get('Delta_CE', 0) * row.get('openInterest_CE', 0)
         delta_exp_pe = row.get('Delta_PE', 0) * row.get('openInterest_PE', 0)
