@@ -9,7 +9,7 @@ import time
 import pytz
 
 # Page config
-st.set_page_config(page_title="Nifty Option Chain", layout="wide")
+st.set_page_config(page_title="Option Chain Analyzer", layout="wide")
 
 # IST timezone
 IST = pytz.timezone('Asia/Kolkata')
@@ -45,17 +45,6 @@ def send_telegram_alert(message):
             requests.post(url, json=payload, timeout=5)
         except:
             pass
-
-# Auto refresh every 1 minute during trading hours
-if 'last_refresh' not in st.session_state:
-    st.session_state.last_refresh = time.time()
-    st.session_state.last_alert = {}
-
-current_time = time.time()
-if current_time - st.session_state.last_refresh > 60:
-    st.session_state.last_refresh = current_time
-    if is_trading_hours():
-        st.rerun()
 
 # Greeks Calculation
 def calculate_greeks(option_type, S, K, T, r, sigma):
@@ -157,7 +146,15 @@ def fetch_option_chain():
     return df, underlying, atm_strike
 
 # Main App
-st.title("🔥 Nifty Option Chain Bias Summary")
+st.title("🔥 Option Chain Bias Summary")
+
+# Index Selection
+index_choice = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY"], index=0)
+
+# Auto-refresh logic
+if 'last_refresh' not in st.session_state:
+    st.session_state.last_refresh = time.time()
+    st.session_state.last_alert = {}
 
 # Display IST time and trading status
 ist_now = get_ist_time()
@@ -171,6 +168,14 @@ with col_time2:
         st.caption("🟢 Market Open | Auto-refresh: Every 60 seconds")
     else:
         st.caption("🔴 Market Closed | Trading Hours: Mon-Fri 9:00 AM - 3:45 PM IST")
+
+# Auto-refresh during trading hours
+if trading_active:
+    current_time = time.time()
+    if current_time - st.session_state.last_refresh >= 60:
+        st.session_state.last_refresh = current_time
+        time.sleep(1)
+        st.rerun()
 
 # Telegram status
 with st.sidebar:
@@ -189,7 +194,7 @@ if not trading_active:
     st.stop()
 
 try:
-    df, underlying, atm_strike = fetch_option_chain()
+    df, underlying, atm_strike = fetch_option_chain(index_choice)
     
     # Display key metrics at top
     col1, col2, col3 = st.columns(3)
@@ -198,7 +203,8 @@ try:
     with col2:
         st.metric("ATM Strike", f"{atm_strike}")
     with col3:
-        st.metric("Strikes Range", f"{atm_strike-100} to {atm_strike+100}")
+        strike_interval = 50 if index_choice == "NIFTY" else 100
+        st.metric("Strikes Range", f"{atm_strike - strike_interval*2} to {atm_strike + strike_interval*2}")
     
     results = []
     for _, row in df.iterrows():
@@ -339,7 +345,7 @@ try:
             
             if alert_key not in st.session_state.last_alert:
                 message = f"""
-🚨 <b>NIFTY TRADING ALERT</b> 🚨
+🚨 <b>{index_choice} TRADING ALERT</b> 🚨
 
 <b>Signal:</b> {signal}
 <b>BUY:</b> {option_type}
