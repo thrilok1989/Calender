@@ -159,18 +159,8 @@ def fetch_option_chain():
 # Main App
 st.title("🔥 Nifty Option Chain Bias Summary")
 
-# Display IST time and trading status
-ist_now = get_ist_time()
-trading_active = is_trading_hours()
-
-col_time1, col_time2 = st.columns(2)
-with col_time1:
-    st.caption(f"IST Time: {ist_now.strftime('%Y-%m-%d %H:%M:%S')}")
-with col_time2:
-    if trading_active:
-        st.caption("🟢 Market Open | Auto-refresh: Every 60 seconds")
-    else:
-        st.caption("🔴 Market Closed | Trading Hours: Mon-Fri 9:00 AM - 3:45 PM IST")
+# Display last update time
+st.caption(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Auto-refresh: Every 60 seconds")
 
 # Telegram status
 with st.sidebar:
@@ -181,12 +171,6 @@ with st.sidebar:
     else:
         st.warning("⚠️ Telegram Not Configured")
         st.code("Add to .streamlit/secrets.toml:\nTELEGRAM_BOT_TOKEN = 'your_token'\nTELEGRAM_CHAT_ID = 'your_chat_id'")
-
-# Check if trading hours
-if not trading_active:
-    st.warning("⚠️ Market is currently closed. Data fetching is disabled outside trading hours (Mon-Fri 9:00 AM - 3:45 PM IST).")
-    st.info(f"Current IST Time: {ist_now.strftime('%A, %d %B %Y %H:%M:%S')}")
-    st.stop()
 
 try:
     df, underlying, atm_strike = fetch_option_chain()
@@ -362,7 +346,7 @@ try:
 <b>Trade Suggestion:</b> {atm['Scalp/Moment']}
 <b>Entry:</b> {atm['Operator Entry']}
 
-Time (IST): {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 """
                 send_telegram_alert(message)
                 st.session_state.last_alert[alert_key] = time.time()
