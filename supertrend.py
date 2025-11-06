@@ -1,3 +1,4 @@
+I'll add a separate analysis section for ATM ±10 strikes (which covers a wider range of 21 strikes). Here's the enhanced code:
 import streamlit as st
 import requests
 import pandas as pd
@@ -144,17 +145,21 @@ def fetch_option_chain():
     
     df_ce = pd.DataFrame(calls)
     df_pe = pd.DataFrame(puts)
-    df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE'))
-    df = df.sort_values('strikePrice')
+    df_all = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE'))
+    df_all = df_all.sort_values('strikePrice')
     
     # Calculate ATM as nearest strike to spot price
     atm_strike = round(underlying / 50) * 50
     
     # Filter ATM ±2 strikes (±100 points for Nifty which has 50 point intervals)
-    df = df[df['strikePrice'].between(atm_strike - 100, atm_strike + 100)]
+    df = df_all[df_all['strikePrice'].between(atm_strike - 100, atm_strike + 100)].copy()
     df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < atm_strike else 'OTM')
     
-    return df, underlying, atm_strike
+    # Filter ATM ±10 strikes (±500 points)
+    df_wide = df_all[df_all['strikePrice'].between(atm_strike - 500, atm_strike + 500)].copy()
+    df_wide['Zone'] = df_wide['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < atm_strike else 'OTM')
+    
+    return df, df_wide, underlying, atm_strike
 
 # Main App
 st.title("🔥 Nifty Option Chain Bias Summary")
@@ -173,16 +178,255 @@ with st.sidebar:
         st.code("Add to .streamlit/secrets.toml:\nTELEGRAM_BOT_TOKEN = 'your_token'\nTELEGRAM_CHAT_ID = 'your_chat_id'")
 
 try:
-    df, underlying, atm_strike = fetch_option_chain()
+    df, df_wide, underlying, atm_strike = fetch_option_chain()
     
-    # Display key metrics at top
+    # Calculate total Change in OI for ATM ±2 strikes
+    total_chg_oi_ce = df['changeinOpenInterest_CE'].sum()
+    total_chg_oi_pe = df['changeinOpenInterest_PE'].sum()
+    chg_oi_diff = total_chg_oi_ce - total_chg_oi_pe
+    chg_oi_diff_pct = (chg_oi_diff / total_chg_oi_pe * 100) if total_chg_oi_pe != 0 else 0
+    
+    # Calculate total OI for Call vs Put (ATM ±2)
+    total_oi_ce = df['openInterest_CE'].sum()
+    total_oi_pe = df['openInterest_PE'].sum()
+    oi_diff = total_oi_ce - total_oi_pe
+    oi_diff_pct = (oi_diff / total_oi_pe * 100) if total_oi_pe != 0 else 0
+    
+    # Calculate total Volume for Call vs Put (ATM ±2)
+    total_vol_ce = df['totalTradedVolume_CE'].sum()
+    total_vol_pe = df['totalTradedVolume_PE'].sum()
+    vol_diff = total_vol_ce - total_vol_pe
+    vol_diff_pct = (vol_diff / total_vol_pe * 100) if total_vol_pe != 0 else 0
+    
+    # Calculate total Change in OI for ATM ±10 strikes (WIDER RANGE)
+    total_chg_oi_ce_wide = df_wide['changeinOpenInterest_CE'].sum()
+    total_chg_oi_pe_wide = df_wide['changeinOpenInterest_PE'].sum()
+    chg_oi_diff_wide = total_chg_oi_ce_wide - total_chg_oi_pe_wide
+    chg_oi_diff_pct_wide = (chg_oi_diff_wide / total_chg_oi_pe_wide * 100) if total_chg_oi_pe_wide != 0 else 0
+    
+    # Calculate total OI for Call vs Put (ATM ±10)
+    total_oi_ce_wide = df_wide['openInterest_CE'].sum()
+    total_oi_pe_wide = df_wide['openInterest_PE'].sum()
+    oi_diff_wide = total_oi_ce_wide - total_oi_pe_wide
+    oi_diff_pct_wide = (oi_diff_wide / total_oi_pe_wide * 100) if total_oi_pe_wide != 0 else 0
+    
+    # Calculate total Volume for Call vs Put (ATM ±10)
+    total_vol_ce_wide = df_wide['totalTradedVolume_CE'].sum()
+    total_vol_pe_wide = df_wide['totalTradedVolume_PE'].sum()
+    vol_diff_wide = total_vol_ce_wide - total_vol_pe_wide
+    vol_diff_pct_wide = (vol_diff_wide / total_vol_pe_wide * 100) if total_vol_pe_wide != 0 else 0
+    
+    # Determine overall bias from Change in OI (ATM ±2)
+    chg_oi_bias = "BEARISH 🔴" if chg_oi_diff > 0 else "BULLISH 🟢" if chg_oi_diff < 0 else "NEUTRAL ⚪"
+    oi_bias = "BEARISH 🔴" if oi_diff > 0 else "BULLISH 🟢" if oi_diff < 0 else "NEUTRAL ⚪"
+    vol_bias = "BEARISH 🔴" if vol_diff > 0 else "BULLISH 🟢" if vol_diff < 0 else "NEUTRAL ⚪"
+    
+    # Determine overall bias from Change in OI (ATM ±10)
+    chg_oi_bias_wide = "BEARISH 🔴" if chg_oi_diff_wide > 0 else "BULLISH 🟢" if chg_oi_diff_wide < 0 else "NEUTRAL ⚪"
+    oi_bias_wide = "BEARISH 🔴" if oi_diff_wide > 0 else "BULLISH 🟢" if oi_diff_wide < 0 else "NEUTRAL ⚪"
+    vol_bias_wide = "BEARISH 🔴" if vol_diff_wide > 0 else "BULLISH 🟢" if vol_diff_wide < 0 else "NEUTRAL ⚪"
+    
+    # Display key metrics at top with enhanced OI analysis
+    st.subheader("📊 Market Overview")
+    
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Spot Price", f"₹{underlying:,.2f}")
     with col2:
         st.metric("ATM Strike", f"{atm_strike}")
     with col3:
-        st.metric("Strikes Range", f"{atm_strike-100} to {atm_strike+100}")
+        st.metric("Analysis Range", f"±2 & ±10 Strikes")
+    
+    # Create tabs for different strike ranges
+    tab1, tab2 = st.tabs(["📍 ATM ±2 Strikes (Focused)", "📊 ATM ±10 Strikes (Broader)"])
+    
+    with tab1:
+        st.info(f"**Strike Range:** {atm_strike-100} to {atm_strike+100} (5 strikes)")
+        
+        # Total Change in OI Analysis (ATM ±2)
+        st.subheader("🔥 Total Change in OI Analysis (ATM ±2 Strikes)")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                "Total Chg OI (CALL)", 
+                f"{int(total_chg_oi_ce/1000):,}K",
+                delta=None
+            )
+        
+        with col2:
+            st.metric(
+                "Total Chg OI (PUT)", 
+                f"{int(total_chg_oi_pe/1000):,}K",
+                delta=None
+            )
+        
+        with col3:
+            st.metric(
+                "Difference", 
+                f"{int(chg_oi_diff/1000):,}K",
+                delta=f"{chg_oi_diff_pct:+.2f}%"
+            )
+        
+        with col4:
+            st.metric(
+                "Change OI Bias", 
+                chg_oi_bias.split()[0],
+                delta=None
+            )
+        
+        # Additional OI and Volume metrics (ATM ±2)
+        st.subheader("📈 Total OI & Volume Comparison (ATM ±2)")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**Total Open Interest**")
+            st.metric("CALL OI", f"{round(total_oi_ce/1e6, 2)}M")
+            st.metric("PUT OI", f"{round(total_oi_pe/1e6, 2)}M")
+            st.metric("OI Bias", oi_bias.split()[0], delta=f"{oi_diff_pct:+.2f}%")
+        
+        with col2:
+            st.markdown("**Total Volume**")
+            st.metric("CALL Volume", f"{int(total_vol_ce/1000):,}K")
+            st.metric("PUT Volume", f"{int(total_vol_pe/1000):,}K")
+            st.metric("Volume Bias", vol_bias.split()[0], delta=f"{vol_diff_pct:+.2f}%")
+        
+        with col3:
+            st.markdown("**PCR Ratios**")
+            pcr_oi = total_oi_pe / total_oi_ce if total_oi_ce != 0 else 0
+            pcr_volume = total_vol_pe / total_vol_ce if total_vol_ce != 0 else 0
+            pcr_chg_oi = total_chg_oi_pe / total_chg_oi_ce if total_chg_oi_ce != 0 else 0
+            
+            st.metric("PCR (OI)", f"{pcr_oi:.3f}")
+            st.metric("PCR (Volume)", f"{pcr_volume:.3f}")
+            st.metric("PCR (Chg OI)", f"{pcr_chg_oi:.3f}")
+    
+    with tab2:
+        st.info(f"**Strike Range:** {atm_strike-500} to {atm_strike+500} (21 strikes)")
+        
+        # Total Change in OI Analysis (ATM ±10)
+        st.subheader("🔥 Total Change in OI Analysis (ATM ±10 Strikes)")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                "Total Chg OI (CALL)", 
+                f"{int(total_chg_oi_ce_wide/1000):,}K",
+                delta=None
+            )
+        
+        with col2:
+            st.metric(
+                "Total Chg OI (PUT)", 
+                f"{int(total_chg_oi_pe_wide/1000):,}K",
+                delta=None
+            )
+        
+        with col3:
+            st.metric(
+                "Difference", 
+                f"{int(chg_oi_diff_wide/1000):,}K",
+                delta=f"{chg_oi_diff_pct_wide:+.2f}%"
+            )
+        
+        with col4:
+            st.metric(
+                "Change OI Bias", 
+                chg_oi_bias_wide.split()[0],
+                delta=None
+            )
+        
+        # Additional OI and Volume metrics (ATM ±10)
+        st.subheader("📈 Total OI & Volume Comparison (ATM ±10)")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**Total Open Interest**")
+            st.metric("CALL OI", f"{round(total_oi_ce_wide/1e6, 2)}M")
+            st.metric("PUT OI", f"{round(total_oi_pe_wide/1e6, 2)}M")
+            st.metric("OI Bias", oi_bias_wide.split()[0], delta=f"{oi_diff_pct_wide:+.2f}%")
+        
+        with col2:
+            st.markdown("**Total Volume**")
+            st.metric("CALL Volume", f"{int(total_vol_ce_wide/1000):,}K")
+            st.metric("PUT Volume", f"{int(total_vol_pe_wide/1000):,}K")
+            st.metric("Volume Bias", vol_bias_wide.split()[0], delta=f"{vol_diff_pct_wide:+.2f}%")
+        
+        with col3:
+            st.markdown("**PCR Ratios**")
+            pcr_oi_wide = total_oi_pe_wide / total_oi_ce_wide if total_oi_ce_wide != 0 else 0
+            pcr_volume_wide = total_vol_pe_wide / total_vol_ce_wide if total_vol_ce_wide != 0 else 0
+            pcr_chg_oi_wide = total_chg_oi_pe_wide / total_chg_oi_ce_wide if total_chg_oi_ce_wide != 0 else 0
+            
+            st.metric("PCR (OI)", f"{pcr_oi_wide:.3f}")
+            st.metric("PCR (Volume)", f"{pcr_volume_wide:.3f}")
+            st.metric("PCR (Chg OI)", f"{pcr_chg_oi_wide:.3f}")
+    
+    # Interpretation guide
+    with st.expander("📖 How to Interpret Change in OI Analysis"):
+        st.markdown("""
+        **Change in OI (Open Interest) Interpretation:**
+        
+        - **CALL Chg OI > PUT Chg OI** = BEARISH 🔴
+          - More Call writing (resistance) or Call buying (if prices rising)
+          - Generally indicates bearish sentiment or strong resistance
+        
+        - **PUT Chg OI > CALL Chg OI** = BULLISH 🟢
+          - More Put writing (support) or Put buying (if prices falling)
+          - Generally indicates bullish sentiment or strong support
+        
+        **PCR (Put-Call Ratio) Guide:**
+        - **PCR > 1.5** = Bullish (More Put activity - potential support)
+        - **PCR 0.7-1.5** = Neutral (Balanced activity)
+        - **PCR < 0.7** = Bearish (More Call activity - potential resistance)
+        
+        **ATM ±2 vs ATM ±10:**
+        - **ATM ±2 (5 strikes)**: More focused, immediate support/resistance levels
+        - **ATM ±10 (21 strikes)**: Broader market sentiment, overall directional bias
+        
+        **Best Strategy:**
+        - Use ATM ±2 for precise entry/exit points
+        - Use ATM ±10 for overall market direction confirmation
+        - Look for alignment between both ranges for stronger signals
+        """)
+    
+    # Comparison between ranges
+    st.subheader("🔄 Range Comparison (ATM ±2 vs ATM ±10)")
+    
+    comparison_data = {
+        "Metric": ["Change OI Bias", "OI Bias", "Volume Bias", "PCR (OI)", "PCR (Volume)", "PCR (Chg OI)"],
+        "ATM ±2 Strikes": [
+            chg_oi_bias.split()[0],
+            oi_bias.split()[0],
+            vol_bias.split()[0],
+            f"{pcr_oi:.3f}",
+            f"{pcr_volume:.3f}",
+            f"{pcr_chg_oi:.3f}"
+        ],
+        "ATM ±10 Strikes": [
+            chg_oi_bias_wide.split()[0],
+            oi_bias_wide.split()[0],
+            vol_bias_wide.split()[0],
+            f"{pcr_oi_wide:.3f}",
+            f"{pcr_volume_wide:.3f}",
+            f"{pcr_chg_oi_wide:.3f}"
+        ],
+        "Alignment": [
+            "✅" if chg_oi_bias == chg_oi_bias_wide else "❌",
+            "✅" if oi_bias == oi_bias_wide else "❌",
+            "✅" if vol_bias == vol_bias_wide else "❌",
+            "✅" if abs(pcr_oi - pcr_oi_wide) < 0.2 else "❌",
+            "✅" if abs(pcr_volume - pcr_volume_wide) < 0.2 else "❌",
+            "✅" if abs(pcr_chg_oi - pcr_chg_oi_wide) < 0.2 else "❌"
+        ]
+    }
+    
+    comparison_df = pd.DataFrame(comparison_data)
+    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
     
     results = []
     for _, row in df.iterrows():
@@ -229,11 +473,12 @@ try:
         results.append(row_data)
     
     best = max(results, key=lambda x: abs(x['Score']))
+    total_score = sum([r['Score'] for r in results])
+    
     st.success(f"📢 TRADE {'CALL' if best['Score'] > 0 else 'PUT'} | Momentum: {'STRONG' if abs(best['Score']) >= 4 else 'MODERATE'} | Move: {best['FakeReal'].upper()} | Suggested: {best['Scalp/Moment'].upper()}")
     
     # Display total score prominently
-    total_score = sum([r['Score'] for r in results])
-    st.subheader(f"📊 Total Score (ATM ±2 Strikes): {total_score}")
+    st.subheader(f"📊 Total Bias Score (ATM ±2 Strikes): {total_score}")
     
     st.subheader("📊 Complete Bias Analysis (ATM ±2 Strikes)")
     
@@ -332,8 +577,30 @@ try:
 <b>ATM Strike:</b> {atm_strike}
 <b>LTP Price:</b> ₹{ltp_price}
 
-<b>Total Score (ATM ±2 Strikes):</b> {total_score}
+<b>Total Score (ATM ±2):</b> {total_score}
 <b>Verdict:</b> {atm['Verdict']}
+
+<b>Change in OI Analysis (ATM ±2):</b>
+• Total CALL Chg OI: {int(total_chg_oi_ce/1000):,}K
+• Total PUT Chg OI: {int(total_chg_oi_pe/1000):,}K
+• Difference: {int(chg_oi_diff/1000):,}K ({chg_oi_diff_pct:+.2f}%)
+• Chg OI Bias: {chg_oi_bias}
+
+<b>Change in OI Analysis (ATM ±10):</b>
+• Total CALL Chg OI: {int(total_chg_oi_ce_wide/1000):,}K
+• Total PUT Chg OI: {int(total_chg_oi_pe_wide/1000):,}K
+• Difference: {int(chg_oi_diff_wide/1000):,}K ({chg_oi_diff_pct_wide:+.2f}%)
+• Chg OI Bias: {chg_oi_bias_wide}
+
+<b>PCR Analysis (ATM ±2):</b>
+• PCR (OI): {pcr_oi:.3f}
+• PCR (Volume): {pcr_volume:.3f}
+• PCR (Chg OI): {pcr_chg_oi:.3f}
+
+<b>PCR Analysis (ATM ±10):</b>
+• PCR (OI): {pcr_oi_wide:.3f}
+• PCR (Volume): {pcr_volume_wide:.3f}
+• PCR (Chg OI): {pcr_chg_oi_wide:.3f}
 
 <b>ATM Bias Analysis:</b>
 • ChgOI: {atm['ChgOI_Bias']}
@@ -358,3 +625,27 @@ except Exception as e:
 if st.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.rerun()
+Key Enhancements:
+Dual Range Analysis:
+ATM ±2 strikes (5 strikes): Focused analysis for precise entry/exit
+ATM ±10 strikes (21 strikes): Broader market sentiment
+Tabbed Interface:
+Clean separation between focused and broader analysis
+Easy comparison between both ranges
+Comprehensive Metrics for Both Ranges:
+Total Change in OI (CALL vs PUT)
+Total OI comparison
+Total Volume comparison
+PCR ratios (OI, Volume, Change in OI)
+Range Comparison Table:
+Side-by-side comparison of all metrics
+Alignment indicators (✅/❌)
+Helps identify when both ranges agree for stronger signals
+Enhanced Telegram Alerts:
+Includes data from both ATM ±2 and ATM ±10
+Complete PCR analysis for both ranges
+More comprehensive market picture
+Enhanced Interpretation Guide:
+Explains when to use ATM ±2 vs ATM ±10
+Trading strategy recommendations
+This gives you institutional-level multi-range analysis for better trading decisions!
