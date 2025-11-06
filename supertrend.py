@@ -102,6 +102,20 @@ def final_verdict(score):
     else:
         return "Neutral"
 
+def calculate_pcr_safe(put_value, call_value):
+    """
+    Safely calculate PCR handling negative values
+    PCR = PUT / CALL (using absolute values for negative change in OI)
+    """
+    if call_value == 0:
+        return 0.0
+    
+    # For Change in OI which can be negative, use absolute values
+    if put_value < 0 or call_value < 0:
+        return abs(put_value) / abs(call_value)
+    
+    return put_value / call_value
+
 # Fetch NSE Option Chain
 @st.cache_data(ttl=60)
 def fetch_option_chain():
@@ -183,7 +197,7 @@ try:
     total_chg_oi_ce = df['changeinOpenInterest_CE'].sum()
     total_chg_oi_pe = df['changeinOpenInterest_PE'].sum()
     chg_oi_diff = total_chg_oi_ce - total_chg_oi_pe
-    chg_oi_diff_pct = (chg_oi_diff / total_chg_oi_pe * 100) if total_chg_oi_pe != 0 else 0
+    chg_oi_diff_pct = (chg_oi_diff / abs(total_chg_oi_pe) * 100) if total_chg_oi_pe != 0 else 0
     
     # Calculate total OI for Call vs Put (ATM ±2)
     total_oi_ce = df['openInterest_CE'].sum()
@@ -201,7 +215,7 @@ try:
     total_chg_oi_ce_wide = df_wide['changeinOpenInterest_CE'].sum()
     total_chg_oi_pe_wide = df_wide['changeinOpenInterest_PE'].sum()
     chg_oi_diff_wide = total_chg_oi_ce_wide - total_chg_oi_pe_wide
-    chg_oi_diff_pct_wide = (chg_oi_diff_wide / total_chg_oi_pe_wide * 100) if total_chg_oi_pe_wide != 0 else 0
+    chg_oi_diff_pct_wide = (chg_oi_diff_wide / abs(total_chg_oi_pe_wide) * 100) if total_chg_oi_pe_wide != 0 else 0
     
     # Calculate total OI for Call vs Put (ATM ±10)
     total_oi_ce_wide = df_wide['openInterest_CE'].sum()
@@ -294,13 +308,22 @@ try:
         
         with col3:
             st.markdown("**PCR Ratios**")
-            pcr_oi = total_oi_pe / total_oi_ce if total_oi_ce != 0 else 0
-            pcr_volume = total_vol_pe / total_vol_ce if total_vol_ce != 0 else 0
-            pcr_chg_oi = total_chg_oi_pe / total_chg_oi_ce if total_chg_oi_ce != 0 else 0
+            pcr_oi = calculate_pcr_safe(total_oi_pe, total_oi_ce)
+            pcr_volume = calculate_pcr_safe(total_vol_pe, total_vol_ce)
+            pcr_chg_oi = calculate_pcr_safe(total_chg_oi_pe, total_chg_oi_ce)
             
-            st.metric("PCR (OI)", f"{pcr_oi:.3f}")
-            st.metric("PCR (Volume)", f"{pcr_volume:.3f}")
-            st.metric("PCR (Chg OI)", f"{pcr_chg_oi:.3f}")
+            # Color code PCR values
+            pcr_oi_color = "🟢" if pcr_oi > 1.5 else "🔴" if pcr_oi < 0.7 else "⚪"
+            pcr_vol_color = "🟢" if pcr_volume > 1.5 else "🔴" if pcr_volume < 0.7 else "⚪"
+            pcr_chg_color = "🟢" if pcr_chg_oi > 1.5 else "🔴" if pcr_chg_oi < 0.7 else "⚪"
+            
+            st.metric("PCR (OI)", f"{pcr_oi:.3f} {pcr_oi_color}")
+            st.metric("PCR (Volume)", f"{pcr_volume:.3f} {pcr_vol_color}")
+            st.metric("PCR (Chg OI)", f"{pcr_chg_oi:.3f} {pcr_chg_color}")
+            
+            # Add note about negative change in OI
+            if total_chg_oi_ce < 0 or total_chg_oi_pe < 0:
+                st.caption("⚠️ Negative Chg OI detected - using absolute values for PCR")
     
     with tab2:
         st.info(f"**Strike Range:** {atm_strike-500} to {atm_strike+500} (21 strikes)")
@@ -357,13 +380,22 @@ try:
         
         with col3:
             st.markdown("**PCR Ratios**")
-            pcr_oi_wide = total_oi_pe_wide / total_oi_ce_wide if total_oi_ce_wide != 0 else 0
-            pcr_volume_wide = total_vol_pe_wide / total_vol_ce_wide if total_vol_ce_wide != 0 else 0
-            pcr_chg_oi_wide = total_chg_oi_pe_wide / total_chg_oi_ce_wide if total_chg_oi_ce_wide != 0 else 0
+            pcr_oi_wide = calculate_pcr_safe(total_oi_pe_wide, total_oi_ce_wide)
+            pcr_volume_wide = calculate_pcr_safe(total_vol_pe_wide, total_vol_ce_wide)
+            pcr_chg_oi_wide = calculate_pcr_safe(total_chg_oi_pe_wide, total_chg_oi_ce_wide)
             
-            st.metric("PCR (OI)", f"{pcr_oi_wide:.3f}")
-            st.metric("PCR (Volume)", f"{pcr_volume_wide:.3f}")
-            st.metric("PCR (Chg OI)", f"{pcr_chg_oi_wide:.3f}")
+            # Color code PCR values
+            pcr_oi_wide_color = "🟢" if pcr_oi_wide > 1.5 else "🔴" if pcr_oi_wide < 0.7 else "⚪"
+            pcr_vol_wide_color = "🟢" if pcr_volume_wide > 1.5 else "🔴" if pcr_volume_wide < 0.7 else "⚪"
+            pcr_chg_wide_color = "🟢" if pcr_chg_oi_wide > 1.5 else "🔴" if pcr_chg_oi_wide < 0.7 else "⚪"
+            
+            st.metric("PCR (OI)", f"{pcr_oi_wide:.3f} {pcr_oi_wide_color}")
+            st.metric("PCR (Volume)", f"{pcr_volume_wide:.3f} {pcr_vol_wide_color}")
+            st.metric("PCR (Chg OI)", f"{pcr_chg_oi_wide:.3f} {pcr_chg_wide_color}")
+            
+            # Add note about negative change in OI
+            if total_chg_oi_ce_wide < 0 or total_chg_oi_pe_wide < 0:
+                st.caption("⚠️ Negative Chg OI detected - using absolute values for PCR")
     
     # Interpretation guide
     with st.expander("📖 How to Interpret Change in OI Analysis"):
@@ -378,10 +410,15 @@ try:
           - More Put writing (support) or Put buying (if prices falling)
           - Generally indicates bullish sentiment or strong support
         
+        **Understanding Negative Change in OI:**
+        - Negative Change in OI means positions are being closed/unwound
+        - When calculating PCR for Change in OI, we use absolute values if either is negative
+        - This ensures PCR remains meaningful (always positive)
+        
         **PCR (Put-Call Ratio) Guide:**
-        - **PCR > 1.5** = Bullish (More Put activity - potential support)
-        - **PCR 0.7-1.5** = Neutral (Balanced activity)
-        - **PCR < 0.7** = Bearish (More Call activity - potential resistance)
+        - **PCR > 1.5** 🟢 = Bullish (More Put activity - potential support)
+        - **PCR 0.7-1.5** ⚪ = Neutral (Balanced activity)
+        - **PCR < 0.7** 🔴 = Bearish (More Call activity - potential resistance)
         
         **ATM ±2 vs ATM ±10:**
         - **ATM ±2 (5 strikes)**: More focused, immediate support/resistance levels
@@ -580,34 +617,34 @@ try:
 <b>Verdict:</b> {atm['Verdict']}
 
 <b>Change in OI Analysis (ATM ±2):</b>
-• Total CALL Chg OI: {int(total_chg_oi_ce/1000):,}K
-• Total PUT Chg OI: {int(total_chg_oi_pe/1000):,}K
-• Difference: {int(chg_oi_diff/1000):,}K ({chg_oi_diff_pct:+.2f}%)
-• Chg OI Bias: {chg_oi_bias}
+- Total CALL Chg OI: {int(total_chg_oi_ce/1000):,}K
+- Total PUT Chg OI: {int(total_chg_oi_pe/1000):,}K
+- Difference: {int(chg_oi_diff/1000):,}K ({chg_oi_diff_pct:+.2f}%)
+- Chg OI Bias: {chg_oi_bias}
 
 <b>Change in OI Analysis (ATM ±10):</b>
-• Total CALL Chg OI: {int(total_chg_oi_ce_wide/1000):,}K
-• Total PUT Chg OI: {int(total_chg_oi_pe_wide/1000):,}K
-• Difference: {int(chg_oi_diff_wide/1000):,}K ({chg_oi_diff_pct_wide:+.2f}%)
-• Chg OI Bias: {chg_oi_bias_wide}
+- Total CALL Chg OI: {int(total_chg_oi_ce_wide/1000):,}K
+- Total PUT Chg OI: {int(total_chg_oi_pe_wide/1000):,}K
+- Difference: {int(chg_oi_diff_wide/1000):,}K ({chg_oi_diff_pct_wide:+.2f}%)
+- Chg OI Bias: {chg_oi_bias_wide}
 
 <b>PCR Analysis (ATM ±2):</b>
-• PCR (OI): {pcr_oi:.3f}
-• PCR (Volume): {pcr_volume:.3f}
-• PCR (Chg OI): {pcr_chg_oi:.3f}
+- PCR (OI): {pcr_oi:.3f}
+- PCR (Volume): {pcr_volume:.3f}
+- PCR (Chg OI): {pcr_chg_oi:.3f}
 
 <b>PCR Analysis (ATM ±10):</b>
-• PCR (OI): {pcr_oi_wide:.3f}
-• PCR (Volume): {pcr_volume_wide:.3f}
-• PCR (Chg OI): {pcr_chg_oi_wide:.3f}
+- PCR (OI): {pcr_oi_wide:.3f}
+- PCR (Volume): {pcr_volume_wide:.3f}
+- PCR (Chg OI): {pcr_chg_oi_wide:.3f}
 
 <b>ATM Bias Analysis:</b>
-• ChgOI: {atm['ChgOI_Bias']}
-• Volume: {atm['Volume_Bias']}
-• Delta: {atm['Delta_Bias']}
-• Gamma: {atm['Gamma_Bias']}
-• AskBid: {atm['AskBid_Bias']}
-• IV: {atm['IV_Bias']}
+- ChgOI: {atm['ChgOI_Bias']}
+- Volume: {atm['Volume_Bias']}
+- Delta: {atm['Delta_Bias']}
+- Gamma: {atm['Gamma_Bias']}
+- AskBid: {atm['AskBid_Bias']}
+- IV: {atm['IV_Bias']}
 
 <b>Trade Suggestion:</b> {atm['Scalp/Moment']}
 <b>Entry:</b> {atm['Operator Entry']}
