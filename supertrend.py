@@ -1,4 +1,3 @@
-I'll add a separate analysis section for ATM ±10 strikes (which covers a wider range of 21 strikes). Here's the enhanced code:
 import streamlit as st
 import requests
 import pandas as pd
@@ -625,27 +624,3 @@ except Exception as e:
 if st.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.rerun()
-Key Enhancements:
-Dual Range Analysis:
-ATM ±2 strikes (5 strikes): Focused analysis for precise entry/exit
-ATM ±10 strikes (21 strikes): Broader market sentiment
-Tabbed Interface:
-Clean separation between focused and broader analysis
-Easy comparison between both ranges
-Comprehensive Metrics for Both Ranges:
-Total Change in OI (CALL vs PUT)
-Total OI comparison
-Total Volume comparison
-PCR ratios (OI, Volume, Change in OI)
-Range Comparison Table:
-Side-by-side comparison of all metrics
-Alignment indicators (✅/❌)
-Helps identify when both ranges agree for stronger signals
-Enhanced Telegram Alerts:
-Includes data from both ATM ±2 and ATM ±10
-Complete PCR analysis for both ranges
-More comprehensive market picture
-Enhanced Interpretation Guide:
-Explains when to use ATM ±2 vs ATM ±10
-Trading strategy recommendations
-This gives you institutional-level multi-range analysis for better trading decisions!
